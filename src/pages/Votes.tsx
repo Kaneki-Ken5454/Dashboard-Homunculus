@@ -1,59 +1,25 @@
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { PageHeader } from "@/components/DashboardCards";
-import { Vote, Plus, Clock, Users, CheckCircle2, XCircle, Eye } from "lucide-react";
+import { Vote, Plus, Clock, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-
-interface VoteItem {
-  id: string;
-  question: string;
-  options: { text: string; votes: number }[];
-  endTime: string;
-  active: boolean;
-}
-
-const mockVotes: VoteItem[] = [
-  {
-    id: "1",
-    question: "Should we implement proposal #42 for treasury allocation?",
-    options: [
-      { text: "Yes, approve", votes: 156 },
-      { text: "No, reject", votes: 43 },
-      { text: "Abstain", votes: 18 },
-    ],
-    endTime: "2026-02-20T18:00:00Z",
-    active: true,
-  },
-  {
-    id: "2",
-    question: "New moderation policy: stricter rules for off-topic?",
-    options: [
-      { text: "Agree", votes: 89 },
-      { text: "Disagree", votes: 67 },
-    ],
-    endTime: "2026-02-19T12:00:00Z",
-    active: true,
-  },
-  {
-    id: "3",
-    question: "Community event: Game night or Movie night?",
-    options: [
-      { text: "Game Night", votes: 234 },
-      { text: "Movie Night", votes: 189 },
-    ],
-    endTime: "2026-02-15T18:00:00Z",
-    active: false,
-  },
-];
+import { useAllVotes } from "@/hooks/use-database";
+import { toast } from "@/components/ui/sonner";
 
 export default function Votes() {
   const [showCreate, setShowCreate] = useState(false);
-  const activeVotes = mockVotes.filter((v) => v.active);
-  const pastVotes = mockVotes.filter((v) => !v.active);
+  const { data: allVotes, isLoading } = useAllVotes();
+
+  const activeVotes = allVotes?.filter((v) => v.is_active) || [];
+  const pastVotes = allVotes?.filter((v) => !v.is_active) || [];
+
+  const handleCreateVote = () => {
+    toast.success("Vote creation is disabled in demo mode");
+    setShowCreate(false);
+  };
 
   return (
     <div>
@@ -70,20 +36,32 @@ export default function Votes() {
 
       <section className="mb-8">
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Active Votes</h2>
-        <div className="space-y-4">
-          {activeVotes.map((vote, i) => (
-            <VoteCard key={vote.id} vote={vote} delay={i * 0.05} />
-          ))}
-        </div>
+        {isLoading ? (
+          <div className="text-center py-8 text-muted-foreground">Loading votes...</div>
+        ) : activeVotes.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground">No active votes</div>
+        ) : (
+          <div className="space-y-4">
+            {activeVotes.map((vote, i) => (
+              <VoteCard key={vote.id} vote={vote} delay={i * 0.05} />
+            ))}
+          </div>
+        )}
       </section>
 
       <section>
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Vote History</h2>
-        <div className="space-y-4">
-          {pastVotes.map((vote, i) => (
-            <VoteCard key={vote.id} vote={vote} delay={0.2 + i * 0.05} />
-          ))}
-        </div>
+        {isLoading ? (
+          <div className="text-center py-8 text-muted-foreground">Loading history...</div>
+        ) : pastVotes.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground">No past votes</div>
+        ) : (
+          <div className="space-y-4">
+            {pastVotes.map((vote, i) => (
+              <VoteCard key={vote.id} vote={vote} delay={0.2 + i * 0.05} />
+            ))}
+          </div>
+        )}
       </section>
 
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
@@ -113,7 +91,7 @@ export default function Votes() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button>
-            <Button className="bg-success hover:bg-success/90 text-success-foreground">Create Vote</Button>
+            <Button onClick={handleCreateVote} className="bg-success hover:bg-success/90 text-success-foreground">Create Vote</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -121,8 +99,20 @@ export default function Votes() {
   );
 }
 
-function VoteCard({ vote, delay }: { vote: VoteItem; delay: number }) {
-  const totalVotes = vote.options.reduce((s, o) => s + o.votes, 0);
+interface VoteCardProps {
+  vote: {
+    id: string;
+    question: string;
+    options: { text: string; votes: number }[];
+    end_time: string;
+    is_active: boolean;
+    total_votes: number;
+  };
+  delay: number;
+}
+
+function VoteCard({ vote, delay }: VoteCardProps) {
+  const totalVotes = vote.total_votes || vote.options.reduce((s, o) => s + o.votes, 0);
   const winner = [...vote.options].sort((a, b) => b.votes - a.votes)[0];
 
   return (
@@ -140,14 +130,14 @@ function VoteCard({ vote, delay }: { vote: VoteItem; delay: number }) {
               <Users className="w-3 h-3" /> {totalVotes} votes
             </span>
             <span className="flex items-center gap-1">
-              <Clock className="w-3 h-3" /> {vote.active ? "Ends " + new Date(vote.endTime).toLocaleDateString() : "Ended"}
+              <Clock className="w-3 h-3" /> {vote.is_active ? "Ends " + new Date(vote.end_time).toLocaleDateString() : "Ended"}
             </span>
           </div>
         </div>
         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-          vote.active ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"
+          vote.is_active ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"
         }`}>
-          {vote.active ? "Active" : "Closed"}
+          {vote.is_active ? "Active" : "Closed"}
         </span>
       </div>
 
@@ -158,7 +148,7 @@ function VoteCard({ vote, delay }: { vote: VoteItem; delay: number }) {
           return (
             <div key={opt.text}>
               <div className="flex justify-between text-xs mb-1">
-                <span className={`${isWinner && !vote.active ? "text-success font-medium" : "text-foreground"}`}>{opt.text}</span>
+                <span className={`${isWinner && !vote.is_active ? "text-success font-medium" : "text-foreground"}`}>{opt.text}</span>
                 <span className="font-mono text-muted-foreground">{pct}%</span>
               </div>
               <div className="h-1.5 bg-muted rounded-full overflow-hidden">

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import Overview from "./pages/Overview";
+import ActiveUsers from "./pages/ActiveUsers";
 import Votes from "./pages/Votes";
 import Embeds from "./pages/Embeds";
 import InfoSystem from "./pages/InfoSystem";
@@ -23,6 +24,7 @@ const App = () => (
         <DashboardLayout>
           <Routes>
             <Route path="/" element={<Overview />} />
+            <Route path="/active-users" element={<ActiveUsers />} />
             <Route path="/votes" element={<Votes />} />
             <Route path="/embeds" element={<Embeds />} />
             <Route path="/info" element={<InfoSystem />} />

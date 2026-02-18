@@ -11,10 +11,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Shield,
+  Users,
 } from "lucide-react";
 
 const navItems = [
   { title: "Overview", url: "/", icon: LayoutDashboard },
+  { title: "Active Users", url: "/active-users", icon: Users },
   { title: "Votes", url: "/votes", icon: Vote },
   { title: "Embeds", url: "/embeds", icon: MessageSquare },
   { title: "Info System", url: "/info", icon: Info },
