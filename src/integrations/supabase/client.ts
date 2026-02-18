@@ -8,10 +8,335 @@ const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";
 
-export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-  auth: {
-    storage: localStorage,
-    persistSession: true,
-    autoRefreshToken: true,
-  }
+// Check if environment variables are properly configured
+if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
+  console.warn('Supabase environment variables are not configured. Using mock data.');
+}
+
+// Create a mock supabase client when environment variables are missing
+const createMockSupabase = () => ({
+  from: (table: string) => ({
+    select: (fields?: string) => {
+      // Return mock data based on table
+      if (table === 'members') {
+        return {
+          count: () => ({ count: 156, error: null }),
+          head: () => ({ count: 156, error: null }),
+          order: () => ({
+            limit: (limit: number) => ({ 
+              data: generateMockMembers(limit), 
+              error: null 
+            }),
+            single: () => ({ 
+              data: generateMockMembers(1)[0], 
+              error: null 
+            }),
+          }),
+          eq: () => ({
+            order: () => ({
+              limit: (limit: number) => ({ 
+                data: generateMockMembers(limit), 
+                error: null 
+              }),
+            }),
+          }),
+        };
+      } else if (table === 'votes') {
+        return {
+          count: () => ({ count: 8, error: null }),
+          head: () => ({ count: 8, error: null }),
+          order: () => ({
+            limit: (limit: number) => ({ 
+              data: generateMockVotes(limit), 
+              error: null 
+            }),
+            single: () => ({ 
+              data: generateMockVotes(1)[0], 
+              error: null 
+            }),
+          }),
+          eq: () => ({
+            order: () => ({
+              limit: (limit: number) => ({ 
+                data: generateMockVotes(limit), 
+                error: null 
+              }),
+            }),
+          }),
+        };
+      } else if (table === 'activity_logs') {
+        return {
+          count: () => ({ count: 1247, error: null }),
+          head: () => ({ count: 1247, error: null }),
+          order: () => ({
+            limit: (limit: number) => ({ 
+              data: generateMockActivity(limit), 
+              error: null 
+            }),
+            single: () => ({ 
+              data: generateMockActivity(1)[0], 
+              error: null 
+            }),
+          }),
+          gte: () => ({
+            order: () => ({
+              limit: (limit: number) => ({ 
+                data: generateMockActivity(limit), 
+                error: null 
+              }),
+            }),
+          }),
+          not: () => ({
+            order: () => ({
+              limit: (limit: number) => ({ 
+                data: generateMockActivity(limit), 
+                error: null 
+              }),
+            }),
+          }),
+        };
+      } else if (table === 'embeds') {
+        return {
+          count: () => ({ count: 12, error: null }),
+          head: () => ({ count: 12, error: null }),
+          order: () => ({
+            limit: (limit: number) => ({ 
+              data: generateMockEmbeds(limit), 
+              error: null 
+            }),
+            single: () => ({ 
+              data: generateMockEmbeds(1)[0], 
+              error: null 
+            }),
+          }),
+          eq: () => ({
+            order: () => ({
+              limit: (limit: number) => ({ 
+                data: generateMockEmbeds(limit), 
+                error: null 
+              }),
+            }),
+          }),
+        };
+      } else if (table === 'triggers') {
+        return {
+          count: () => ({ count: 15, error: null }),
+          head: () => ({ count: 15, error: null }),
+          order: () => ({
+            limit: (limit: number) => ({ 
+              data: generateMockTriggers(limit), 
+              error: null 
+            }),
+            single: () => ({ 
+              data: generateMockTriggers(1)[0], 
+              error: null 
+            }),
+          }),
+          eq: () => ({
+            order: () => ({
+              limit: (limit: number) => ({ 
+                data: generateMockTriggers(limit), 
+                error: null 
+              }),
+            }),
+          }),
+        };
+      } else if (table === 'info_topics') {
+        return {
+          count: () => ({ count: 23, error: null }),
+          head: () => ({ count: 23, error: null }),
+          order: () => ({
+            limit: (limit: number) => ({ 
+              data: generateMockInfoTopics(limit), 
+              error: null 
+            }),
+            single: () => ({ 
+              data: generateMockInfoTopics(1)[0], 
+              error: null 
+            }),
+          }),
+          eq: () => ({
+            order: () => ({
+              limit: (limit: number) => ({ 
+                data: generateMockInfoTopics(limit), 
+                error: null 
+              }),
+            }),
+          }),
+        };
+      }
+      return {
+        count: () => ({ count: 0, error: null }),
+        head: () => ({ count: 0, error: null }),
+        order: () => ({
+          limit: () => ({ data: [], error: null }),
+          single: () => ({ data: null, error: null }),
+        }),
+        eq: () => ({
+          order: () => ({
+            limit: () => ({ data: [], error: null }),
+          }),
+        }),
+        gte: () => ({
+          order: () => ({
+            limit: () => ({ data: [], error: null }),
+          }),
+        }),
+        not: () => ({
+          order: () => ({
+            limit: () => ({ data: [], error: null }),
+          }),
+        }),
+        data: [],
+        error: null,
+      };
+    },
+    insert: () => ({
+      select: () => ({
+        single: () => ({ data: null, error: null }),
+      }),
+    }),
+    update: () => ({
+      select: () => ({
+        single: () => ({ data: null, error: null }),
+      }),
+    }),
+    delete: () => ({
+      eq: () => ({ error: null }),
+    }),
+  }),
 });
+
+// Mock data generators
+const generateMockMembers = (limit: number) => {
+  const members = [];
+  for (let i = 1; i <= limit; i++) {
+    members.push({
+      id: `member_${i}`,
+      guild_id: '1234567890123456789',
+      user_id: `user_${i}`,
+      username: `user${i}`,
+      discriminator: '0001',
+      avatar_url: `https://cdn.discordapp.com/avatars/user_${i}/avatar.png`,
+      joined_at: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toISOString(),
+      last_active: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
+      message_count: Math.floor(Math.random() * 1000) + 10,
+      vote_count: Math.floor(Math.random() * 50),
+      role_ids: ['member']
+    });
+  }
+  return members;
+};
+
+const generateMockVotes = (limit: number) => {
+  const votes = [];
+  for (let i = 1; i <= limit; i++) {
+    votes.push({
+      id: `vote_${i}`,
+      guild_id: '1234567890123456789',
+      question: `Vote ${i}: Should we implement this feature?`,
+      description: `This is vote ${i} description`,
+      options: [
+        { text: 'Yes', votes: Math.floor(Math.random() * 100) },
+        { text: 'No', votes: Math.floor(Math.random() * 50) },
+        { text: 'Maybe', votes: Math.floor(Math.random() * 25) }
+      ],
+      created_by: 'admin_user',
+      channel_id: 'channel_123',
+      message_id: `msg_${i}`,
+      start_time: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
+      end_time: new Date(Date.now() + Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
+      is_active: Math.random() > 0.5,
+      total_votes: Math.floor(Math.random() * 200),
+      created_at: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString()
+    });
+  }
+  return votes;
+};
+
+const generateMockActivity = (limit: number) => {
+  const activities = [];
+  for (let i = 1; i <= limit; i++) {
+    activities.push({
+      id: `activity_${i}`,
+      guild_id: '1234567890123456789',
+      user_id: `user_${Math.floor(Math.random() * 100)}`,
+      activity_type: Math.random() > 0.5 ? 'message' : 'vote',
+      channel_id: `channel_${Math.floor(Math.random() * 10)}`,
+      metadata: {},
+      created_at: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString()
+    });
+  }
+  return activities;
+};
+
+const generateMockEmbeds = (limit: number) => {
+  const embeds = [];
+  for (let i = 1; i <= limit; i++) {
+    embeds.push({
+      id: `embed_${i}`,
+      guild_id: '1234567890123456789',
+      name: `embed_${i}`,
+      title: `Embed ${i} Title`,
+      description: `This is the description for embed ${i}`,
+      color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
+      footer: 'Embed footer',
+      thumbnail_url: null,
+      image_url: null,
+      fields: [],
+      created_by: 'admin_user',
+      created_at: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
+      updated_at: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString()
+    });
+  }
+  return embeds;
+};
+
+const generateMockTriggers = (limit: number) => {
+  const triggers = [];
+  for (let i = 1; i <= limit; i++) {
+    triggers.push({
+      id: `trigger_${i}`,
+      guild_id: '1234567890123456789',
+      trigger_text: `trigger_${i}`,
+      response: `This is the response for trigger ${i}`,
+      match_type: ['exact', 'contains', 'starts_with', 'ends_with', 'regex'][Math.floor(Math.random() * 5)],
+      is_enabled: Math.random() > 0.2,
+      trigger_count: Math.floor(Math.random() * 100),
+      created_by: 'admin_user',
+      created_at: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
+      updated_at: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString()
+    });
+  }
+  return triggers;
+};
+
+const generateMockInfoTopics = (limit: number) => {
+  const topics = [];
+  const categories = ['common', 'general', 'staff'];
+  for (let i = 1; i <= limit; i++) {
+    topics.push({
+      id: `topic_${i}`,
+      guild_id: '1234567890123456789',
+      category: categories[Math.floor(Math.random() * categories.length)],
+      title: `Info Topic ${i}`,
+      content: `This is the content for info topic ${i}. It contains useful information for users.`,
+      section: `Section ${Math.floor(Math.random() * 5) + 1}`,
+      view_count: Math.floor(Math.random() * 1000),
+      created_by: 'admin_user',
+      created_at: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toISOString(),
+      updated_at: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString()
+    });
+  }
+  return topics;
+};
+
+export const supabase = SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY 
+  ? createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+      auth: {
+        storage: localStorage,
+        persistSession: true,
+        autoRefreshToken: true,
+      }
+    })
+  : createMockSupabase();

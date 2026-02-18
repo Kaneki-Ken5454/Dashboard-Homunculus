@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Shield,
   Users,
+  Ticket,
 } from "lucide-react";
 
 const navItems = [
@@ -21,6 +22,8 @@ const navItems = [
   { title: "Embeds", url: "/embeds", icon: MessageSquare },
   { title: "Info System", url: "/info", icon: Info },
   { title: "Triggers", url: "/triggers", icon: Zap },
+  { title: "Audit Log", url: "/audit", icon: Shield },
+  { title: "Support Tickets", url: "/tickets", icon: Ticket },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 

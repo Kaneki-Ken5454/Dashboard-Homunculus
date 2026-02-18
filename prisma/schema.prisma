@@ -1,0 +1,313 @@
+// Prisma Schema for Aeon Discord Management System
+// Database: NeonDB (PostgreSQL)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Module 1: Configuration & Granular Permissions
+// ============================================
+
+model GuildSettings {
+  id                String   @id @default(cuid())
+  guildId           String   @unique @map("guild_id")
+  prefix            String   @default("!")
+  useSlashCommands  Boolean  @default(true) @map("use_slash_commands")
+  
+  // Module Toggles
+  moderationEnabled Boolean  @default(true) @map("moderation_enabled")
+  levellingEnabled  Boolean  @default(true) @map("levelling_enabled")
+  funEnabled        Boolean  @default(true) @map("fun_enabled")
+  ticketsEnabled    Boolean  @default(true) @map("tickets_enabled")
+  customCommandsEnabled Boolean @default(true) @map("custom_commands_enabled")
+  autoRespondersEnabled Boolean @default(true) @map("auto_responders_enabled")
+  
+  // Rate Limiting
+  globalCooldown    Int      @default(1000) @map("global_cooldown") // milliseconds
+  commandCooldown   Json?    @map("command_cooldown") // { "command": cooldown_ms }
+  
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  rolePermissions   RolePermission[]
+  commandCooldowns  CommandCooldown[]
+  
+  @@index([guildId])
+  @@map("guild_settings")
+}
+
+model RolePermission {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  roleId        String   @map("role_id")
+  commandGroup  String   @map("command_group") // e.g., "admin", "moderator", "trial-mod"
+  permissions   Json     // Array of permission strings
+  
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  guildSettings GuildSettings? @relation(fields: [guildId], references: [guildId])
+  
+  @@unique([guildId, roleId, commandGroup])
+  @@index([guildId, roleId])
+  @@map("role_permissions")
+}
+
+model CommandCooldown {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  commandName   String   @map("command_name")
+  cooldownMs    Int      @map("cooldown_ms")
+  
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  guildSettings GuildSettings? @relation(fields: [guildId], references: [guildId])
+  
+  @@unique([guildId, commandName])
+  @@index([guildId])
+  @@map("command_cooldowns")
+}
+
+// ============================================
+// Module 2: Visual Interaction Builder
+// ============================================
+
+model MessageTemplate {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  name          String
+  content       String?  // Text content
+  embedData     Json?    @map("embed_data") // Discord embed structure
+  components    Json?    // Buttons, Select Menus, etc.
+  reactions     Json?    // Reaction roles configuration
+  
+  createdBy     String   @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  @@index([guildId])
+  @@map("message_templates")
+}
+
+model ReactionRole {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  messageId     String   @map("message_id")
+  channelId     String   @map("channel_id")
+  emoji         String   // Unicode or custom emoji ID
+  roleId        String   @map("role_id")
+  isReaction    Boolean  @default(true) @map("is_reaction") // true = reaction, false = button
+  
+  createdAt     DateTime @default(now()) @map("created_at")
+  
+  @@unique([messageId, emoji])
+  @@index([guildId, messageId])
+  @@map("reaction_roles")
+}
+
+model ButtonRole {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  messageId     String   @map("message_id")
+  channelId     String   @map("channel_id")
+  buttonId      String   @map("button_id")
+  roleId        String   @map("role_id")
+  buttonStyle   String   @default("PRIMARY") @map("button_style") // PRIMARY, SECONDARY, SUCCESS, DANGER
+  buttonLabel   String?  @map("button_label")
+  buttonEmoji   String?  @map("button_emoji")
+  
+  createdAt     DateTime @default(now()) @map("created_at")
+  
+  @@unique([messageId, buttonId])
+  @@index([guildId, messageId])
+  @@map("button_roles")
+}
+
+// ============================================
+// Module 3: Custom Commands & Auto-Responders
+// ============================================
+
+model CustomCommand {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  trigger       String   // Command name or trigger text
+  response      String   // Response text (supports variables)
+  responseType  String   @default("text") @map("response_type") // text, embed, template
+  embedData     Json?    @map("embed_data")
+  components    Json?    // Buttons, select menus
+  
+  // Logic Engine Variables
+  variables     Json?    // Available variables: {user}, {server.name}, {channel}, etc.
+  
+  // Tag System
+  isTag         Boolean  @default(false) @map("is_tag")
+  tagCategory   String?  @map("tag_category")
+  
+  // Multi-page Menu Support
+  isMultiPage   Boolean  @default(false) @map("is_multi_page")
+  menuPages     Json?    @map("menu_pages") // Array of page objects
+  
+  isEnabled     Boolean  @default(true) @map("is_enabled")
+  usageCount    Int      @default(0) @map("usage_count")
+  
+  createdBy     String   @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  @@unique([guildId, trigger])
+  @@index([guildId, isTag])
+  @@map("custom_commands")
+}
+
+model AutoResponder {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  triggerText   String   @map("trigger_text")
+  matchType     String   @map("match_type") // exact, contains, starts_with, ends_with, regex
+  response      String
+  responseType  String   @default("text") @map("response_type")
+  embedData     Json?    @map("embed_data")
+  
+  isEnabled     Boolean  @default(true) @map("is_enabled")
+  triggerCount  Int      @default(0) @map("trigger_count")
+  
+  createdBy     String   @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  @@index([guildId, isEnabled])
+  @@map("auto_responders")
+}
+
+// ============================================
+// Module 4: Advanced Ticket System
+// ============================================
+
+model TicketPanel {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  name          String   // e.g., "Support", "Report", "Billing"
+  channelId     String?  @map("channel_id") // Where panel is posted
+  messageId     String?  @map("message_id")
+  
+  // Panel Configuration
+  title         String
+  description   String
+  embedData     Json?    @map("embed_data")
+  buttonLabel   String   @default("Create Ticket") @map("button_label")
+  buttonEmoji   String?  @map("button_emoji")
+  
+  // Category Configuration
+  categoryId    String?  @map("category_id") // Discord category for tickets
+  supportRoles  Json     @map("support_roles") // Array of role IDs
+  
+  isEnabled     Boolean  @default(true) @map("is_enabled")
+  
+  createdBy     String   @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  tickets       Ticket[]
+  
+  @@index([guildId])
+  @@map("ticket_panels")
+}
+
+model Ticket {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  panelId       String   @map("panel_id")
+  channelId     String   @unique @map("channel_id")
+  userId        String   @map("user_id") // Ticket creator
+  assignedTo    String?  @map("assigned_to") // Staff member ID
+  status        String   @default("open") // open, claimed, closed, deleted
+  
+  // Transcript
+  transcriptUrl String?  @map("transcript_url")
+  transcriptHtml String? @db.Text @map("transcript_html")
+  
+  openedAt      DateTime @default(now()) @map("opened_at")
+  claimedAt     DateTime? @map("claimed_at")
+  closedAt      DateTime? @map("closed_at")
+  
+  panel         TicketPanel @relation(fields: [panelId], references: [id])
+  
+  @@index([guildId, status])
+  @@index([userId])
+  @@index([assignedTo])
+  @@map("tickets")
+}
+
+// ============================================
+// Module 5: Audit Log & Timeline Analytics
+// ============================================
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  actionType    String   @map("action_type") // ban, kick, mute, role_add, role_remove, message_delete, etc.
+  userId        String?  @map("user_id") // Target user
+  moderatorId   String?  @map("moderator_id") // Who performed the action
+  botAction     Boolean  @default(false) @map("bot_action") // If action was performed by bot
+  
+  // Action Details
+  reason        String?
+  metadata      Json?    // Additional data (role IDs, channel IDs, etc.)
+  
+  // Timestamps
+  createdAt     DateTime @default(now()) @map("created_at")
+  
+  @@index([guildId, actionType])
+  @@index([guildId, userId])
+  @@index([guildId, moderatorId])
+  @@index([guildId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================
+// Additional Supporting Tables
+// ============================================
+
+model GuildMember {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  userId        String   @map("user_id")
+  username      String
+  discriminator String?
+  avatarUrl     String?  @map("avatar_url")
+  
+  // Activity Tracking
+  messageCount  Int      @default(0) @map("message_count")
+  level         Int      @default(1)
+  xp            Int      @default(0)
+  
+  joinedAt      DateTime @default(now()) @map("joined_at")
+  lastActive    DateTime @default(now()) @map("last_active")
+  
+  @@unique([guildId, userId])
+  @@index([guildId])
+  @@index([guildId, messageCount])
+  @@map("guild_members")
+}
+
+model LevelReward {
+  id            String   @id @default(cuid())
+  guildId       String   @map("guild_id")
+  level         Int
+  roleId        String   @map("role_id")
+  
+  createdAt     DateTime @default(now()) @map("created_at")
+  
+  @@unique([guildId, level])
+  @@index([guildId])
+  @@map("level_rewards")
+}

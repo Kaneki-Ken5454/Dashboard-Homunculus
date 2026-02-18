@@ -22,4 +22,26 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment variables
 .env
+.env.local
+.env.production.local
+.env.development.local
+
+# Prisma
+prisma/migrations/*
+!prisma/migrations/.gitkeep
+
+# Testing
+coverage
+.nyc_output
+
+# Build outputs
+build
+out
+
+# Temporary files
+tmp
+temp
+*.tmp

@@ -46,6 +46,7 @@ export default function Overview() {
   const participation = stats && stats.totalMembers > 0 ? Math.round((stats.weeklyActivity / (stats.totalMembers * 7)) * 100) : 64;
   const healthScore = stats ? Math.min(Math.round((stats.activeVotes * 10) + (participation * 0.5) + 50), 100) : 92;
 
+  // Don't show full loading screen - show dashboard with loading states for individual components
   return (
     <div>
       <PageHeader
