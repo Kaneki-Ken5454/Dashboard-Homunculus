@@ -14,6 +14,9 @@ import Triggers from "./pages/Triggers";
 import SettingsPage from "./pages/SettingsPage";
 import Audit from "./pages/Audit";
 import Tickets from "./pages/Tickets";
+import BotSettings from "./pages/BotSettings";
+import ReactionRoles from "./pages/ReactionRoles";
+import CustomCommands from "./pages/CustomCommands";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -29,6 +32,9 @@ const App = () => (
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/active-users" element={<ActiveUsers />} />
+              <Route path="/bot-settings" element={<BotSettings />} />
+              <Route path="/custom-commands" element={<CustomCommands />} />
+              <Route path="/reaction-roles" element={<ReactionRoles />} />
               <Route path="/votes" element={<Votes />} />
               <Route path="/embeds" element={<Embeds />} />
               <Route path="/info" element={<InfoSystem />} />
