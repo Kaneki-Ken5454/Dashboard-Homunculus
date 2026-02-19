@@ -1,4 +1,5 @@
-import { supabase } from "@/integrations/supabase/client";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
 export interface Member {
   id: string;
@@ -72,13 +73,82 @@ export interface InfoTopic {
   updated_at: string;
 }
 
-export interface ActivityLog {
+export interface TicketItem {
   id: string;
   guild_id: string;
+  title: string;
   user_id: string;
-  activity_type: string;
-  channel_id?: string;
-  metadata: any;
+  username: string;
+  status: 'open' | 'in_progress' | 'resolved' | 'closed';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  category: string;
+  claimed_by?: string;
+  messages_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  guild_id: string;
+  action: string;
+  username: string;
+  user_id?: string;
+  details: string;
+  severity: 'info' | 'warning' | 'error' | 'success';
+  created_at: string;
+}
+
+export interface GuildSettings {
+  id: string;
+  guild_id: string;
+  prefix: string;
+  slash_commands_enabled: boolean;
+  modules: Record<string, boolean>;
+  cooldown_seconds: number;
+  ratelimit_per_minute: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReactionRole {
+  id: string;
+  guild_id: string;
+  message_id: string;
+  channel_id: string;
+  emoji: string;
+  role_id: string;
+  role_name: string;
+  type: 'reaction' | 'button';
+  created_by: string;
+  created_at: string;
+}
+
+export interface CustomCommand {
+  id: string;
+  guild_id: string;
+  name: string;
+  description?: string;
+  response: string;
+  permission_level: string;
+  is_enabled: boolean;
+  cooldown_seconds: number;
+  use_count: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TicketPanel {
+  id: string;
+  guild_id: string;
+  name: string;
+  channel_id: string;
+  category_id?: string;
+  message: string;
+  button_label: string;
+  button_color: string;
+  created_by: string;
   created_at: string;
 }
 
@@ -89,281 +159,167 @@ export interface GuildStats {
   weeklyActivity: number;
 }
 
+async function neonQuery<T = any>(action: string, params?: any): Promise<T> {
+  const url = `${SUPABASE_URL}/functions/v1/neon-query`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+    },
+    body: JSON.stringify({ action, params }),
+  });
+  const data = await res.json();
+  if (!res.ok || data?.error) throw new Error(data?.error || 'Edge function error');
+  return data?.data as T;
+}
+
 const DEFAULT_GUILD_ID = '1234567890123456789';
 
 export const db = {
-  async getGuildStats(guildId: string = DEFAULT_GUILD_ID): Promise<GuildStats> {
-    try {
-      const [membersResult, votesResult, activityResult] = await Promise.all([
-        supabase.from('members').select('id', { count: 'exact', head: true }).eq('guild_id', guildId),
-        supabase.from('votes').select('id', { count: 'exact', head: true }).eq('guild_id', guildId).eq('is_active', true),
-        supabase.from('activity_logs').select('id', { count: 'exact', head: true }).eq('guild_id', guildId).gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
-      ]);
-
-      const totalMessagesResult = await supabase
-        .from('members')
-        .select('message_count')
-        .eq('guild_id', guildId);
-
-      const totalMessages = totalMessagesResult.data?.reduce((sum, m) => sum + (m.message_count || 0), 0) || 0;
-
-      return {
-        totalMembers: membersResult.count || 0,
-        activeVotes: votesResult.count || 0,
-        totalMessages,
-        weeklyActivity: activityResult.count || 0,
-      };
-    } catch (error) {
-      console.error('Error fetching guild stats:', error);
-      throw error;
-    }
+  async inspectSchema() {
+    return neonQuery('inspectSchema');
   },
 
-  async getTopMembers(guildId: string = DEFAULT_GUILD_ID, limit: number = 10): Promise<Member[]> {
-    try {
-      const { data, error } = await supabase
-        .from('members')
-        .select('*')
-        .eq('guild_id', guildId)
-        .order('message_count', { ascending: false })
-        .limit(limit);
+  async getGuildStats(guildId: string = DEFAULT_GUILD_ID): Promise<GuildStats> {
+    return neonQuery('getGuildStats', { guildId });
+  },
 
-      if (error) throw error;
-      return data || [];
-    } catch (error) {
-      console.error('Error fetching top members:', error);
-      throw error;
-    }
+  async getTopMembers(guildId: string = DEFAULT_GUILD_ID, limit = 10): Promise<Member[]> {
+    return neonQuery('getTopMembers', { guildId, limit });
   },
 
   async getActiveVotes(guildId: string = DEFAULT_GUILD_ID): Promise<Vote[]> {
-    try {
-      const { data, error } = await supabase
-        .from('votes')
-        .select('*')
-        .eq('guild_id', guildId)
-        .eq('is_active', true)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data || [];
-    } catch (error) {
-      console.error('Error fetching active votes:', error);
-      throw error;
-    }
+    return neonQuery('getActiveVotes', { guildId });
   },
 
   async getAllVotes(guildId: string = DEFAULT_GUILD_ID): Promise<Vote[]> {
-    try {
-      const { data, error } = await supabase
-        .from('votes')
-        .select('*')
-        .eq('guild_id', guildId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data || [];
-    } catch (error) {
-      console.error('Error fetching all votes:', error);
-      throw error;
-    }
+    return neonQuery('getAllVotes', { guildId });
   },
 
   async getEmbeds(guildId: string = DEFAULT_GUILD_ID): Promise<Embed[]> {
-    try {
-      const { data, error } = await supabase
-        .from('embeds')
-        .select('*')
-        .eq('guild_id', guildId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data || [];
-    } catch (error) {
-      console.error('Error fetching embeds:', error);
-      throw error;
-    }
+    return neonQuery('getEmbeds', { guildId });
   },
 
   async createEmbed(embed: Partial<Embed>, guildId: string = DEFAULT_GUILD_ID): Promise<Embed> {
-    try {
-      const { data, error } = await supabase
-        .from('embeds')
-        .insert({
-          guild_id: guildId,
-          ...embed,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data;
-    } catch (error) {
-      console.error('Error creating embed:', error);
-      throw error;
-    }
+    return neonQuery('createEmbed', { embed, guildId });
   },
 
   async deleteEmbed(id: string): Promise<void> {
-    try {
-      const { error } = await supabase.from('embeds').delete().eq('id', id);
-      if (error) throw error;
-    } catch (error) {
-      console.error('Error deleting embed:', error);
-      throw error;
-    }
+    await neonQuery('deleteEmbed', { id });
   },
 
   async getTriggers(guildId: string = DEFAULT_GUILD_ID): Promise<Trigger[]> {
-    try {
-      const { data, error } = await supabase
-        .from('triggers')
-        .select('*')
-        .eq('guild_id', guildId)
-        .order('created_at', { ascending: false });
+    return neonQuery('getTriggers', { guildId });
+  },
 
-      if (error) throw error;
-      return data || [];
-    } catch (error) {
-      console.error('Error fetching triggers:', error);
-      throw error;
-    }
+  async createTrigger(trigger: Partial<Trigger>, guildId: string = DEFAULT_GUILD_ID): Promise<Trigger> {
+    return neonQuery('createTrigger', { trigger, guildId });
   },
 
   async updateTrigger(id: string, updates: Partial<Trigger>): Promise<Trigger> {
-    try {
-      const { data, error } = await supabase
-        .from('triggers')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data;
-    } catch (error) {
-      console.error('Error updating trigger:', error);
-      throw error;
-    }
+    return neonQuery('updateTrigger', { id, updates });
   },
 
   async deleteTrigger(id: string): Promise<void> {
-    try {
-      const { error } = await supabase.from('triggers').delete().eq('id', id);
-      if (error) throw error;
-    } catch (error) {
-      console.error('Error deleting trigger:', error);
-      throw error;
-    }
+    await neonQuery('deleteTrigger', { id });
   },
 
   async getInfoTopics(guildId: string = DEFAULT_GUILD_ID, category?: string): Promise<InfoTopic[]> {
-    try {
-      let query = supabase
-        .from('info_topics')
-        .select('*')
-        .eq('guild_id', guildId);
-
-      if (category) {
-        query = query.eq('category', category);
-      }
-
-      const { data, error } = await query.order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data || [];
-    } catch (error) {
-      console.error('Error fetching info topics:', error);
-      throw error;
-    }
+    return neonQuery('getInfoTopics', { guildId, category });
   },
 
-  async getActivityAnalytics(guildId: string = DEFAULT_GUILD_ID, days: number = 7) {
-    try {
-      const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-
-      const { data, error } = await supabase
-        .from('activity_logs')
-        .select('activity_type, created_at')
-        .eq('guild_id', guildId)
-        .gte('created_at', startDate)
-        .order('created_at', { ascending: true });
-
-      if (error) throw error;
-
-      const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      const activityByDay: Record<string, { messages: number; votes: number }> = {};
-
-      for (let i = 0; i < days; i++) {
-        const date = new Date(Date.now() - (days - 1 - i) * 24 * 60 * 60 * 1000);
-        const dayLabel = dayLabels[date.getDay()];
-        activityByDay[dayLabel] = { messages: 0, votes: 0 };
-      }
-
-      data?.forEach((log) => {
-        const date = new Date(log.created_at);
-        const dayLabel = dayLabels[date.getDay()];
-        if (activityByDay[dayLabel]) {
-          if (log.activity_type === 'message') {
-            activityByDay[dayLabel].messages++;
-          } else if (log.activity_type === 'vote') {
-            activityByDay[dayLabel].votes++;
-          }
-        }
-      });
-
-      return Object.entries(activityByDay).map(([day, counts]) => ({
-        day,
-        messages: counts.messages,
-        votes: counts.votes,
-      }));
-    } catch (error) {
-      console.error('Error fetching activity analytics:', error);
-      throw error;
+  async getActivityAnalytics(guildId: string = DEFAULT_GUILD_ID, days = 7) {
+    const raw = await neonQuery<any[]>('getActivityAnalytics', { guildId, days });
+    const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const activityByDay: Record<string, { messages: number; votes: number }> = {};
+    for (let i = 0; i < days; i++) {
+      const date = new Date(Date.now() - (days - 1 - i) * 86400000);
+      activityByDay[dayLabels[date.getDay()]] = { messages: 0, votes: 0 };
     }
+    raw?.forEach((log: any) => {
+      const dayLabel = dayLabels[new Date(log.created_at).getDay()];
+      if (activityByDay[dayLabel]) {
+        if (log.activity_type === 'message') activityByDay[dayLabel].messages++;
+        else if (log.activity_type === 'vote') activityByDay[dayLabel].votes++;
+      }
+    });
+    return Object.entries(activityByDay).map(([day, counts]) => ({ day, ...counts }));
   },
 
-  async getTopChannels(guildId: string = DEFAULT_GUILD_ID, limit: number = 5) {
-    try {
-      const { data, error } = await supabase
-        .from('activity_logs')
-        .select('channel_id')
-        .eq('guild_id', guildId)
-        .eq('activity_type', 'message')
-        .not('channel_id', 'is', null);
+  async getTopChannels(guildId: string = DEFAULT_GUILD_ID, limit = 5) {
+    const raw = await neonQuery<any[]>('getTopChannels', { guildId, limit });
+    if (!raw || raw.length === 0) return [];
+    const maxMessages = raw[0]?.message_count || 1;
+    return raw.map((ch: any) => ({
+      name: ch.channel_id,
+      messages: ch.message_count,
+      percentage: Math.round((ch.message_count / maxMessages) * 100),
+    }));
+  },
 
-      if (error) throw error;
+  async getTickets(guildId: string = DEFAULT_GUILD_ID, status?: string, priority?: string): Promise<TicketItem[]> {
+    return neonQuery('getTickets', { guildId, status, priority });
+  },
 
-      const channelCounts: Record<string, number> = {};
-      data?.forEach((log) => {
-        if (log.channel_id) {
-          channelCounts[log.channel_id] = (channelCounts[log.channel_id] || 0) + 1;
-        }
-      });
+  async claimTicket(id: string, userId: string): Promise<TicketItem> {
+    return neonQuery('claimTicket', { id, userId });
+  },
 
-      const channels = [
-        { name: 'general', id: '987654321' },
-        { name: 'governance', id: '987654322' },
-        { name: 'proposals', id: '987654323' },
-        { name: 'off-topic', id: '987654324' },
-        { name: 'announcements', id: '987654325' },
-      ];
+  async closeTicket(id: string): Promise<TicketItem> {
+    return neonQuery('closeTicket', { id });
+  },
 
-      return channels
-        .map((ch) => ({
-          name: ch.name,
-          messages: channelCounts[ch.id] || Math.floor(Math.random() * 1000) + 100,
-          percentage: 0,
-        }))
-        .sort((a, b) => b.messages - a.messages)
-        .slice(0, limit)
-        .map((ch, i, arr) => ({
-          ...ch,
-          percentage: Math.round((ch.messages / arr[0].messages) * 100),
-        }));
-    } catch (error) {
-      console.error('Error fetching top channels:', error);
-      throw error;
-    }
+  async getAuditLogs(guildId: string = DEFAULT_GUILD_ID, severity?: string, search?: string, limit = 50): Promise<AuditLogEntry[]> {
+    return neonQuery('getAuditLogs', { guildId, severity, search, limit });
+  },
+
+  async getBotSettings(guildId: string = DEFAULT_GUILD_ID): Promise<GuildSettings | null> {
+    return neonQuery('getBotSettings', { guildId });
+  },
+
+  async updateBotSettings(settings: Partial<GuildSettings>, guildId: string = DEFAULT_GUILD_ID): Promise<GuildSettings> {
+    return neonQuery('updateBotSettings', { settings, guildId });
+  },
+
+  async getReactionRoles(guildId: string = DEFAULT_GUILD_ID): Promise<ReactionRole[]> {
+    return neonQuery('getReactionRoles', { guildId });
+  },
+
+  async createReactionRole(role: Partial<ReactionRole>, guildId: string = DEFAULT_GUILD_ID): Promise<ReactionRole> {
+    return neonQuery('createReactionRole', { role, guildId });
+  },
+
+  async deleteReactionRole(id: string): Promise<void> {
+    await neonQuery('deleteReactionRole', { id });
+  },
+
+  async getCustomCommands(guildId: string = DEFAULT_GUILD_ID): Promise<CustomCommand[]> {
+    return neonQuery('getCustomCommands', { guildId });
+  },
+
+  async createCustomCommand(command: Partial<CustomCommand>, guildId: string = DEFAULT_GUILD_ID): Promise<CustomCommand> {
+    return neonQuery('createCustomCommand', { command, guildId });
+  },
+
+  async updateCustomCommand(id: string, updates: Partial<CustomCommand>): Promise<CustomCommand> {
+    return neonQuery('updateCustomCommand', { id, updates });
+  },
+
+  async deleteCustomCommand(id: string): Promise<void> {
+    await neonQuery('deleteCustomCommand', { id });
+  },
+
+  async getTicketPanels(guildId: string = DEFAULT_GUILD_ID): Promise<TicketPanel[]> {
+    return neonQuery('getTicketPanels', { guildId });
+  },
+
+  async createTicketPanel(panel: Partial<TicketPanel>, guildId: string = DEFAULT_GUILD_ID): Promise<TicketPanel> {
+    return neonQuery('createTicketPanel', { panel, guildId });
+  },
+
+  async deleteTicketPanel(id: string): Promise<void> {
+    await neonQuery('deleteTicketPanel', { id });
   },
 };
