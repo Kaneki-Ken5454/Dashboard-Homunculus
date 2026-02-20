@@ -12,9 +12,69 @@ function getDb() {
   return postgres(url, { ssl: "require", max: 1 });
 }
 
-async function tableExists(sql: any, tableName: string): Promise<boolean> {
-  const res = await sql`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ${tableName})`;
-  return res[0]?.exists || false;
+async function ensureTables(sql: any) {
+  // Create missing tables if they don't exist
+  await sql`
+    CREATE TABLE IF NOT EXISTS tickets (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      title TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      username TEXT NOT NULL DEFAULT 'Unknown',
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','in_progress','resolved','closed')),
+      priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low','medium','high','urgent')),
+      category TEXT NOT NULL DEFAULT 'general',
+      claimed_by TEXT,
+      messages_count INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS reaction_roles (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      message_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      role_name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'reaction' CHECK (type IN ('reaction','button')),
+      created_by TEXT DEFAULT 'dashboard',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS custom_commands (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      response TEXT NOT NULL,
+      permission_level TEXT NOT NULL DEFAULT 'everyone',
+      is_enabled BOOLEAN DEFAULT TRUE,
+      cooldown_seconds INT DEFAULT 3,
+      use_count INT DEFAULT 0,
+      created_by TEXT DEFAULT 'dashboard',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(guild_id, name)
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS ticket_panels (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      name TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      category_id TEXT,
+      message TEXT NOT NULL,
+      button_label TEXT NOT NULL DEFAULT 'Open Ticket',
+      button_color TEXT NOT NULL DEFAULT 'primary',
+      created_by TEXT DEFAULT 'dashboard',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `;
 }
 
 Deno.serve(async (req) => {
@@ -38,20 +98,20 @@ Deno.serve(async (req) => {
           break;
         }
 
-        // ============ GUILD STATS (computed from existing tables) ============
+        case "ensureTables": {
+          await ensureTables(sql);
+          result = { success: true };
+          break;
+        }
+
+        // ============ GUILD STATS ============
         case "getGuildStats": {
           const guildId = params?.guildId || "1234567890123456789";
           const gid = BigInt(guildId);
-          
-          // Count unique users from messages
           const usersResult = await sql`SELECT COUNT(DISTINCT user_id)::int as count FROM messages WHERE guild_id = ${gid}`;
-          // Count active votes (end_time > now)
           const votesResult = await sql`SELECT COUNT(*)::int as count FROM votes WHERE guild_id = ${gid} AND end_time > NOW()`;
-          // Total messages
           const msgsResult = await sql`SELECT COUNT(*)::int as count FROM messages WHERE guild_id = ${gid}`;
-          // Weekly activity (messages in last 7 days)
           const weeklyResult = await sql`SELECT COUNT(*)::int as count FROM messages WHERE guild_id = ${gid} AND timestamp >= NOW() - INTERVAL '7 days'`;
-          
           result = {
             totalMembers: usersResult[0]?.count || 0,
             activeVotes: votesResult[0]?.count || 0,
@@ -61,7 +121,7 @@ Deno.serve(async (req) => {
           break;
         }
 
-        // ============ TOP MEMBERS (from trust_scores + messages) ============
+        // ============ TOP MEMBERS ============
         case "getTopMembers": {
           const { guildId = "1234567890123456789", limit = 10 } = params || {};
           const gid = BigInt(guildId);
@@ -77,9 +137,6 @@ Deno.serve(async (req) => {
               ts.last_updated as last_active,
               COALESCE((SELECT COUNT(*)::int FROM messages m WHERE m.user_id = ts.user_id AND m.guild_id = ts.guild_id), 0) as message_count,
               COALESCE(ts.helpful_votes, 0) as vote_count,
-              ts.activity_score,
-              ts.reputation_score,
-              ts.total_contributions,
               ARRAY[]::text[] as role_ids
             FROM trust_scores ts
             WHERE ts.guild_id = ${gid}
@@ -127,7 +184,7 @@ Deno.serve(async (req) => {
           break;
         }
 
-        // ============ EMBEDS (uses embed_data jsonb) ============
+        // ============ EMBEDS ============
         case "getEmbeds": {
           const guildId = params?.guildId || "1234567890123456789";
           const gid = BigInt(guildId);
@@ -193,7 +250,7 @@ Deno.serve(async (req) => {
           break;
         }
 
-        // ============ TRIGGERS (column is 'enabled' not 'is_enabled') ============
+        // ============ TRIGGERS ============
         case "getTriggers": {
           const guildId = params?.guildId || "1234567890123456789";
           const gid = BigInt(guildId);
@@ -252,8 +309,9 @@ Deno.serve(async (req) => {
         case "getInfoTopics": {
           const { guildId = "1234567890123456789", category } = params || {};
           const gid = BigInt(guildId);
+          let rows;
           if (category) {
-            result = await sql`
+            rows = await sql`
               SELECT id, guild_id::text as guild_id, section as category,
                 name as title, embed_description as content, subcategory as section,
                 views as view_count, 'bot' as created_by, created_at, updated_at
@@ -261,7 +319,7 @@ Deno.serve(async (req) => {
               ORDER BY created_at DESC
             `;
           } else {
-            result = await sql`
+            rows = await sql`
               SELECT id, guild_id::text as guild_id, section as category,
                 name as title, embed_description as content, subcategory as section,
                 views as view_count, 'bot' as created_by, created_at, updated_at
@@ -269,11 +327,11 @@ Deno.serve(async (req) => {
               ORDER BY created_at DESC
             `;
           }
-          result = (result as any[]).map((r: any) => ({ ...r, id: String(r.id), content: r.content || '' }));
+          result = rows.map((r: any) => ({ ...r, id: String(r.id), content: r.content || '' }));
           break;
         }
 
-        // ============ ACTIVITY ANALYTICS (from messages table) ============
+        // ============ ACTIVITY ANALYTICS ============
         case "getActivityAnalytics": {
           const { guildId = "1234567890123456789", days = 7 } = params || {};
           const gid = BigInt(guildId);
@@ -286,7 +344,7 @@ Deno.serve(async (req) => {
           break;
         }
 
-        // ============ TOP CHANNELS (from messages) ============
+        // ============ TOP CHANNELS ============
         case "getTopChannels": {
           const { guildId = "1234567890123456789", limit = 5 } = params || {};
           const gid = BigInt(guildId);
@@ -301,14 +359,14 @@ Deno.serve(async (req) => {
           break;
         }
 
-        // ============ AUDIT LOG (from mod_actions) ============
+        // ============ AUDIT LOG ============
         case "getAuditLogs": {
           const { guildId = "1234567890123456789", severity, search, limit = 50 } = params || {};
           const gid = BigInt(guildId);
-          let query;
+          let rows;
           if (search) {
             const searchPattern = "%" + search + "%";
-            query = await sql`
+            rows = await sql`
               SELECT id, guild_id::text as guild_id, action_type as action,
                 mod_id::text as username, mod_id::text as user_id,
                 COALESCE(reason, '') as details,
@@ -324,7 +382,7 @@ Deno.serve(async (req) => {
               ORDER BY timestamp DESC LIMIT ${limit}
             `;
           } else {
-            query = await sql`
+            rows = await sql`
               SELECT id, guild_id::text as guild_id, action_type as action,
                 mod_id::text as username, mod_id::text as user_id,
                 COALESCE(reason, '') as details,
@@ -339,15 +397,15 @@ Deno.serve(async (req) => {
               ORDER BY timestamp DESC LIMIT ${limit}
             `;
           }
-          result = query;
+          let mapped = rows.map((r: any) => ({ ...r, id: String(r.id) }));
           if (severity && severity !== 'all') {
-            result = (result as any[]).filter((r: any) => r.severity === severity);
+            mapped = mapped.filter((r: any) => r.severity === severity);
           }
-          result = (result as any[]).map((r: any) => ({ ...r, id: String(r.id) }));
+          result = mapped;
           break;
         }
 
-        // ============ BOT SETTINGS (from guild_config) ============
+        // ============ BOT SETTINGS ============
         case "getBotSettings": {
           const guildId = params?.guildId || "1234567890123456789";
           const gid = BigInt(guildId);
@@ -393,25 +451,165 @@ Deno.serve(async (req) => {
           break;
         }
 
-        // ============ TABLES THAT DON'T EXIST YET - Return empty ============
-        case "getTickets":
-        case "getReactionRoles":
-        case "getCustomCommands":
-        case "getTicketPanels": {
-          result = [];
+        // ============ TICKETS ============
+        case "getTickets": {
+          await ensureTables(sql);
+          const { guildId = "1234567890123456789", status, priority } = params || {};
+          const gid = BigInt(guildId);
+          let rows;
+          if (status && priority) {
+            rows = await sql`SELECT * FROM tickets WHERE guild_id = ${gid} AND status = ${status} AND priority = ${priority} ORDER BY created_at DESC`;
+          } else if (status) {
+            rows = await sql`SELECT * FROM tickets WHERE guild_id = ${gid} AND status = ${status} ORDER BY created_at DESC`;
+          } else if (priority) {
+            rows = await sql`SELECT * FROM tickets WHERE guild_id = ${gid} AND priority = ${priority} ORDER BY created_at DESC`;
+          } else {
+            rows = await sql`SELECT * FROM tickets WHERE guild_id = ${gid} ORDER BY created_at DESC`;
+          }
+          result = rows.map((r: any) => ({ ...r, id: String(r.id), guild_id: String(r.guild_id) }));
           break;
         }
 
-        case "claimTicket":
-        case "closeTicket":
-        case "createReactionRole":
-        case "deleteReactionRole":
-        case "createCustomCommand":
-        case "updateCustomCommand":
-        case "deleteCustomCommand":
-        case "createTicketPanel":
+        case "claimTicket": {
+          await ensureTables(sql);
+          const { id, userId } = params || {};
+          const rows = await sql`
+            UPDATE tickets SET status = 'in_progress', claimed_by = ${userId}, updated_at = NOW()
+            WHERE id = ${Number(id)} RETURNING *
+          `;
+          result = rows[0] ? { ...rows[0], id: String(rows[0].id), guild_id: String(rows[0].guild_id) } : null;
+          break;
+        }
+
+        case "closeTicket": {
+          await ensureTables(sql);
+          const { id } = params || {};
+          const rows = await sql`
+            UPDATE tickets SET status = 'closed', updated_at = NOW()
+            WHERE id = ${Number(id)} RETURNING *
+          `;
+          result = rows[0] ? { ...rows[0], id: String(rows[0].id), guild_id: String(rows[0].guild_id) } : null;
+          break;
+        }
+
+        case "createTicket": {
+          await ensureTables(sql);
+          const { ticket, guildId = "1234567890123456789" } = params || {};
+          const gid = BigInt(guildId);
+          const rows = await sql`
+            INSERT INTO tickets (guild_id, title, user_id, username, status, priority, category)
+            VALUES (${gid}, ${ticket.title}, ${ticket.user_id || 'dashboard'}, ${ticket.username || 'Dashboard User'}, ${ticket.status || 'open'}, ${ticket.priority || 'medium'}, ${ticket.category || 'general'})
+            RETURNING *
+          `;
+          result = { ...rows[0], id: String(rows[0].id), guild_id: String(rows[0].guild_id) };
+          break;
+        }
+
+        // ============ REACTION ROLES ============
+        case "getReactionRoles": {
+          await ensureTables(sql);
+          const guildId = params?.guildId || "1234567890123456789";
+          const gid = BigInt(guildId);
+          const rows = await sql`SELECT * FROM reaction_roles WHERE guild_id = ${gid} ORDER BY created_at DESC`;
+          result = rows.map((r: any) => ({ ...r, id: String(r.id), guild_id: String(r.guild_id) }));
+          break;
+        }
+
+        case "createReactionRole": {
+          await ensureTables(sql);
+          const { role, guildId = "1234567890123456789" } = params || {};
+          const gid = BigInt(guildId);
+          const rows = await sql`
+            INSERT INTO reaction_roles (guild_id, message_id, channel_id, emoji, role_id, role_name, type, created_by)
+            VALUES (${gid}, ${role.message_id}, ${role.channel_id}, ${role.emoji}, ${role.role_id}, ${role.role_name}, ${role.type || 'reaction'}, ${role.created_by || 'dashboard'})
+            RETURNING *
+          `;
+          result = { ...rows[0], id: String(rows[0].id), guild_id: String(rows[0].guild_id) };
+          break;
+        }
+
+        case "deleteReactionRole": {
+          await ensureTables(sql);
+          await sql`DELETE FROM reaction_roles WHERE id = ${Number(params.id)}`;
+          result = { success: true };
+          break;
+        }
+
+        // ============ CUSTOM COMMANDS ============
+        case "getCustomCommands": {
+          await ensureTables(sql);
+          const guildId = params?.guildId || "1234567890123456789";
+          const gid = BigInt(guildId);
+          const rows = await sql`SELECT * FROM custom_commands WHERE guild_id = ${gid} ORDER BY created_at DESC`;
+          result = rows.map((r: any) => ({ ...r, id: String(r.id), guild_id: String(r.guild_id) }));
+          break;
+        }
+
+        case "createCustomCommand": {
+          await ensureTables(sql);
+          const { command, guildId = "1234567890123456789" } = params || {};
+          const gid = BigInt(guildId);
+          const rows = await sql`
+            INSERT INTO custom_commands (guild_id, name, description, response, permission_level, is_enabled, cooldown_seconds, created_by)
+            VALUES (${gid}, ${command.name}, ${command.description || null}, ${command.response}, ${command.permission_level || 'everyone'}, ${command.is_enabled !== false}, ${command.cooldown_seconds || 3}, ${command.created_by || 'dashboard'})
+            RETURNING *
+          `;
+          result = { ...rows[0], id: String(rows[0].id), guild_id: String(rows[0].guild_id) };
+          break;
+        }
+
+        case "updateCustomCommand": {
+          await ensureTables(sql);
+          const { id, updates } = params || {};
+          const rows = await sql`
+            UPDATE custom_commands SET
+              name = COALESCE(${updates.name || null}, name),
+              description = COALESCE(${updates.description || null}, description),
+              response = COALESCE(${updates.response || null}, response),
+              permission_level = COALESCE(${updates.permission_level || null}, permission_level),
+              is_enabled = COALESCE(${updates.is_enabled ?? null}, is_enabled),
+              cooldown_seconds = COALESCE(${updates.cooldown_seconds ?? null}, cooldown_seconds),
+              updated_at = NOW()
+            WHERE id = ${Number(id)} RETURNING *
+          `;
+          result = rows[0] ? { ...rows[0], id: String(rows[0].id), guild_id: String(rows[0].guild_id) } : null;
+          break;
+        }
+
+        case "deleteCustomCommand": {
+          await ensureTables(sql);
+          await sql`DELETE FROM custom_commands WHERE id = ${Number(params.id)}`;
+          result = { success: true };
+          break;
+        }
+
+        // ============ TICKET PANELS ============
+        case "getTicketPanels": {
+          await ensureTables(sql);
+          const guildId = params?.guildId || "1234567890123456789";
+          const gid = BigInt(guildId);
+          const rows = await sql`SELECT * FROM ticket_panels WHERE guild_id = ${gid} ORDER BY created_at DESC`;
+          result = rows.map((r: any) => ({ ...r, id: String(r.id), guild_id: String(r.guild_id) }));
+          break;
+        }
+
+        case "createTicketPanel": {
+          await ensureTables(sql);
+          const { panel, guildId = "1234567890123456789" } = params || {};
+          const gid = BigInt(guildId);
+          const rows = await sql`
+            INSERT INTO ticket_panels (guild_id, name, channel_id, category_id, message, button_label, button_color, created_by)
+            VALUES (${gid}, ${panel.name}, ${panel.channel_id}, ${panel.category_id || null}, ${panel.message}, ${panel.button_label || 'Open Ticket'}, ${panel.button_color || 'primary'}, ${panel.created_by || 'dashboard'})
+            RETURNING *
+          `;
+          result = { ...rows[0], id: String(rows[0].id), guild_id: String(rows[0].guild_id) };
+          break;
+        }
+
         case "deleteTicketPanel": {
-          result = { success: false, message: "Table not yet created in NeonDB" };
+          await ensureTables(sql);
+          await sql`DELETE FROM ticket_panels WHERE id = ${Number(params.id)}`;
+          result = { success: true };
           break;
         }
 

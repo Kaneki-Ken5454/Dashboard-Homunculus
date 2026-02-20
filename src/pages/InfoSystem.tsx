@@ -9,9 +9,9 @@ import { toast } from "@/components/ui/sonner";
 const categoryIcons = { common: FileText, general: Users, staff: Shield };
 
 export default function InfoSystem() {
-  const { data: commonTopics, isLoading: commonLoading } = useInfoTopics(undefined, 'common');
-  const { data: generalTopics, isLoading: generalLoading } = useInfoTopics(undefined, 'general');
-  const { data: staffTopics, isLoading: staffLoading } = useInfoTopics(undefined, 'staff');
+  const { data: commonTopics, isLoading: commonLoading } = useInfoTopics('common');
+  const { data: generalTopics, isLoading: generalLoading } = useInfoTopics('general');
+  const { data: staffTopics, isLoading: staffLoading } = useInfoTopics('staff');
 
   const categories = [
     { value: 'common', label: 'Common', Icon: FileText, topics: commonTopics, loading: commonLoading },

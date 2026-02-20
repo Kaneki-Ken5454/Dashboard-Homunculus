@@ -11,7 +11,6 @@ export default function Audit() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
   const { data: auditLogs, isLoading } = useAuditLogs(
-    undefined,
     filter !== 'all' ? filter : undefined,
     debouncedSearch || undefined
   );
