@@ -1,4 +1,0 @@
-project_id = "qmcsjzvkcwxbyvwkbrty"
-
-[functions.neon-query]
-verify_jwt = false

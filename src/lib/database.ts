@@ -1,8 +1,3 @@
-const SUPABASE_PROJECT_ID = import.meta.env.VITE_SUPABASE_PROJECT_ID;
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-
-const EDGE_FUNCTION_URL = `https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/neon-query`;
-
 export interface Member {
   id: string;
   guild_id: string;
@@ -161,20 +156,14 @@ export interface GuildStats {
   weeklyActivity: number;
 }
 
-async function neonQuery<T = any>(action: string, params?: any): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'apikey': SUPABASE_KEY,
-    'Authorization': `Bearer ${SUPABASE_KEY}`,
-  };
-
-  const res = await fetch(EDGE_FUNCTION_URL, {
+async function apiQuery<T = any>(action: string, params?: any): Promise<T> {
+  const res = await fetch('/api/neon-query', {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, params }),
   });
   const data = await res.json();
-  if (!res.ok || data?.error) throw new Error(data?.error || 'Edge function error');
+  if (!res.ok || data?.error) throw new Error(data?.error || 'API error');
   return data?.data as T;
 }
 
@@ -182,59 +171,59 @@ const DEFAULT_GUILD_ID = '1234567890123456789';
 
 export const db = {
   async inspectSchema() {
-    return neonQuery('inspectSchema');
+    return apiQuery('inspectSchema');
   },
 
   async getGuildStats(guildId: string = DEFAULT_GUILD_ID): Promise<GuildStats> {
-    return neonQuery('getGuildStats', { guildId });
+    return apiQuery('getGuildStats', { guildId });
   },
 
   async getTopMembers(guildId: string = DEFAULT_GUILD_ID, limit = 10): Promise<Member[]> {
-    return neonQuery('getTopMembers', { guildId, limit });
+    return apiQuery('getTopMembers', { guildId, limit });
   },
 
   async getActiveVotes(guildId: string = DEFAULT_GUILD_ID): Promise<Vote[]> {
-    return neonQuery('getActiveVotes', { guildId });
+    return apiQuery('getActiveVotes', { guildId });
   },
 
   async getAllVotes(guildId: string = DEFAULT_GUILD_ID): Promise<Vote[]> {
-    return neonQuery('getAllVotes', { guildId });
+    return apiQuery('getAllVotes', { guildId });
   },
 
   async getEmbeds(guildId: string = DEFAULT_GUILD_ID): Promise<Embed[]> {
-    return neonQuery('getEmbeds', { guildId });
+    return apiQuery('getEmbeds', { guildId });
   },
 
   async createEmbed(embed: Partial<Embed>, guildId: string = DEFAULT_GUILD_ID): Promise<Embed> {
-    return neonQuery('createEmbed', { embed, guildId });
+    return apiQuery('createEmbed', { embed, guildId });
   },
 
   async deleteEmbed(id: string): Promise<void> {
-    await neonQuery('deleteEmbed', { id });
+    await apiQuery('deleteEmbed', { id });
   },
 
   async getTriggers(guildId: string = DEFAULT_GUILD_ID): Promise<Trigger[]> {
-    return neonQuery('getTriggers', { guildId });
+    return apiQuery('getTriggers', { guildId });
   },
 
   async createTrigger(trigger: Partial<Trigger>, guildId: string = DEFAULT_GUILD_ID): Promise<Trigger> {
-    return neonQuery('createTrigger', { trigger, guildId });
+    return apiQuery('createTrigger', { trigger, guildId });
   },
 
   async updateTrigger(id: string, updates: Partial<Trigger>): Promise<Trigger> {
-    return neonQuery('updateTrigger', { id, updates });
+    return apiQuery('updateTrigger', { id, updates });
   },
 
   async deleteTrigger(id: string): Promise<void> {
-    await neonQuery('deleteTrigger', { id });
+    await apiQuery('deleteTrigger', { id });
   },
 
   async getInfoTopics(guildId: string = DEFAULT_GUILD_ID, category?: string): Promise<InfoTopic[]> {
-    return neonQuery('getInfoTopics', { guildId, category });
+    return apiQuery('getInfoTopics', { guildId, category });
   },
 
   async getActivityAnalytics(guildId: string = DEFAULT_GUILD_ID, days = 7) {
-    const raw = await neonQuery<any[]>('getActivityAnalytics', { guildId, days });
+    const raw = await apiQuery<any[]>('getActivityAnalytics', { guildId, days });
     const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const activityByDay: Record<string, { messages: number; votes: number }> = {};
     for (let i = 0; i < days; i++) {
@@ -252,7 +241,7 @@ export const db = {
   },
 
   async getTopChannels(guildId: string = DEFAULT_GUILD_ID, limit = 5) {
-    const raw = await neonQuery<any[]>('getTopChannels', { guildId, limit });
+    const raw = await apiQuery<any[]>('getTopChannels', { guildId, limit });
     if (!raw || raw.length === 0) return [];
     const maxMessages = raw[0]?.message_count || 1;
     return raw.map((ch: any) => ({
@@ -263,66 +252,70 @@ export const db = {
   },
 
   async getTickets(guildId: string = DEFAULT_GUILD_ID, status?: string, priority?: string): Promise<TicketItem[]> {
-    return neonQuery('getTickets', { guildId, status, priority });
+    return apiQuery('getTickets', { guildId, status, priority });
   },
 
   async claimTicket(id: string, userId: string): Promise<TicketItem> {
-    return neonQuery('claimTicket', { id, userId });
+    return apiQuery('claimTicket', { id, userId });
   },
 
   async closeTicket(id: string): Promise<TicketItem> {
-    return neonQuery('closeTicket', { id });
+    return apiQuery('closeTicket', { id });
   },
 
   async getAuditLogs(guildId: string = DEFAULT_GUILD_ID, severity?: string, search?: string, limit = 50): Promise<AuditLogEntry[]> {
-    return neonQuery('getAuditLogs', { guildId, severity, search, limit });
+    return apiQuery('getAuditLogs', { guildId, severity, search, limit });
   },
 
   async getBotSettings(guildId: string = DEFAULT_GUILD_ID): Promise<GuildSettings | null> {
-    return neonQuery('getBotSettings', { guildId });
+    return apiQuery('getBotSettings', { guildId });
   },
 
   async updateBotSettings(settings: Partial<GuildSettings>, guildId: string = DEFAULT_GUILD_ID): Promise<GuildSettings> {
-    return neonQuery('updateBotSettings', { settings, guildId });
+    return apiQuery('updateBotSettings', { settings, guildId });
   },
 
   async getReactionRoles(guildId: string = DEFAULT_GUILD_ID): Promise<ReactionRole[]> {
-    return neonQuery('getReactionRoles', { guildId });
+    return apiQuery('getReactionRoles', { guildId });
   },
 
   async createReactionRole(role: Partial<ReactionRole>, guildId: string = DEFAULT_GUILD_ID): Promise<ReactionRole> {
-    return neonQuery('createReactionRole', { role, guildId });
+    return apiQuery('createReactionRole', { role, guildId });
   },
 
   async deleteReactionRole(id: string): Promise<void> {
-    await neonQuery('deleteReactionRole', { id });
+    await apiQuery('deleteReactionRole', { id });
   },
 
   async getCustomCommands(guildId: string = DEFAULT_GUILD_ID): Promise<CustomCommand[]> {
-    return neonQuery('getCustomCommands', { guildId });
+    return apiQuery('getCustomCommands', { guildId });
   },
 
   async createCustomCommand(command: Partial<CustomCommand>, guildId: string = DEFAULT_GUILD_ID): Promise<CustomCommand> {
-    return neonQuery('createCustomCommand', { command, guildId });
+    return apiQuery('createCustomCommand', { command, guildId });
   },
 
   async updateCustomCommand(id: string, updates: Partial<CustomCommand>): Promise<CustomCommand> {
-    return neonQuery('updateCustomCommand', { id, updates });
+    return apiQuery('updateCustomCommand', { id, updates });
   },
 
   async deleteCustomCommand(id: string): Promise<void> {
-    await neonQuery('deleteCustomCommand', { id });
+    await apiQuery('deleteCustomCommand', { id });
   },
 
   async getTicketPanels(guildId: string = DEFAULT_GUILD_ID): Promise<TicketPanel[]> {
-    return neonQuery('getTicketPanels', { guildId });
+    return apiQuery('getTicketPanels', { guildId });
   },
 
   async createTicketPanel(panel: Partial<TicketPanel>, guildId: string = DEFAULT_GUILD_ID): Promise<TicketPanel> {
-    return neonQuery('createTicketPanel', { panel, guildId });
+    return apiQuery('createTicketPanel', { panel, guildId });
   },
 
   async deleteTicketPanel(id: string): Promise<void> {
-    await neonQuery('deleteTicketPanel', { id });
+    await apiQuery('deleteTicketPanel', { id });
+  },
+
+  async createTicket(ticket: any, guildId: string = DEFAULT_GUILD_ID): Promise<TicketItem> {
+    return apiQuery('createTicket', { ticket, guildId });
   },
 };

@@ -9,7 +9,7 @@ const prisma = new PrismaClient();
 dotenv.config();
 
 const app = express();
-const port = Number(process.env.PORT || process.env.BACKEND_PORT || 5000);
+const port = Number(process.env.BACKEND_PORT || 3001);
 const defaultGuildId = process.env.VITE_DISCORD_GUILD_ID || '1234567890123456789';
 const hardcodedFallbackGuildId = '1234567890123456789';
 let autoDetectedGuildId: string | null = null;
@@ -237,7 +237,6 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
         SELECT COUNT(*)::bigint AS count
         FROM votes
         WHERE guild_id = ${BigInt(guildId)}
-          AND is_active = TRUE
           AND end_time > NOW()
       `;
       const [messagesRow] = await prisma.$queryRaw<Array<{ count: bigint }>>`
@@ -274,11 +273,11 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
           joined_at,
           last_active,
           message_count,
-          vote_count,
-          role_ids
+          0 as vote_count,
+          ARRAY[]::text[] as role_ids
         FROM guild_members
         WHERE guild_id = ${guildId}
-        ORDER BY message_count DESC, vote_count DESC, last_active DESC
+        ORDER BY message_count DESC, last_active DESC
         LIMIT ${limit}
       `;
     }
@@ -290,19 +289,18 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
           id,
           guild_id,
           question,
-          description,
+          '' as description,
           options,
-          created_by,
-          channel_id,
-          message_id,
+          '' as created_by,
+          channel_id::text as channel_id,
+          '' as message_id,
           start_time,
           end_time,
-          is_active,
-          total_votes,
+          true as is_active,
+          0 as total_votes,
           created_at
         FROM votes
-        WHERE guild_id = ${guildId}
-          AND is_active = TRUE
+        WHERE guild_id = ${BigInt(guildId)}
           AND end_time > NOW()
         ORDER BY created_at DESC
       `;
@@ -315,18 +313,18 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
           id,
           guild_id,
           question,
-          description,
+          '' as description,
           options,
-          created_by,
-          channel_id,
-          message_id,
+          '' as created_by,
+          channel_id::text as channel_id,
+          '' as message_id,
           start_time,
           end_time,
-          is_active,
-          total_votes,
+          (end_time > NOW()) as is_active,
+          0 as total_votes,
           created_at
         FROM votes
-        WHERE guild_id = ${guildId}
+        WHERE guild_id = ${BigInt(guildId)}
         ORDER BY created_at DESC
       `;
       return rows.map((vote) => ({
@@ -529,10 +527,9 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
       const guildId = getGuildId(params);
       const limit = Math.max(1, Math.min(25, toInt(params?.limit, 5)));
       return prisma.$queryRaw<Array<{ channel_id: string; message_count: number }>>`
-        SELECT channel_id, COUNT(*)::int AS message_count
-        FROM audit_logs
-        WHERE guild_id = ${guildId}
-          AND action_type = 'message'
+        SELECT channel_id::text as channel_id, COUNT(*)::int AS message_count
+        FROM messages
+        WHERE guild_id = ${BigInt(guildId)}
           AND channel_id IS NOT NULL
         GROUP BY channel_id
         ORDER BY message_count DESC
@@ -543,7 +540,8 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
     case 'getTickets': {
       const guildId = getGuildId(params);
       const statusFilter = params?.status ? String(params.status) : undefined;
-      const priorityFilter = params?.priority ? String(params.priority) : undefined;.TicketWhereInput = { guildId };
+      const priorityFilter = params?.priority ? String(params.priority) : undefined;
+      const where: any = { guildId };
 
       if (statusFilter === 'in_progress') where.status = { in: ['in_progress', 'claimed'] };
       else if (statusFilter === 'closed') where.status = { in: ['closed', 'deleted'] };
@@ -976,11 +974,11 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
           joined_at,
           last_active,
           message_count,
-          vote_count,
-          role_ids
+          0 as vote_count,
+          ARRAY[]::text[] as role_ids
         FROM guild_members
         WHERE guild_id = ${guildId}
-        ORDER BY message_count DESC, vote_count DESC, last_active DESC
+        ORDER BY message_count DESC, last_active DESC
         LIMIT ${limit}
       `;
     }
@@ -992,19 +990,18 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
           id,
           guild_id,
           question,
-          description,
+          '' as description,
           options,
-          created_by,
-          channel_id,
-          message_id,
+          '' as created_by,
+          channel_id::text as channel_id,
+          '' as message_id,
           start_time,
           end_time,
-          is_active,
-          total_votes,
+          true as is_active,
+          0 as total_votes,
           created_at
         FROM votes
-        WHERE guild_id = ${guildId}
-          AND is_active = TRUE
+        WHERE guild_id = ${BigInt(guildId)}
           AND end_time > NOW()
         ORDER BY created_at DESC
       `;
@@ -1017,18 +1014,18 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
           id,
           guild_id,
           question,
-          description,
+          '' as description,
           options,
-          created_by,
-          channel_id,
-          message_id,
+          '' as created_by,
+          channel_id::text as channel_id,
+          '' as message_id,
           start_time,
           end_time,
-          is_active,
-          total_votes,
+          (end_time > NOW()) as is_active,
+          0 as total_votes,
           created_at
         FROM votes
-        WHERE guild_id = ${guildId}
+        WHERE guild_id = ${BigInt(guildId)}
         ORDER BY created_at DESC
       `;
       return rows.map((vote) => ({
@@ -1266,10 +1263,9 @@ async function handleAction(action: string, params: Record<string, any> = {}): P
       const guildId = getGuildId(params);
       const limit = Math.max(1, Math.min(25, toInt(params?.limit, 5)));
       return prisma.$queryRaw<Array<{ channel_id: string; message_count: number }>>`
-        SELECT channel_id, COUNT(*)::int AS message_count
-        FROM audit_logs
-        WHERE guild_id = ${guildId}
-          AND action_type = 'message'
+        SELECT channel_id::text as channel_id, COUNT(*)::int AS message_count
+        FROM messages
+        WHERE guild_id = ${BigInt(guildId)}
           AND channel_id IS NOT NULL
         GROUP BY channel_id
         ORDER BY message_count DESC
