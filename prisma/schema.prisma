@@ -1,6 +1,3 @@
-// Prisma Schema for Aeon Discord Management System
-// Database: NeonDB (PostgreSQL)
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,261 +7,215 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ============================================
-// Module 1: Configuration & Granular Permissions
-// ============================================
-
 model GuildSettings {
-  id                String   @id @default(cuid())
-  guildId           String   @unique @map("guild_id")
-  prefix            String   @default("!")
-  useSlashCommands  Boolean  @default(true) @map("use_slash_commands")
-  
-  // Module Toggles
-  moderationEnabled Boolean  @default(true) @map("moderation_enabled")
-  levellingEnabled  Boolean  @default(true) @map("levelling_enabled")
-  funEnabled        Boolean  @default(true) @map("fun_enabled")
-  ticketsEnabled    Boolean  @default(true) @map("tickets_enabled")
-  customCommandsEnabled Boolean @default(true) @map("custom_commands_enabled")
-  autoRespondersEnabled Boolean @default(true) @map("auto_responders_enabled")
-  
-  // Rate Limiting
-  globalCooldown    Int      @default(1000) @map("global_cooldown") // milliseconds
-  commandCooldown   Json?    @map("command_cooldown") // { "command": cooldown_ms }
-  
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
-  
-  // Relations
-  rolePermissions   RolePermission[]
-  commandCooldowns  CommandCooldown[]
-  
+  id                    String            @id @default(cuid())
+  guildId               String            @unique @map("guild_id")
+  prefix                String            @default("!")
+  useSlashCommands      Boolean           @default(true) @map("use_slash_commands")
+  moderationEnabled     Boolean           @default(true) @map("moderation_enabled")
+  levellingEnabled      Boolean           @default(true) @map("levelling_enabled")
+  funEnabled            Boolean           @default(true) @map("fun_enabled")
+  ticketsEnabled        Boolean           @default(true) @map("tickets_enabled")
+  customCommandsEnabled Boolean           @default(true) @map("custom_commands_enabled")
+  autoRespondersEnabled Boolean           @default(true) @map("auto_responders_enabled")
+  globalCooldown        Int               @default(1000) @map("global_cooldown")
+  commandCooldown       Json?             @map("command_cooldown")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+  commandCooldowns      CommandCooldown[]
+  rolePermissions       RolePermission[]
+
   @@index([guildId])
   @@map("guild_settings")
 }
 
 model RolePermission {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  roleId        String   @map("role_id")
-  commandGroup  String   @map("command_group") // e.g., "admin", "moderator", "trial-mod"
-  permissions   Json     // Array of permission strings
-  
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  
-  guildSettings GuildSettings? @relation(fields: [guildId], references: [guildId])
-  
+  id            String        @id @default(cuid())
+  guildId       String        @map("guild_id")
+  roleId        String        @map("role_id")
+  commandGroup  String        @map("command_group")
+  permissions   Json
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  guildSettings GuildSettings @relation(fields: [guildId], references: [guildId])
+
   @@unique([guildId, roleId, commandGroup])
   @@index([guildId, roleId])
   @@map("role_permissions")
 }
 
 model CommandCooldown {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  commandName   String   @map("command_name")
-  cooldownMs    Int      @map("cooldown_ms")
-  
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  
-  guildSettings GuildSettings? @relation(fields: [guildId], references: [guildId])
-  
+  id            String        @id @default(cuid())
+  guildId       String        @map("guild_id")
+  commandName   String        @map("command_name")
+  cooldownMs    Int           @map("cooldown_ms")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  guildSettings GuildSettings @relation(fields: [guildId], references: [guildId])
+
   @@unique([guildId, commandName])
   @@index([guildId])
   @@map("command_cooldowns")
 }
 
-// ============================================
-// Module 2: Visual Interaction Builder
-// ============================================
-
 model MessageTemplate {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  name          String
-  content       String?  // Text content
-  embedData     Json?    @map("embed_data") // Discord embed structure
-  components    Json?    // Buttons, Select Menus, etc.
-  reactions     Json?    // Reaction roles configuration
-  
-  createdBy     String   @map("created_by")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  
+  id         String   @id @default(cuid())
+  guildId    String   @map("guild_id")
+  name       String
+  content    String?
+  embedData  Json?    @map("embed_data")
+  components Json?
+  reactions  Json?
+  createdBy  String   @map("created_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
   @@index([guildId])
   @@map("message_templates")
 }
 
 model ReactionRole {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  messageId     String   @map("message_id")
-  channelId     String   @map("channel_id")
-  emoji         String   // Unicode or custom emoji ID
-  roleId        String   @map("role_id")
-  isReaction    Boolean  @default(true) @map("is_reaction") // true = reaction, false = button
-  
-  createdAt     DateTime @default(now()) @map("created_at")
-  
+  id         String   @id @default(cuid())
+  guildId    String   @map("guild_id")
+  messageId  String   @map("message_id")
+  channelId  String   @map("channel_id")
+  emoji      String
+  roleId     String   @map("role_id")
+  roleName   String?  @map("role_name")
+  createdBy  String?  @map("created_by")
+  isReaction Boolean  @default(true) @map("is_reaction")
+  createdAt  DateTime @default(now()) @map("created_at")
+
   @@unique([messageId, emoji])
   @@index([guildId, messageId])
   @@map("reaction_roles")
 }
 
 model ButtonRole {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  messageId     String   @map("message_id")
-  channelId     String   @map("channel_id")
-  buttonId      String   @map("button_id")
-  roleId        String   @map("role_id")
-  buttonStyle   String   @default("PRIMARY") @map("button_style") // PRIMARY, SECONDARY, SUCCESS, DANGER
-  buttonLabel   String?  @map("button_label")
-  buttonEmoji   String?  @map("button_emoji")
-  
-  createdAt     DateTime @default(now()) @map("created_at")
-  
+  id          String   @id @default(cuid())
+  guildId     String   @map("guild_id")
+  messageId   String   @map("message_id")
+  channelId   String   @map("channel_id")
+  buttonId    String   @map("button_id")
+  roleId      String   @map("role_id")
+  buttonStyle String   @default("PRIMARY") @map("button_style")
+  buttonLabel String?  @map("button_label")
+  buttonEmoji String?  @map("button_emoji")
+  createdAt   DateTime @default(now()) @map("created_at")
+
   @@unique([messageId, buttonId])
   @@index([guildId, messageId])
   @@map("button_roles")
 }
 
-// ============================================
-// Module 3: Custom Commands & Auto-Responders
-// ============================================
-
 model CustomCommand {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  trigger       String   // Command name or trigger text
-  response      String   // Response text (supports variables)
-  responseType  String   @default("text") @map("response_type") // text, embed, template
-  embedData     Json?    @map("embed_data")
-  components    Json?    // Buttons, select menus
-  
-  // Logic Engine Variables
-  variables     Json?    // Available variables: {user}, {server.name}, {channel}, etc.
-  
-  // Tag System
-  isTag         Boolean  @default(false) @map("is_tag")
-  tagCategory   String?  @map("tag_category")
-  
-  // Multi-page Menu Support
-  isMultiPage   Boolean  @default(false) @map("is_multi_page")
-  menuPages     Json?    @map("menu_pages") // Array of page objects
-  
-  isEnabled     Boolean  @default(true) @map("is_enabled")
-  usageCount    Int      @default(0) @map("usage_count")
-  
-  createdBy     String   @map("created_by")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  
+  id              String   @id @default(cuid())
+  guildId         String   @map("guild_id")
+  name            String?
+  trigger         String
+  description     String?
+  response        String
+  responseType    String   @default("text") @map("response_type")
+  permissionLevel String   @default("everyone") @map("permission_level")
+  cooldownSeconds Int      @default(0) @map("cooldown_seconds")
+  embedData       Json?    @map("embed_data")
+  components      Json?
+  variables       Json?
+  isTag           Boolean  @default(false) @map("is_tag")
+  tagCategory     String?  @map("tag_category")
+  isMultiPage     Boolean  @default(false) @map("is_multi_page")
+  menuPages       Json?    @map("menu_pages")
+  isEnabled       Boolean  @default(true) @map("is_enabled")
+  usageCount      Int      @default(0) @map("usage_count")
+  createdBy       String   @map("created_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
   @@unique([guildId, trigger])
   @@index([guildId, isTag])
   @@map("custom_commands")
 }
 
 model AutoResponder {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  triggerText   String   @map("trigger_text")
-  matchType     String   @map("match_type") // exact, contains, starts_with, ends_with, regex
-  response      String
-  responseType  String   @default("text") @map("response_type")
-  embedData     Json?    @map("embed_data")
-  
-  isEnabled     Boolean  @default(true) @map("is_enabled")
-  triggerCount  Int      @default(0) @map("trigger_count")
-  
-  createdBy     String   @map("created_by")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  
+  id           String   @id @default(cuid())
+  guildId      String   @map("guild_id")
+  triggerText  String   @map("trigger_text")
+  matchType    String   @map("match_type")
+  response     String
+  responseType String   @default("text") @map("response_type")
+  embedData    Json?    @map("embed_data")
+  isEnabled    Boolean  @default(true) @map("is_enabled")
+  triggerCount Int      @default(0) @map("trigger_count")
+  createdBy    String   @map("created_by")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
   @@index([guildId, isEnabled])
   @@map("auto_responders")
 }
 
-// ============================================
-// Module 4: Advanced Ticket System
-// ============================================
-
 model TicketPanel {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  name          String   // e.g., "Support", "Report", "Billing"
-  channelId     String?  @map("channel_id") // Where panel is posted
-  messageId     String?  @map("message_id")
-  
-  // Panel Configuration
-  title         String
-  description   String
-  embedData     Json?    @map("embed_data")
-  buttonLabel   String   @default("Create Ticket") @map("button_label")
-  buttonEmoji   String?  @map("button_emoji")
-  
-  // Category Configuration
-  categoryId    String?  @map("category_id") // Discord category for tickets
-  supportRoles  Json     @map("support_roles") // Array of role IDs
-  
-  isEnabled     Boolean  @default(true) @map("is_enabled")
-  
-  createdBy     String   @map("created_by")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  
-  tickets       Ticket[]
-  
+  id           String   @id @default(cuid())
+  guildId      String   @map("guild_id")
+  name         String
+  channelId    String?  @map("channel_id")
+  messageId    String?  @map("message_id")
+  message      String?
+  title        String
+  description  String
+  embedData    Json?    @map("embed_data")
+  buttonLabel  String   @default("Create Ticket") @map("button_label")
+  buttonColor  String   @default("primary") @map("button_color")
+  buttonEmoji  String?  @map("button_emoji")
+  categoryId   String?  @map("category_id")
+  supportRoles Json     @map("support_roles")
+  isEnabled    Boolean  @default(true) @map("is_enabled")
+  createdBy    String   @map("created_by")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  tickets      Ticket[]
+
   @@index([guildId])
   @@map("ticket_panels")
 }
 
 model Ticket {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  panelId       String   @map("panel_id")
-  channelId     String   @unique @map("channel_id")
-  userId        String   @map("user_id") // Ticket creator
-  assignedTo    String?  @map("assigned_to") // Staff member ID
-  status        String   @default("open") // open, claimed, closed, deleted
-  
-  // Transcript
-  transcriptUrl String?  @map("transcript_url")
-  transcriptHtml String? @db.Text @map("transcript_html")
-  
-  openedAt      DateTime @default(now()) @map("opened_at")
-  claimedAt     DateTime? @map("claimed_at")
-  closedAt      DateTime? @map("closed_at")
-  
-  panel         TicketPanel @relation(fields: [panelId], references: [id])
-  
+  id             String      @id @default(cuid())
+  guildId        String      @map("guild_id")
+  panelId        String      @map("panel_id")
+  channelId      String      @unique @map("channel_id")
+  userId         String      @map("user_id")
+  title          String      @default("Support Ticket")
+  username       String      @default("Unknown User")
+  priority       String      @default("medium")
+  category       String      @default("general")
+  messagesCount  Int         @default(0) @map("messages_count")
+  assignedTo     String?     @map("assigned_to")
+  status         String      @default("open")
+  transcriptUrl  String?     @map("transcript_url")
+  transcriptHtml String?     @map("transcript_html")
+  openedAt       DateTime    @default(now()) @map("opened_at")
+  claimedAt      DateTime?   @map("claimed_at")
+  closedAt       DateTime?   @map("closed_at")
+  panel          TicketPanel @relation(fields: [panelId], references: [id])
+
   @@index([guildId, status])
   @@index([userId])
   @@index([assignedTo])
   @@map("tickets")
 }
 
-// ============================================
-// Module 5: Audit Log & Timeline Analytics
-// ============================================
-
 model AuditLog {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  actionType    String   @map("action_type") // ban, kick, mute, role_add, role_remove, message_delete, etc.
-  userId        String?  @map("user_id") // Target user
-  moderatorId   String?  @map("moderator_id") // Who performed the action
-  botAction     Boolean  @default(false) @map("bot_action") // If action was performed by bot
-  
-  // Action Details
-  reason        String?
-  metadata      Json?    // Additional data (role IDs, channel IDs, etc.)
-  
-  // Timestamps
-  createdAt     DateTime @default(now()) @map("created_at")
-  
+  id          String   @id @default(cuid())
+  guildId     String   @map("guild_id")
+  actionType  String   @map("action_type")
+  userId      String?  @map("user_id")
+  moderatorId String?  @map("moderator_id")
+  botAction   Boolean  @default(false) @map("bot_action")
+  reason      String?
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
   @@index([guildId, actionType])
   @@index([guildId, userId])
   @@index([guildId, moderatorId])
@@ -273,10 +224,6 @@ model AuditLog {
   @@map("audit_logs")
 }
 
-// ============================================
-// Additional Supporting Tables
-// ============================================
-
 model GuildMember {
   id            String   @id @default(cuid())
   guildId       String   @map("guild_id")
@@ -284,15 +231,12 @@ model GuildMember {
   username      String
   discriminator String?
   avatarUrl     String?  @map("avatar_url")
-  
-  // Activity Tracking
   messageCount  Int      @default(0) @map("message_count")
   level         Int      @default(1)
   xp            Int      @default(0)
-  
   joinedAt      DateTime @default(now()) @map("joined_at")
   lastActive    DateTime @default(now()) @map("last_active")
-  
+
   @@unique([guildId, userId])
   @@index([guildId])
   @@index([guildId, messageCount])
@@ -300,14 +244,201 @@ model GuildMember {
 }
 
 model LevelReward {
-  id            String   @id @default(cuid())
-  guildId       String   @map("guild_id")
-  level         Int
-  roleId        String   @map("role_id")
-  
-  createdAt     DateTime @default(now()) @map("created_at")
-  
+  id        String   @id @default(cuid())
+  guildId   String   @map("guild_id")
+  level     Int
+  roleId    String   @map("role_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
   @@unique([guildId, level])
   @@index([guildId])
   @@map("level_rewards")
+}
+
+model InfoTopic {
+  id                Int      @id @default(autoincrement())
+  guildId           BigInt   @map("guild_id")
+  section           String   @default("common")
+  subcategory       String?  @default("General")
+  topic_id          String
+  name              String
+  embed_title       String?
+  embed_description String?
+  embed_color       String?  @default("#5865F2")
+  emoji             String?  @default("📄")
+  category_emoji_id String?
+  image             String?
+  thumbnail         String?
+  footer            String?
+  views             Int      @default(0)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([guildId, section, topic_id])
+  @@index([guildId, section], map: "idx_info_guild_section")
+  @@map("info_topics")
+}
+
+model BlacklistData {
+  id         Int    @id @default(autoincrement())
+  guildId    BigInt @unique @map("guild_id")
+  words      Json   @default("[]")
+  violations Json   @default("{}")
+
+  @@map("blacklist_data")
+}
+
+model Vote {
+  id             Int       @id @default(autoincrement())
+  vote_id        String?   @unique
+  guildId        BigInt?   @map("guild_id")
+  question       String?
+  options        Json      @default("[]")
+  channelId      BigInt?   @map("channel_id")
+  startTime      DateTime? @map("start_time") @db.Timestamptz(6)
+  endTime        DateTime? @map("end_time") @db.Timestamptz(6)
+  results_posted Boolean   @default(false)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([endTime], map: "idx_votes_end_time")
+  @@index([guildId], map: "idx_votes_guild")
+  @@index([guildId, endTime], map: "idx_votes_guild_end")
+  @@map("votes")
+}
+
+model VoteCast {
+  id        Int      @id @default(autoincrement())
+  voteId    String?  @map("vote_id")
+  userId    BigInt?  @map("user_id")
+  option    String?
+  weight    Int      @default(1)
+  timestamp DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([voteId], map: "idx_votes_cast_vote")
+  @@map("votes_cast")
+}
+
+model ScannerData {
+  id              Int     @id @default(autoincrement())
+  watched_pokemon Json    @default("[]")
+  source_channel  BigInt?
+  target_channel  BigInt?
+
+  @@map("scanner_data")
+}
+
+model Trigger {
+  id          Int      @id @default(autoincrement())
+  guildId     BigInt   @map("guild_id")
+  triggerText String   @map("trigger_text")
+  response    String
+  matchType   String   @default("contains") @map("match_type")
+  enabled     Boolean  @default(true)
+  use_count   Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([guildId, triggerText])
+  @@index([guildId], map: "idx_triggers_guild")
+  @@map("triggers")
+}
+
+model channels {
+  id            Int     @id @default(autoincrement())
+  guild_id      BigInt  @unique
+  blacklist_log BigInt?
+  message_log   BigInt?
+  role_log      BigInt?
+  channel_log   BigInt?
+  server_log    BigInt?
+}
+
+model embeds {
+  id         Int      @id @default(autoincrement())
+  guild_id   BigInt
+  name       String
+  embed_data Json     @default("{}")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model guild_config {
+  guild_id               BigInt  @id
+  modules_enabled        String?
+  mod_alerts_channel     BigInt?
+  rule_updates_channel   BigInt?
+  weekly_reports_channel BigInt?
+  conflict_threshold     Float?  @default(50) @db.Real
+  min_account_age_days   Int?    @default(7)
+  min_join_age_days      Int?    @default(1)
+}
+
+model messages {
+  id         Int      @id @default(autoincrement())
+  guild_id   BigInt?
+  channel_id BigInt?
+  user_id    BigInt?
+  sentiment  Float?   @db.Real
+  timestamp  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([guild_id, timestamp], map: "idx_messages_guild_time")
+  @@index([guild_id, timestamp], map: "idx_messages_guild_timestamp")
+  @@index([user_id], map: "idx_messages_user")
+}
+
+model mod_actions {
+  id          Int      @id @default(autoincrement())
+  guild_id    BigInt
+  mod_id      BigInt
+  action_type String
+  target_id   BigInt
+  reason      String?
+  timestamp   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([guild_id, timestamp], map: "idx_mod_actions_guild")
+}
+
+model pending_actions {
+  id          Int       @id @default(autoincrement())
+  type        String
+  payload     Json
+  status      String?   @default("pending")
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+  started_at  DateTime? @db.Timestamptz(6)
+  finished_at DateTime? @db.Timestamptz(6)
+  error       String?
+
+  @@index([status, created_at], map: "idx_actions_status")
+}
+
+model trust_scores {
+  user_id             BigInt
+  guild_id            BigInt
+  activity_score      Float?    @default(0.5) @db.Real
+  reputation_score    Float?    @default(0.5) @db.Real
+  helpful_votes       Int?      @default(0)
+  total_contributions Int?      @default(0)
+  last_updated        DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@id([user_id, guild_id])
+}
+
+model warns_data {
+  id       Int    @id @default(autoincrement())
+  guild_id BigInt
+  user_id  BigInt
+  warns    Json   @default("[]")
+
+  @@unique([guild_id, user_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model warn_data {
+  id           String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  guild_id     String
+  user_id      String
+  moderator_id String
+  reason       String?
+  severity     String
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
 }

@@ -1,5 +1,13 @@
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const LOCAL_API_BASE = (import.meta.env.VITE_DISCORD_BOT_API_URL || 'http://localhost:5000').replace(/\/$/, '');
+
+function hasPlaceholder(value?: string): boolean {
+  if (!value) return true;
+  return value.includes('your_project_id') || value.includes('your_anon_key');
+}
+
+const useSupabaseEdge = Boolean(SUPABASE_URL && SUPABASE_KEY && !hasPlaceholder(SUPABASE_URL) && !hasPlaceholder(SUPABASE_KEY));
 
 export interface Member {
   id: string;
@@ -160,14 +168,21 @@ export interface GuildStats {
 }
 
 async function neonQuery<T = any>(action: string, params?: any): Promise<T> {
-  const url = `${SUPABASE_URL}/functions/v1/neon-query`;
+  const url = useSupabaseEdge
+    ? `${SUPABASE_URL}/functions/v1/neon-query`
+    : `${LOCAL_API_BASE}/api/neon-query`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  if (useSupabaseEdge) {
+    headers.apikey = SUPABASE_KEY;
+    headers.Authorization = `Bearer ${SUPABASE_KEY}`;
+  }
+
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-    },
+    headers,
     body: JSON.stringify({ action, params }),
   });
   const data = await res.json();
