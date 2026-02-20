@@ -19,7 +19,7 @@ export default function Tickets() {
   const [panelMessage, setPanelMessage] = useState("");
   const [panelLabel, setPanelLabel] = useState("Open Ticket");
 
-  const { data: tickets, isLoading } = useTickets(undefined, statusFilter !== 'all' ? statusFilter : undefined, priorityFilter !== 'all' ? priorityFilter : undefined);
+  const { data: tickets, isLoading } = useTickets(statusFilter !== 'all' ? statusFilter : undefined, priorityFilter !== 'all' ? priorityFilter : undefined);
   const claimTicket = useClaimTicket();
   const closeTicket = useCloseTicket();
   const { data: panels, isLoading: panelsLoading } = useTicketPanels();

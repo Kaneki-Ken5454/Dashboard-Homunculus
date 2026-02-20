@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export default function ActiveUsers() {
-  const { data: topMembers, isLoading } = useTopMembers(undefined, 25);
+  const { data: topMembers, isLoading } = useTopMembers(25);
   const { data: stats } = useGuildStats();
 
   const topByMessages = [...(topMembers || [])].sort((a, b) => b.message_count - a.message_count).slice(0, 10);
