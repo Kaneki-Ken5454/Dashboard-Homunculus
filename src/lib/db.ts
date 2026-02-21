@@ -67,8 +67,15 @@ export interface WarnEntry {
 }
 
 export interface Vote {
-  id: number; vote_id?: string; guild_id?: string; question?: string;
-  options: unknown; end_time?: string; results_posted: boolean; created_at: string;
+  id: number; vote_id?: string; guild_id?: string; channel_id?: string;
+  question?: string; options: unknown; end_time?: string;
+  anonymous?: boolean; results_posted: boolean; created_at: string;
+}
+
+export interface Embed {
+  id: number; guild_id: string; name: string;
+  embed_data: Record<string, unknown>;
+  created_at: string; updated_at: string;
 }
 
 export interface InfoTopic {
@@ -146,7 +153,7 @@ export async function discoverAllGuildIds(): Promise<DiscoveredGuild[]> {
 export async function getDashboardStats(guildId: string) {
   const sql = getSql();
   // TEXT tables use direct string, BIGINT tables cast to bigint
-  const [members, commands, tickets, auditLogs, triggers, warns, autoResp, votes, topics] =
+  const [members, commands, tickets, auditLogs, triggers, warns, autoResp, votes, topics, embeds] =
     await Promise.all([
       sql`SELECT COUNT(*) as c FROM guild_members   WHERE guild_id = ${guildId}`.catch(() => [{ c: 0 }]),
       sql`SELECT COUNT(*) as c FROM custom_commands  WHERE guild_id = ${guildId}`.catch(() => [{ c: 0 }]),
@@ -157,12 +164,14 @@ export async function getDashboardStats(guildId: string) {
       sql`SELECT COUNT(*) as c FROM auto_responders   WHERE guild_id = ${guildId}`.catch(() => [{ c: 0 }]),
       sql`SELECT COUNT(*) as c FROM votes             WHERE guild_id = ${guildId}::bigint`.catch(() => [{ c: 0 }]),
       sql`SELECT COUNT(*) as c FROM info_topics       WHERE guild_id = ${guildId}::bigint`.catch(() => [{ c: 0 }]),
+      sql`SELECT COUNT(*) as c FROM embeds            WHERE guild_id = ${guildId}::bigint`.catch(() => [{ c: 0 }]),
     ]);
   const n = (r: unknown[]) => Number((r[0] as Record<string, unknown>)?.c ?? 0);
   return {
     memberCount: n(members), commandCount: n(commands), ticketCount: n(tickets),
     auditCount: n(auditLogs), triggerCount: n(triggers), warnCount: n(warns),
     autoRespCount: n(autoResp), voteCount: n(votes), topicCount: n(topics),
+    embedCount: n(embeds),
   };
 }
 
@@ -327,7 +336,7 @@ export async function deleteTrigger(id: number) {
   return sql`DELETE FROM triggers WHERE id = ${id}`;
 }
 
-// ── Tickets ────────────────────────────────────────────────────────────────────
+// ── Tickets ───��────────────────────────────────────────────────────────────────
 export async function getTickets(guildId: string): Promise<Ticket[]> {
   const sql = getSql();
   return (await sql`
@@ -385,17 +394,47 @@ export async function getVotes(guildId: string): Promise<Vote[]> {
   `.catch(() => [])) as Vote[];
 }
 
-export async function createVote(d: { guild_id: string; question: string; options: unknown }) {
+export async function createVote(d: { guild_id: string; question: string; options: unknown; channel_id?: string; anonymous?: boolean }) {
   const sql = getSql();
+  const channelId = d.channel_id ? Number(d.channel_id) : null;
   return sql`
-    INSERT INTO votes (guild_id, question, options, results_posted)
-    VALUES (${d.guild_id}::bigint, ${d.question}, ${JSON.stringify(d.options ?? [])}, false)
+    INSERT INTO votes (guild_id, channel_id, question, options, anonymous, results_posted)
+    VALUES (${d.guild_id}::bigint, ${channelId}, ${d.question}, ${JSON.stringify(d.options ?? [])}, ${d.anonymous ?? false}, false)
   `;
 }
 
 export async function deleteVote(id: number) {
   const sql = getSql();
   return sql`DELETE FROM votes WHERE id = ${id}`;
+}
+
+// ── Embeds (BIGINT guild_id) ───────────────────────────────────────────────────
+export async function getEmbeds(guildId: string): Promise<Embed[]> {
+  const sql = getSql();
+  return (await sql`
+    SELECT * FROM embeds WHERE guild_id = ${guildId}::bigint ORDER BY created_at DESC
+  `.catch(() => [])) as Embed[];
+}
+
+export async function createEmbed(d: { guild_id: string; name: string; embed_data: Record<string, unknown> }) {
+  const sql = getSql();
+  return sql`
+    INSERT INTO embeds (guild_id, name, embed_data)
+    VALUES (${d.guild_id}::bigint, ${d.name}, ${JSON.stringify(d.embed_data)})
+  `;
+}
+
+export async function updateEmbed(id: number, d: { name: string; embed_data: Record<string, unknown> }) {
+  const sql = getSql();
+  return sql`
+    UPDATE embeds SET name = ${d.name}, embed_data = ${JSON.stringify(d.embed_data)}, updated_at = now()
+    WHERE id = ${id}
+  `;
+}
+
+export async function deleteEmbed(id: number) {
+  const sql = getSql();
+  return sql`DELETE FROM embeds WHERE id = ${id}`;
 }
 
 // ── Info Topics (BIGINT guild_id) ──────────────────────────────────────────────
