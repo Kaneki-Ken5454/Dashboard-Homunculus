@@ -1,174 +1,117 @@
-import { motion } from "framer-motion";
-import { StatCard, PageHeader } from "@/components/DashboardCards";
-import {
-  LayoutDashboard,
-  Users,
-  Vote,
-  HeartPulse,
-  TrendingUp,
-  Shield,
-  Scale,
-  Activity,
-} from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
-import { useGuildStats, useActivityAnalytics, useTopChannels } from "@/hooks/use-database";
+import { useEffect, useState } from 'react';
+import { Users, Terminal, Ticket, Shield, Zap, AlertTriangle, BarChart2, MessageSquare } from 'lucide-react';
+import { getDashboardStats, getRecentActivity, type AuditLog } from '../lib/db';
+import Badge from '../components/Badge';
 
-const sentimentData = [
-  { time: "6am", score: 72 },
-  { time: "9am", score: 78 },
-  { time: "12pm", score: 85 },
-  { time: "3pm", score: 80 },
-  { time: "6pm", score: 88 },
-  { time: "9pm", score: 75 },
-  { time: "12am", score: 70 },
-];
+interface Props { guildId: string; }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload) return null;
-  return (
-    <div className="glass-card p-3 text-xs">
-      <p className="text-foreground font-medium mb-1">{label}</p>
-      {payload.map((p: any, i: number) => (
-        <p key={i} className="text-muted-foreground">
-          {p.name}: <span className="text-foreground font-mono">{p.value}</span>
-        </p>
-      ))}
+interface Stats {
+  memberCount: number; commandCount: number; ticketCount: number;
+  auditCount: number; triggerCount: number; warnCount: number;
+  autoRespCount: number; voteCount: number;
+}
+
+function fmt(n: number) { return n.toLocaleString(); }
+function timeAgo(d: string) {
+  const diff = Date.now() - new Date(d).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+export default function Overview({ guildId }: Props) {
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [activity, setActivity] = useState<AuditLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!guildId) return;
+    setLoading(true); setError('');
+    Promise.all([getDashboardStats(guildId), getRecentActivity(guildId)])
+      .then(([s, a]) => { setStats(s); setActivity(a); })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [guildId]);
+
+  const statCards = stats ? [
+    { label: 'Members', value: fmt(stats.memberCount), icon: Users, color: '#5865f2' },
+    { label: 'Commands', value: fmt(stats.commandCount), icon: Terminal, color: '#3ba55d' },
+    { label: 'Tickets', value: fmt(stats.ticketCount), icon: Ticket, color: '#faa81a' },
+    { label: 'Audit Logs', value: fmt(stats.auditCount), icon: Shield, color: '#9b59b6' },
+    { label: 'Triggers', value: fmt(stats.triggerCount), icon: Zap, color: '#e91e63' },
+    { label: 'Warns', value: fmt(stats.warnCount), icon: AlertTriangle, color: '#ed4245' },
+    { label: 'Auto Responses', value: fmt(stats.autoRespCount), icon: MessageSquare, color: '#1abc9c' },
+    { label: 'Votes', value: fmt(stats.voteCount), icon: BarChart2, color: '#f39c12' },
+  ] : [];
+
+  function actionVariant(type: string): 'danger' | 'warning' | 'success' | 'primary' | 'muted' {
+    if (type.includes('ban') || type.includes('kick')) return 'danger';
+    if (type.includes('warn') || type.includes('mute')) return 'warning';
+    if (type.includes('create') || type.includes('add')) return 'success';
+    return 'muted';
+  }
+
+  if (loading) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
+      <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
     </div>
   );
-};
 
-export default function Overview() {
-  const { data: stats, isLoading: statsLoading } = useGuildStats();
-  const { data: activityData, isLoading: activityLoading } = useActivityAnalytics();
-  const { data: topChannels, isLoading: channelsLoading } = useTopChannels();
+  if (error) return (
+    <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '16px 20px', color: 'var(--danger)', fontSize: 14 }}>
+      {error}
+    </div>
+  );
 
-  const governanceScore = stats ? Math.min(Math.round((stats.totalMembers / 30) + (stats.activeVotes * 5) + 50), 100) : 87;
-  const participation = stats && stats.totalMembers > 0 ? Math.round((stats.weeklyActivity / (stats.totalMembers * 7)) * 100) : 64;
-  const healthScore = stats ? Math.min(Math.round((stats.activeVotes * 10) + (participation * 0.5) + 50), 100) : 92;
-
-  // Don't show full loading screen - show dashboard with loading states for individual components
   return (
-    <div>
-      <PageHeader
-        title="Overview"
-        description="Governance health at a glance"
-        icon={LayoutDashboard}
-      />
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <StatCard
-          title="Governance Score"
-          value={statsLoading ? "..." : `${governanceScore.toFixed(1)}`}
-          icon={Shield}
-          variant="primary"
-          trend="+5.2%"
-          trendUp
-          delay={0}
-        />
-        <StatCard
-          title="Members"
-          value={statsLoading ? "..." : stats?.totalMembers.toLocaleString() || "0"}
-          icon={Users}
-          variant="success"
-          trend="+128"
-          trendUp
-          delay={0.05}
-        />
-        <StatCard
-          title="Active Votes"
-          value={statsLoading ? "..." : String(stats?.activeVotes || 0)}
-          icon={Vote}
-          variant="warning"
-          delay={0.1}
-        />
-        <StatCard
-          title="Health"
-          value={statsLoading ? "..." : `${healthScore}%`}
-          icon={HeartPulse}
-          variant="success"
-          trend="+3.1%"
-          trendUp
-          delay={0.15}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-8">
-        <StatCard title="Stability" value="High" icon={TrendingUp} delay={0.2} />
-        <StatCard
-          title="Participation"
-          value={statsLoading ? "..." : `${participation}%`}
-          icon={Activity}
-          variant="primary"
-          delay={0.25}
-        />
-        <StatCard title="Fairness" value="91%" icon={Scale} variant="success" delay={0.3} />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="glass-card p-6">
-          <h3 className="text-sm font-semibold text-foreground mb-4">Weekly Activity</h3>
-          {activityLoading ? (
-            <div className="h-[220px] flex items-center justify-center text-muted-foreground text-sm">
-              Loading activity data...
+    <div className="animate-fade">
+      {/* Stats grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14, marginBottom: 28 }}>
+        {statCards.map(({ label, value, icon: Icon, color }) => (
+          <div key={label} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', background: `${color}22` }}>
+                <Icon size={16} style={{ color }} />
+              </div>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>{label}</span>
             </div>
-          ) : (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={activityData || []}>
-                <XAxis dataKey="day" tick={{ fill: "hsl(220 10% 55%)", fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "hsl(220 10% 55%)", fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="messages" fill="hsl(239, 84%, 67%)" radius={[4, 4, 0, 0]} opacity={0.9} />
-                <Bar dataKey="votes" fill="hsl(142, 76%, 46%)" radius={[4, 4, 0, 0]} opacity={0.9} />
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </motion.div>
-
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }} className="glass-card p-6">
-          <h3 className="text-sm font-semibold text-foreground mb-4">Sentiment Trend</h3>
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={sentimentData}>
-              <defs>
-                <linearGradient id="sentimentGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="hsl(239, 84%, 67%)" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="hsl(239, 84%, 67%)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="time" tick={{ fill: "hsl(220 10% 55%)", fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis domain={[60, 100]} tick={{ fill: "hsl(220 10% 55%)", fontSize: 11 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<CustomTooltip />} />
-              <Area type="monotone" dataKey="score" stroke="hsl(239, 84%, 67%)" fill="url(#sentimentGradient)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </motion.div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text)' }}>{value}</div>
+          </div>
+        ))}
       </div>
 
-      <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }} className="glass-card p-6">
-        <h3 className="text-sm font-semibold text-foreground mb-4">Top Channels</h3>
-        {channelsLoading ? (
-          <div className="h-32 flex items-center justify-center text-muted-foreground text-sm">
-            Loading channel data...
+      {/* Recent activity */}
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12 }}>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>Recent Activity</span>
+        </div>
+        {activity.length === 0 ? (
+          <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+            No activity logged yet
           </div>
         ) : (
-          <div className="space-y-3">
-            {(topChannels || []).map((ch, i) => (
-              <div key={ch.name} className="flex items-center gap-4">
-                <span className="text-xs text-muted-foreground w-6 font-mono">{i + 1}</span>
-                <span className="text-sm text-foreground w-28 truncate">#{ch.name}</span>
-                <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-                  <motion.div
-                    className="h-full bg-primary rounded-full"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${ch.percentage}%` }}
-                    transition={{ duration: 0.6, delay: 0.5 + i * 0.1 }}
-                  />
-                </div>
-                <span className="text-xs font-mono text-muted-foreground w-16 text-right">{ch.messages.toLocaleString()}</span>
+          <div>
+            {activity.map((log, i) => (
+              <div key={log.id} className="data-row" style={{
+                display: 'flex', alignItems: 'center', gap: 14,
+                padding: '12px 20px',
+                borderBottom: i < activity.length - 1 ? '1px solid var(--border)' : 'none',
+              }}>
+                <Badge label={log.action_type.replace(/_/g, ' ')} variant={actionVariant(log.action_type)} />
+                <span style={{ fontSize: 13, color: 'var(--text-muted)', flex: 1 }}>
+                  {log.user_id && <span className="mono" style={{ color: 'var(--text)', marginRight: 4 }}>{log.user_id}</span>}
+                  {log.reason && <span style={{ color: 'var(--text-muted)' }}>— {log.reason}</span>}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>{timeAgo(log.created_at)}</span>
               </div>
             ))}
           </div>
         )}
-      </motion.div>
+      </div>
     </div>
   );
 }

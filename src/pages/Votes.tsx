@@ -1,168 +1,135 @@
-import { useState } from "react";
-import { motion } from "framer-motion";
-import { PageHeader } from "@/components/DashboardCards";
-import { Vote, Plus, Clock, Users } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { useAllVotes } from "@/hooks/use-database";
-import { toast } from "@/components/ui/sonner";
+import { useEffect, useState } from 'react';
+import { Plus, Trash2, BarChart2, CheckCircle, Clock } from 'lucide-react';
+import { getVotes, createVote, deleteVote, type Vote } from '../lib/db';
+import Modal from '../components/Modal';
+import Badge from '../components/Badge';
 
-export default function Votes() {
-  const [showCreate, setShowCreate] = useState(false);
-  const { data: allVotes, isLoading } = useAllVotes();
+interface Props { guildId: string; }
 
-  const activeVotes = allVotes?.filter((v) => v.is_active) || [];
-  const pastVotes = allVotes?.filter((v) => !v.is_active) || [];
+export default function Votes({ guildId }: Props) {
+  const [votes, setVotes] = useState<Vote[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(false);
+  const [question, setQuestion] = useState('');
+  const [optionsText, setOptionsText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleCreateVote = () => {
-    toast.success("Vote creation is disabled in demo mode");
-    setShowCreate(false);
+  const load = () => {
+    if (!guildId) return;
+    setLoading(true);
+    getVotes(guildId)
+      .then(setVotes)
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
   };
 
-  return (
-    <div>
-      <PageHeader
-        title="Votes"
-        description="Manage governance votes and polls"
-        icon={Vote}
-        actions={
-          <Button onClick={() => setShowCreate(true)} className="bg-success hover:bg-success/90 text-success-foreground">
-            <Plus className="w-4 h-4 mr-2" /> Create Vote
-          </Button>
-        }
-      />
+  useEffect(load, [guildId]);
 
-      <section className="mb-8">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Active Votes</h2>
-        {isLoading ? (
-          <div className="text-center py-8 text-muted-foreground">Loading votes...</div>
-        ) : activeVotes.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">No active votes</div>
-        ) : (
-          <div className="space-y-4">
-            {activeVotes.map((vote, i) => (
-              <VoteCard key={vote.id} vote={vote} delay={i * 0.05} />
-            ))}
-          </div>
-        )}
-      </section>
+  async function submit() {
+    if (!question.trim()) return;
+    const options = optionsText.split('\n').map(s => s.trim()).filter(Boolean);
+    setSaving(true); setError('');
+    try {
+      await createVote({ guild_id: guildId, question: question.trim(), options });
+      setModal(false); setQuestion(''); setOptionsText(''); load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
+  }
 
-      <section>
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Vote History</h2>
-        {isLoading ? (
-          <div className="text-center py-8 text-muted-foreground">Loading history...</div>
-        ) : pastVotes.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">No past votes</div>
-        ) : (
-          <div className="space-y-4">
-            {pastVotes.map((vote, i) => (
-              <VoteCard key={vote.id} vote={vote} delay={0.2 + i * 0.05} />
-            ))}
-          </div>
-        )}
-      </section>
+  async function del(id: number) {
+    if (!confirm('Delete this vote?')) return;
+    try { await deleteVote(id); setVotes(p => p.filter(v => v.id !== id)); }
+    catch (e) { setError((e as Error).message); }
+  }
 
-      <Dialog open={showCreate} onOpenChange={setShowCreate}>
-        <DialogContent className="bg-card border-border">
-          <DialogHeader>
-            <DialogTitle>Create New Vote</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div>
-              <Label>Question</Label>
-              <Input placeholder="What should we vote on?" className="mt-1.5 bg-muted border-border" />
-            </div>
-            <div>
-              <Label>Options</Label>
-              <div className="space-y-2 mt-1.5">
-                <Input placeholder="Option 1" className="bg-muted border-border" />
-                <Input placeholder="Option 2" className="bg-muted border-border" />
-              </div>
-              <Button variant="ghost" size="sm" className="mt-2 text-primary text-xs">
-                <Plus className="w-3 h-3 mr-1" /> Add Option
-              </Button>
-            </div>
-            <div>
-              <Label>Duration (minutes)</Label>
-              <Input type="number" defaultValue={1440} className="mt-1.5 bg-muted border-border" />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button>
-            <Button onClick={handleCreateVote} className="bg-success hover:bg-success/90 text-success-foreground">Create Vote</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+  function voteStatus(v: Vote): { label: string; variant: 'success' | 'warning' | 'muted' } {
+    if (v.results_posted) return { label: 'ended', variant: 'muted' };
+    if (v.end_time && new Date(v.end_time) < new Date()) return { label: 'expired', variant: 'warning' };
+    return { label: 'active', variant: 'success' };
+  }
+
+  if (loading) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
+      <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
     </div>
   );
-}
-
-interface VoteCardProps {
-  vote: {
-    id: string;
-    question: string;
-    options: { text: string; votes: number }[];
-    end_time: string;
-    is_active: boolean;
-    total_votes: number;
-  };
-  delay: number;
-}
-
-function VoteCard({ vote, delay }: VoteCardProps) {
-  const totalVotes = vote.total_votes || vote.options.reduce((s, o) => s + o.votes, 0);
-  const winner = [...vote.options].sort((a, b) => b.votes - a.votes)[0];
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay }}
-      className="glass-card p-5 hover-lift"
-    >
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex-1">
-          <h3 className="text-sm font-semibold text-foreground">{vote.question}</h3>
-          <div className="flex items-center gap-4 mt-1.5 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1">
-              <Users className="w-3 h-3" /> {totalVotes} votes
-            </span>
-            <span className="flex items-center gap-1">
-              <Clock className="w-3 h-3" /> {vote.is_active ? "Ends " + new Date(vote.end_time).toLocaleDateString() : "Ended"}
-            </span>
-          </div>
-        </div>
-        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-          vote.is_active ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"
-        }`}>
-          {vote.is_active ? "Active" : "Closed"}
-        </span>
+    <div className="animate-fade">
+      {error && <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '12px 16px', color: 'var(--danger)', fontSize: 13, marginBottom: 14 }}>{error}</div>}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+        <button className="btn btn-primary" onClick={() => setModal(true)}><Plus size={14} /> Create Vote</button>
       </div>
 
-      <div className="space-y-2.5">
-        {vote.options.map((opt) => {
-          const pct = totalVotes > 0 ? Math.round((opt.votes / totalVotes) * 100) : 0;
-          const isWinner = opt === winner;
-          return (
-            <div key={opt.text}>
-              <div className="flex justify-between text-xs mb-1">
-                <span className={`${isWinner && !vote.is_active ? "text-success font-medium" : "text-foreground"}`}>{opt.text}</span>
-                <span className="font-mono text-muted-foreground">{pct}%</span>
+      {votes.length === 0 ? (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '60px 20px', textAlign: 'center' }}>
+          <BarChart2 size={32} style={{ color: 'var(--text-faint)', display: 'block', margin: '0 auto 12px' }} />
+          <div style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 16 }}>No votes yet</div>
+          <button className="btn btn-primary" onClick={() => setModal(true)}><Plus size={14} /> Create First Vote</button>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 12 }}>
+          {votes.map(v => {
+            const { label, variant } = voteStatus(v);
+            const opts = Array.isArray(v.options) ? v.options as string[] : [];
+            return (
+              <div key={v.id} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                      <Badge label={label} variant={variant} />
+                      {v.end_time && (
+                        <span style={{ fontSize: 11, color: 'var(--text-faint)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Clock size={11} /> {new Date(v.end_time).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 12 }}>
+                      {v.question || 'Untitled Vote'}
+                    </div>
+                    {opts.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {opts.map((opt, i) => (
+                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '5px 12px', fontSize: 13 }}>
+                            <CheckCircle size={11} style={{ color: 'var(--primary)' }} />
+                            {String(opt)}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button className="btn btn-danger btn-sm" onClick={() => del(v.id)}><Trash2 size={12} /></button>
+                </div>
+                <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-faint)' }}>
+                  Created {new Date(v.created_at).toLocaleDateString()}
+                </div>
               </div>
-              <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                <motion.div
-                  className={`h-full rounded-full ${isWinner ? "bg-primary" : "bg-muted-foreground/30"}`}
-                  initial={{ width: 0 }}
-                  animate={{ width: `${pct}%` }}
-                  transition={{ duration: 0.5, delay: delay + 0.1 }}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </motion.div>
+            );
+          })}
+        </div>
+      )}
+
+      {modal && (
+        <Modal title="Create Vote" onClose={() => setModal(false)}>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Question *</label>
+            <input className="inp" placeholder="What should we do?" value={question} onChange={e => setQuestion(e.target.value)} />
+          </div>
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Options (one per line)</label>
+            <textarea className="inp" style={{ minHeight: 100 }} placeholder={"Option A\nOption B\nOption C"} value={optionsText} onChange={e => setOptionsText(e.target.value)} />
+          </div>
+          {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 12 }}>{error}</div>}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn btn-ghost" onClick={() => setModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submit} disabled={saving || !question.trim()}>
+              {saving ? 'Creating…' : 'Create Vote'}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
   );
 }

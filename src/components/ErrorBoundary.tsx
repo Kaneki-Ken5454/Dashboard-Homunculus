@@ -1,61 +1,46 @@
-import { Component, ReactNode } from "react";
-import { AlertCircle, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Component, type ErrorInfo, type ReactNode } from 'react';
 
-interface ErrorBoundaryState {
-  hasError: boolean;
-  error?: Error;
-}
-
-interface ErrorBoundaryProps {
+type ErrorBoundaryProps = {
   children: ReactNode;
-  fallback?: ReactNode;
-}
+};
 
-export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  constructor(props: ErrorBoundaryProps) {
-    super(props);
-    this.state = { hasError: false };
-  }
+type ErrorBoundaryState = {
+  hasError: boolean;
+  message: string;
+};
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = {
+    hasError: false,
+    message: '',
+  };
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error };
+    return {
+      hasError: true,
+      message: error.message,
+    };
   }
 
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error("ErrorBoundary caught an error:", error, errorInfo);
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('Dashboard render error:', error, errorInfo);
   }
-
-  handleRetry = () => {
-    this.setState({ hasError: false, error: undefined });
-    window.location.reload();
-  };
 
   render() {
     if (this.state.hasError) {
-      if (this.props.fallback) {
-        return this.props.fallback;
-      }
-
       return (
-        <div className="min-h-screen flex items-center justify-center bg-background">
-          <div className="max-w-md w-full mx-auto p-6">
-            <div className="glass-card p-6 text-center">
-              <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-4" />
-              <h2 className="text-xl font-semibold text-foreground mb-2">Dashboard Error</h2>
-              <p className="text-muted-foreground mb-6">
-                {this.state.error?.message || "Something went wrong while loading the dashboard."}
+        <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
+          <div className="max-w-xl w-full rounded-xl border border-red-200 bg-white p-6 shadow-sm">
+            <h1 className="text-xl font-semibold text-red-700">Dashboard failed to load</h1>
+            <p className="mt-3 text-sm text-slate-700">
+              A runtime error occurred while rendering the app. Please verify your environment
+              variables and refresh.
+            </p>
+            {this.state.message && (
+              <p className="mt-3 rounded bg-red-50 p-3 text-xs text-red-700 break-all">
+                <strong>Error:</strong> {this.state.message}
               </p>
-              <div className="space-y-3">
-                <Button onClick={this.handleRetry} className="w-full">
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  Try Again
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  Please check your Supabase configuration and try again.
-                </p>
-              </div>
-            </div>
+            )}
           </div>
         </div>
       );
@@ -64,3 +49,5 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     return this.props.children;
   }
 }
+
+export default ErrorBoundary;

@@ -1,26 +1,14 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react-swc";
-import path from "path";
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
-export default defineConfig(({ mode }) => ({
-  server: {
-    host: "0.0.0.0",
-    port: 5000,
-    allowedHosts: true,
-    hmr: {
-      overlay: false,
-    },
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-      },
-    },
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()],
+  // Only expose variables explicitly prefixed with VITE_ to the client bundle.
+  // DATABASE_URL must NOT be exposed here — it contains DB credentials. Use
+  // VITE_DATABASE_URL in your .env file instead.
+  envPrefix: ['VITE_'],
+  optimizeDeps: {
+    exclude: ['lucide-react'],
   },
-  plugins: [react()].filter(Boolean),
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
-}));
+});

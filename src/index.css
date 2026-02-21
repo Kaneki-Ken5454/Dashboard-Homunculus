@@ -1,111 +1,67 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --background: 230 15% 8%;
-    --foreground: 220 20% 93%;
-
-    --card: 230 14% 11%;
-    --card-foreground: 220 20% 93%;
-
-    --popover: 230 14% 11%;
-    --popover-foreground: 220 20% 93%;
-
-    --primary: 239 84% 67%;
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 230 14% 16%;
-    --secondary-foreground: 220 20% 85%;
-
-    --muted: 230 12% 18%;
-    --muted-foreground: 220 10% 55%;
-
-    --accent: 239 84% 67%;
-    --accent-foreground: 0 0% 100%;
-
-    --destructive: 0 72% 55%;
-    --destructive-foreground: 0 0% 100%;
-
-    --success: 142 76% 46%;
-    --success-foreground: 0 0% 100%;
-
-    --warning: 38 92% 60%;
-    --warning-foreground: 0 0% 10%;
-
-    --border: 230 12% 18%;
-    --input: 230 12% 20%;
-    --ring: 239 84% 67%;
-
-    --radius: 0.75rem;
-
-    --sidebar-background: 230 16% 6%;
-    --sidebar-foreground: 220 20% 75%;
-    --sidebar-primary: 239 84% 67%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 230 14% 14%;
-    --sidebar-accent-foreground: 220 20% 93%;
-    --sidebar-border: 230 12% 15%;
-    --sidebar-ring: 239 84% 67%;
-
-    /* Custom tokens */
-    --glow-primary: 0 0 20px hsl(239 84% 67% / 0.3);
-    --glow-success: 0 0 20px hsl(142 76% 46% / 0.3);
-    --glow-warning: 0 0 20px hsl(38 92% 60% / 0.3);
-    --glow-destructive: 0 0 20px hsl(0 72% 55% / 0.3);
-
-    --gradient-primary: linear-gradient(135deg, hsl(239 84% 67%), hsl(270 76% 55%));
-    --gradient-card: linear-gradient(145deg, hsl(230 14% 13%), hsl(230 14% 9%));
-    --gradient-header: linear-gradient(135deg, hsl(230 16% 6%), hsl(239 30% 12%));
-  }
+:root {
+  --bg: #0b0c18;
+  --surface: #12131f;
+  --elevated: #1a1c2e;
+  --border: #2d2f50;
+  --border-light: #3d3f68;
+  --primary: #5865f2;
+  --primary-hover: #4752c4;
+  --primary-subtle: rgba(88,101,242,0.12);
+  --success: #3ba55d;
+  --success-subtle: rgba(59,165,93,0.12);
+  --warning: #faa81a;
+  --warning-subtle: rgba(250,168,26,0.12);
+  --danger: #ed4245;
+  --danger-subtle: rgba(237,66,69,0.12);
+  --text: #e3e5f0;
+  --text-muted: #72747e;
+  --text-faint: #4e5058;
+  --font-mono: 'JetBrains Mono', monospace;
 }
 
-@layer base {
-  * {
-    @apply border-border;
-  }
+* { box-sizing: border-box; }
+body { font-family: 'Lexend', sans-serif; background: var(--bg); color: var(--text); margin: 0; -webkit-font-smoothing: antialiased; }
 
-  body {
-    @apply bg-background text-foreground font-sans antialiased;
-    font-family: 'Space Grotesk', system-ui, sans-serif;
-  }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
 
-  .font-mono {
-    font-family: 'JetBrains Mono', monospace;
-  }
-}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.animate-fade { animation: fadeIn 0.18s ease both; }
 
-@layer utilities {
-  .glass-card {
-    @apply bg-card/80 backdrop-blur-xl border border-border/50 rounded-xl;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 hsl(230 14% 20% / 0.3);
-  }
+.modal-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.72); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 16px; }
 
-  .glow-primary {
-    box-shadow: var(--glow-primary);
-  }
+.nav-active { background: var(--primary-subtle) !important; color: #818cf8 !important; }
+.nav-active svg { color: #818cf8 !important; }
 
-  .glow-success {
-    box-shadow: var(--glow-success);
-  }
+.data-row:hover { background: rgba(255,255,255,0.022); }
 
-  .stat-value {
-    @apply text-3xl font-bold font-mono tracking-tight;
-  }
+.mono { font-family: var(--font-mono); }
 
-  .gradient-text {
-    @apply bg-clip-text text-transparent;
-    background-image: var(--gradient-primary);
-  }
+.inp { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 12px; font-family: 'Lexend', sans-serif; font-size: 14px; width: 100%; outline: none; transition: border-color 0.15s; }
+.inp:focus { border-color: var(--primary); }
+.inp::placeholder { color: var(--text-faint); }
+select.inp option { background: var(--surface); }
+textarea.inp { resize: vertical; min-height: 80px; }
 
-  .hover-lift {
-    @apply transition-all duration-300;
-  }
-  .hover-lift:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-  }
-}
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; font-family: 'Lexend', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: all 0.15s; white-space: nowrap; }
+.btn-primary { background: var(--primary); color: white; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+.btn-ghost:hover { background: var(--elevated); color: var(--text); }
+.btn-danger { background: var(--danger-subtle); color: var(--danger); border: 1px solid transparent; }
+.btn-danger:hover { background: var(--danger); color: white; }
+.btn-success { background: var(--success-subtle); color: var(--success); border: 1px solid transparent; }
+.btn-success:hover { background: var(--success); color: white; }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+
+.toggle { appearance: none; width: 40px; height: 22px; border-radius: 11px; background: var(--border); cursor: pointer; position: relative; transition: background 0.2s; flex-shrink: 0; }
+.toggle:checked { background: var(--primary); }
+.toggle::after { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s; }
+.toggle:checked::after { transform: translateX(18px); }

@@ -2,17 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- TODO: Set the document title to the name of your application -->
-    <title>Aeon Discord Dashboard</title>
-    <meta name="description" content="Discord bot governance dashboard" />
-
-    <meta property="og:title" content="Aeon Discord Dashboard" />
-    <meta property="og:description" content="Discord bot governance dashboard" />
-    <meta property="og:type" content="website" />
+    <title data-default>Discord Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <meta property="og:image" content="https://bolt.new/static/og_default.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://bolt.new/static/og_default.png" />
   </head>
-
   <body>
+    <div id="startup-fallback" style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #f3f4f6; padding: 24px; color: #334155; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">
+      Loading dashboard…
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -1,261 +1,141 @@
-import { motion } from "framer-motion";
-import { PageHeader } from "@/components/DashboardCards";
-import { Ticket, User, Clock, MessageSquare, CheckCircle, AlertCircle, HelpCircle, Hand, X, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { useTickets, useClaimTicket, useCloseTicket, useTicketPanels, useCreateTicketPanel, useDeleteTicketPanel } from "@/hooks/use-database";
-import { toast } from "@/components/ui/sonner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useEffect, useState } from 'react';
+import { Ticket, Filter } from 'lucide-react';
+import { getTickets, updateTicketStatus, deleteTicket, type Ticket as TicketType } from '../lib/db';
+import Badge from '../components/Badge';
 
-export default function Tickets() {
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [priorityFilter, setPriorityFilter] = useState<string>('all');
-  const [showPanelCreate, setShowPanelCreate] = useState(false);
-  const [panelName, setPanelName] = useState("");
-  const [panelChannel, setPanelChannel] = useState("");
-  const [panelMessage, setPanelMessage] = useState("");
-  const [panelLabel, setPanelLabel] = useState("Open Ticket");
+interface Props { guildId: string; }
 
-  const { data: tickets, isLoading } = useTickets(statusFilter !== 'all' ? statusFilter : undefined, priorityFilter !== 'all' ? priorityFilter : undefined);
-  const claimTicket = useClaimTicket();
-  const closeTicket = useCloseTicket();
-  const { data: panels, isLoading: panelsLoading } = useTicketPanels();
-  const createPanel = useCreateTicketPanel();
-  const deletePanel = useDeleteTicketPanel();
+const statusVariant = (s: string): 'success' | 'warning' | 'danger' | 'muted' => {
+  if (s === 'open') return 'success';
+  if (s === 'claimed') return 'warning';
+  if (s === 'closed') return 'muted';
+  return 'muted';
+};
 
-  const handleClaim = async (id: string) => {
-    try { await claimTicket.mutateAsync({ id, userId: "dashboard_admin" }); toast.success("Ticket claimed"); }
-    catch { toast.error("Failed to claim ticket"); }
+const priorityVariant = (p: string): 'danger' | 'warning' | 'primary' | 'muted' => {
+  if (p === 'high' || p === 'urgent') return 'danger';
+  if (p === 'medium') return 'warning';
+  if (p === 'low') return 'muted';
+  return 'primary';
+};
+
+export default function Tickets({ guildId }: Props) {
+  const [tickets, setTickets] = useState<TicketType[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+  const [error, setError] = useState('');
+
+  const load = () => {
+    if (!guildId) return;
+    setLoading(true);
+    getTickets(guildId)
+      .then(setTickets)
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
   };
 
-  const handleClose = async (id: string) => {
-    try { await closeTicket.mutateAsync(id); toast.success("Ticket closed"); }
-    catch { toast.error("Failed to close ticket"); }
+  useEffect(load, [guildId]);
+
+  const filtered = filter === 'all' ? tickets : tickets.filter(t => t.status === filter);
+
+  const counts = {
+    all: tickets.length,
+    open: tickets.filter(t => t.status === 'open').length,
+    claimed: tickets.filter(t => t.status === 'claimed').length,
+    closed: tickets.filter(t => t.status === 'closed').length,
   };
 
-  const handleCreatePanel = async () => {
-    if (!panelName || !panelChannel) { toast.error("Name and channel are required"); return; }
-    try {
-      await createPanel.mutateAsync({ name: panelName, channel_id: panelChannel, message: panelMessage, button_label: panelLabel });
-      toast.success("Panel created");
-      setShowPanelCreate(false);
-      setPanelName(""); setPanelChannel(""); setPanelMessage(""); setPanelLabel("Open Ticket");
-    } catch (error: any) { toast.error(error.message || "Failed to create panel"); }
-  };
+  async function changeStatus(id: string, status: string) {
+    try { await updateTicketStatus(id, status); load(); }
+    catch (e) { setError((e as Error).message); }
+  }
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'open': return 'bg-warning/15 text-warning';
-      case 'in_progress': return 'bg-primary/15 text-primary';
-      case 'resolved': return 'bg-success/15 text-success';
-      case 'closed': return 'bg-muted text-muted-foreground';
-      default: return 'bg-muted text-muted-foreground';
-    }
-  };
+  async function del(id: string) {
+    if (!confirm('Delete this ticket permanently?')) return;
+    try { await deleteTicket(id); load(); }
+    catch (e) { setError((e as Error).message); }
+  }
 
-  const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'urgent': return 'bg-destructive/15 text-destructive';
-      case 'high': return 'bg-warning/15 text-warning';
-      case 'medium': return 'bg-primary/15 text-primary';
-      case 'low': return 'bg-success/15 text-success';
-      default: return 'bg-muted text-muted-foreground';
-    }
-  };
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'open': return <AlertCircle className="w-3 h-3" />;
-      case 'in_progress': return <Clock className="w-3 h-3" />;
-      case 'resolved': return <CheckCircle className="w-3 h-3" />;
-      default: return <HelpCircle className="w-3 h-3" />;
-    }
-  };
-
-  const openCount = tickets?.filter(t => t.status === 'open').length || 0;
-  const inProgressCount = tickets?.filter(t => t.status === 'in_progress').length || 0;
-  const resolvedCount = tickets?.filter(t => t.status === 'resolved').length || 0;
-
-  return (
-    <div>
-      <PageHeader title="Support Tickets" description="Manage user support requests, panels & transcripts" icon={Ticket} />
-
-      <Tabs defaultValue="tickets">
-        <TabsList className="bg-muted/50 border border-border mb-6">
-          <TabsTrigger value="tickets" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-            <Ticket className="w-3.5 h-3.5 mr-1.5" /> Tickets
-          </TabsTrigger>
-          <TabsTrigger value="panels" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
-            <MessageSquare className="w-3.5 h-3.5 mr-1.5" /> Panels
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="tickets">
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-6">
-            <StatCard title="Total" value={tickets?.length || 0} icon={Ticket} variant="default" />
-            <StatCard title="Open" value={openCount} icon={AlertCircle} variant="warning" />
-            <StatCard title="In Progress" value={inProgressCount} icon={Clock} variant="primary" />
-            <StatCard title="Resolved" value={resolvedCount} icon={CheckCircle} variant="success" />
-          </div>
-
-          <div className="glass-card p-4 mb-6">
-            <div className="flex flex-wrap items-center gap-4">
-              <div>
-                <span className="text-sm font-medium text-foreground">Status:</span>
-                <div className="flex gap-2 mt-2">
-                  {['all', 'open', 'in_progress', 'resolved', 'closed'].map((s) => (
-                    <button key={s} onClick={() => setStatusFilter(s)}
-                      className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}>
-                      {s.replace('_', ' ').replace(/^\w/, c => c.toUpperCase())}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="border-l border-border h-12 mx-2" />
-              <div>
-                <span className="text-sm font-medium text-foreground">Priority:</span>
-                <div className="flex gap-2 mt-2">
-                  {['all', 'urgent', 'high', 'medium', 'low'].map((p) => (
-                    <button key={p} onClick={() => setPriorityFilter(p)}
-                      className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${priorityFilter === p ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}>
-                      {p.charAt(0).toUpperCase() + p.slice(1)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {isLoading ? (
-            <div className="text-center py-8 text-muted-foreground">Loading tickets...</div>
-          ) : !tickets || tickets.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">No tickets found</div>
-          ) : (
-            <div className="space-y-3">
-              {tickets.map((ticket, i) => (
-                <motion.div key={ticket.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }} className="glass-card p-4 hover-lift">
-                  <div className="flex items-center gap-3 mb-3">
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium inline-flex items-center gap-1 ${getStatusColor(ticket.status)}`}>
-                      {getStatusIcon(ticket.status)} {ticket.status.replace('_', ' ')}
-                    </span>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${getPriorityColor(ticket.priority)}`}>{ticket.priority}</span>
-                    <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded-full">{ticket.category}</span>
-                  </div>
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <h4 className="text-sm font-semibold text-foreground mb-1">{ticket.title}</h4>
-                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                        <span className="flex items-center gap-1"><User className="w-3 h-3" /> {ticket.username}</span>
-                        <span className="flex items-center gap-1"><MessageSquare className="w-3 h-3" /> {ticket.messages_count || 0} messages</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {ticket.status === 'open' && (
-                        <Button size="sm" variant="outline" onClick={() => handleClaim(ticket.id)} disabled={claimTicket.isPending}
-                          className="text-xs border-primary/30 text-primary hover:bg-primary/10">
-                          <Hand className="w-3 h-3 mr-1" /> Claim
-                        </Button>
-                      )}
-                      {(ticket.status === 'open' || ticket.status === 'in_progress') && (
-                        <Button size="sm" variant="outline" onClick={() => handleClose(ticket.id)} disabled={closeTicket.isPending}
-                          className="text-xs border-destructive/30 text-destructive hover:bg-destructive/10">
-                          <X className="w-3 h-3 mr-1" /> Close
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-right text-xs text-muted-foreground mt-2">
-                    <span>Created: {new Date(ticket.created_at).toLocaleString()}</span>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          )}
-        </TabsContent>
-
-        <TabsContent value="panels">
-          <div className="flex justify-end mb-4">
-            <Button onClick={() => setShowPanelCreate(true)} className="bg-success hover:bg-success/90 text-success-foreground">
-              <Plus className="w-4 h-4 mr-2" /> Create Panel
-            </Button>
-          </div>
-          {panelsLoading ? (
-            <div className="text-center py-8 text-muted-foreground">Loading panels...</div>
-          ) : !panels || panels.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">No ticket panels configured</div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {panels.map((panel, i) => (
-                <motion.div key={panel.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }} className="glass-card p-5 hover-lift group">
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-sm font-semibold text-foreground">{panel.name}</h4>
-                    <button onClick={() => deletePanel.mutateAsync(panel.id).then(() => toast.success("Panel deleted")).catch(() => toast.error("Failed"))}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-destructive">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <p className="text-xs text-muted-foreground mb-3">{panel.message || "No message configured"}</p>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] px-2 py-0.5 rounded bg-primary/15 text-primary">{panel.button_label}</span>
-                    <span className="text-[10px] text-muted-foreground">Channel: {panel.channel_id}</span>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          )}
-
-          <Dialog open={showPanelCreate} onOpenChange={setShowPanelCreate}>
-            <DialogContent className="bg-card border-border">
-              <DialogHeader><DialogTitle>Create Ticket Panel</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
-                <div>
-                  <Label className="text-xs text-muted-foreground">Panel Name</Label>
-                  <Input value={panelName} onChange={(e) => setPanelName(e.target.value)} placeholder="Support" className="mt-1.5 bg-muted border-border" />
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground">Channel ID</Label>
-                  <Input value={panelChannel} onChange={(e) => setPanelChannel(e.target.value)} placeholder="123456789" className="mt-1.5 bg-muted border-border font-mono text-xs" />
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground">Panel Message</Label>
-                  <Input value={panelMessage} onChange={(e) => setPanelMessage(e.target.value)} placeholder="Click below to open a ticket" className="mt-1.5 bg-muted border-border" />
-                </div>
-                <div>
-                  <Label className="text-xs text-muted-foreground">Button Label</Label>
-                  <Input value={panelLabel} onChange={(e) => setPanelLabel(e.target.value)} className="mt-1.5 bg-muted border-border" />
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="ghost" onClick={() => setShowPanelCreate(false)}>Cancel</Button>
-                <Button onClick={handleCreatePanel} disabled={createPanel.isPending} className="bg-success hover:bg-success/90 text-success-foreground">Create</Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </TabsContent>
-      </Tabs>
+  if (loading) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
+      <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
     </div>
   );
-}
 
-function StatCard({ title, value, icon: Icon, variant }: { title: string; value: number; icon: any; variant: string }) {
-  const variantStyles: Record<string, string> = {
-    default: "border-border/50", primary: "border-primary/30 glow-primary",
-    success: "border-success/30 glow-success", warning: "border-warning/30",
-    destructive: "border-destructive/30",
-  };
-  const iconStyles: Record<string, string> = {
-    default: "bg-muted text-muted-foreground", primary: "bg-primary/15 text-primary",
-    success: "bg-success/15 text-success", warning: "bg-warning/15 text-warning",
-    destructive: "bg-destructive/15 text-destructive",
-  };
   return (
-    <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className={`glass-card p-4 ${variantStyles[variant]}`}>
-      <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${iconStyles[variant]}`}><Icon className="w-4 h-4" /></div>
-      <p className="text-muted-foreground text-xs uppercase tracking-wider mb-1">{title}</p>
-      <p className="text-foreground text-lg font-bold">{value}</p>
-    </motion.div>
+    <div className="animate-fade">
+      {error && <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '12px 16px', color: 'var(--danger)', fontSize: 13, marginBottom: 14 }}>{error}</div>}
+
+      {/* Status filter tabs */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        <Filter size={14} style={{ color: 'var(--text-muted)', alignSelf: 'center' }} />
+        {(['all', 'open', 'claimed', 'closed'] as const).map(s => (
+          <button key={s} onClick={() => setFilter(s)} style={{
+            padding: '6px 14px', borderRadius: 8, border: '1px solid',
+            borderColor: filter === s ? 'var(--primary)' : 'var(--border)',
+            background: filter === s ? 'var(--primary-subtle)' : 'transparent',
+            color: filter === s ? '#818cf8' : 'var(--text-muted)',
+            fontSize: 13, fontFamily: 'Lexend', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            {s.charAt(0).toUpperCase() + s.slice(1)}
+            <span style={{
+              background: filter === s ? 'var(--primary)' : 'var(--elevated)',
+              color: filter === s ? 'white' : 'var(--text-muted)',
+              borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 600,
+            }}>{counts[s]}</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+              {['Title', 'User', 'Priority', 'Category', 'Messages', 'Opened', 'Status', ''].map(h => (
+                <th key={h} style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr><td colSpan={8}>
+                <div style={{ padding: '48px 16px', textAlign: 'center' }}>
+                  <Ticket size={28} style={{ color: 'var(--text-faint)', display: 'block', margin: '0 auto 10px' }} />
+                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>No {filter !== 'all' ? filter : ''} tickets</div>
+                </div>
+              </td></tr>
+            ) : filtered.map(t => (
+              <tr key={t.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '11px 14px' }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
+                  <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{t.channel_id}</div>
+                </td>
+                <td style={{ padding: '11px 14px' }}>
+                  <div style={{ fontSize: 13 }}>{t.username}</div>
+                  <div className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>{t.user_id}</div>
+                </td>
+                <td style={{ padding: '11px 14px' }}><Badge label={t.priority} variant={priorityVariant(t.priority)} /></td>
+                <td style={{ padding: '11px 14px' }}><Badge label={t.category} variant="muted" /></td>
+                <td style={{ padding: '11px 14px' }}>
+                  <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t.messages_count}</span>
+                </td>
+                <td style={{ padding: '11px 14px', fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                  {new Date(t.opened_at).toLocaleDateString()}
+                </td>
+                <td style={{ padding: '11px 14px' }}><Badge label={t.status} variant={statusVariant(t.status)} /></td>
+                <td style={{ padding: '11px 14px' }}>
+                  <div style={{ display: 'flex', gap: 5 }}>
+                    {t.status !== 'open' && <button className="btn btn-success btn-sm" onClick={() => changeStatus(t.id, 'open')}>Open</button>}
+                    {t.status !== 'closed' && <button className="btn btn-ghost btn-sm" onClick={() => changeStatus(t.id, 'closed')}>Close</button>}
+                    <button className="btn btn-danger btn-sm" onClick={() => del(t.id)}>Del</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
