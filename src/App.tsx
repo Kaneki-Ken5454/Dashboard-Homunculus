@@ -2,9 +2,10 @@ import { useEffect, useState, useRef } from 'react';
 import {
   LayoutDashboard, Settings, Users, Terminal, Zap,
   Ticket, Shield, Tag, BarChart2, BookOpen,
-  RefreshCw, Server, AlertCircle, Search, ChevronDown,
+  RefreshCw, Server, Search, ChevronDown,
   Database, Loader2,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { discoverAllGuildIds, type DiscoveredGuild } from './lib/db';
 
 import Overview     from './pages/Overview';
@@ -20,7 +21,7 @@ import InfoTopics   from './pages/InfoTopics';
 
 type Page = 'overview' | 'settings' | 'members' | 'commands' | 'triggers' | 'tickets' | 'moderation' | 'roles' | 'votes' | 'info';
 
-const NAV: { id: Page; label: string; icon: React.ComponentType<{size?: number; style?: React.CSSProperties}> }[] = [
+const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',       icon: LayoutDashboard },
   { id: 'settings',   label: 'Guild Settings',  icon: Settings        },
   { id: 'members',    label: 'Members',         icon: Users           },
