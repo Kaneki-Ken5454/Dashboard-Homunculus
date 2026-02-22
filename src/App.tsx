@@ -35,6 +35,48 @@ const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'info',       label: 'Info Topics',    icon: BookOpen        },
 ];
 
+
+interface PageContentProps {
+  page: Page;
+  guildId: string;
+  discovering: boolean;
+  guilds: DiscoveredGuild[];
+  discoverErr: string;
+  onRescan: () => void;
+}
+
+function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan }: PageContentProps) {
+  if (!guildId) return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60vh', gap:14, textAlign:'center' }}>
+      <Database size={36} style={{ color:'var(--text-faint)' }} />
+      <div style={{ color:'var(--text)', fontWeight:600, fontSize:16 }}>No guild selected</div>
+      {discovering
+        ? <div style={{ color:'var(--text-muted)', fontSize:13, display:'flex', alignItems:'center', gap:6 }}>
+            <Loader2 size={14} style={{ animation:'spin 1s linear infinite' }} /> Scanning database…
+          </div>
+        : guilds.length === 0
+          ? <div style={{ color:'var(--text-muted)', fontSize:13, maxWidth:380 }}>
+              No guild IDs found in any table. Enter one manually using the selector in the sidebar.
+              {discoverErr && <div style={{ color:'var(--danger)', marginTop:8, fontSize:12 }}>{discoverErr}</div>}
+            </div>
+          : <div style={{ color:'var(--text-muted)', fontSize:13 }}>Select a guild from the sidebar to continue</div>
+      }
+      <button className="btn btn-ghost" onClick={onRescan}><RefreshCw size={13} /> Re-scan</button>
+    </div>
+  );
+
+  if (page === 'overview')    return <Overview     guildId={guildId} />;
+  if (page === 'settings')    return <SettingsPage guildId={guildId} />;
+  if (page === 'members')     return <Members      guildId={guildId} />;
+  if (page === 'commands')    return <Commands     guildId={guildId} />;
+  if (page === 'triggers')    return <Triggers     guildId={guildId} />;
+  if (page === 'tickets')     return <Tickets      guildId={guildId} />;
+  if (page === 'moderation')  return <Moderation   guildId={guildId} />;
+  if (page === 'roles')       return <Roles        guildId={guildId} />;
+  if (page === 'votes')       return <Votes        guildId={guildId} />;
+  if (page === 'info')        return <InfoTopics   guildId={guildId} />;
+  return null;
+}
 export default function App() {
   const [configured, setConfigured] = useState(isConfigured());
 
@@ -85,38 +127,7 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
 
   const currentNav = NAV.find(n => n.id === page)!;
 
-  const PageComp = () => {
-    if (!guildId) return (
-      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60vh', gap:14, textAlign:'center' }}>
-        <Database size={36} style={{ color:'var(--text-faint)' }} />
-        <div style={{ color:'var(--text)', fontWeight:600, fontSize:16 }}>No guild selected</div>
-        {discovering
-          ? <div style={{ color:'var(--text-muted)', fontSize:13, display:'flex', alignItems:'center', gap:6 }}>
-              <Loader2 size={14} style={{ animation:'spin 1s linear infinite' }} /> Scanning database…
-            </div>
-          : guilds.length === 0
-            ? <div style={{ color:'var(--text-muted)', fontSize:13, maxWidth:380 }}>
-                No guild IDs found in any table. Enter one manually using the selector in the sidebar.
-                {discoverErr && <div style={{ color:'var(--danger)', marginTop:8, fontSize:12 }}>{discoverErr}</div>}
-              </div>
-            : <div style={{ color:'var(--text-muted)', fontSize:13 }}>Select a guild from the sidebar to continue</div>
-        }
-        <button className="btn btn-ghost" onClick={discover}><RefreshCw size={13} /> Re-scan</button>
-      </div>
-    );
-
-    if (page === 'overview')    return <Overview     guildId={guildId} />;
-    if (page === 'settings')    return <SettingsPage guildId={guildId} />;
-    if (page === 'members')     return <Members      guildId={guildId} />;
-    if (page === 'commands')    return <Commands     guildId={guildId} />;
-    if (page === 'triggers')    return <Triggers     guildId={guildId} />;
-    if (page === 'tickets')     return <Tickets      guildId={guildId} />;
-    if (page === 'moderation')  return <Moderation   guildId={guildId} />;
-    if (page === 'roles')       return <Roles        guildId={guildId} />;
-    if (page === 'votes')       return <Votes        guildId={guildId} />;
-    if (page === 'info')        return <InfoTopics   guildId={guildId} />;
-    return null;
-  };
+  // PageComp is now a proper component defined outside Dashboard (see bottom of file)
 
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
@@ -231,7 +242,7 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
           </div>
         </header>
         <main style={{ flex:1, overflowY:'auto', padding:'22px 24px' }}>
-          <PageComp />
+          <PageContent page={page} guildId={guildId} discovering={discovering} guilds={guilds} discoverErr={discoverErr} onRescan={discover} />
         </main>
       </div>
     </div>

@@ -4,6 +4,25 @@ import { getGuildSetting, upsertGuildSetting, type GuildSetting } from '../lib/d
 
 interface Props { guildId: string; }
 
+function Label({ text, sub }: { text: string; sub: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{text}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{sub}</div>
+    </div>
+  );
+}
+
+function Row({ label, sub, checked, onToggle }: { label: string; sub: string; checked: boolean; onToggle: () => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 0', borderBottom: '1px solid var(--border)' }}>
+      <Label text={label} sub={sub} />
+      <input type="checkbox" className="toggle" checked={checked} onChange={onToggle} />
+    </div>
+  );
+}
+
+
 export default function Settings({ guildId }: Props) {
   const [settings, setSettings] = useState<GuildSetting | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,20 +57,6 @@ export default function Settings({ guildId }: Props) {
     }
   }
 
-  const Label = ({ text, sub }: { text: string; sub: string }) => (
-    <div>
-      <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>{text}</div>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{sub}</div>
-    </div>
-  );
-
-  const Row = ({ label, sub, checked, onToggle }: { label: string; sub: string; checked: boolean; onToggle: () => void }) => (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 0', borderBottom: '1px solid var(--border)' }}>
-      <Label text={label} sub={sub} />
-      <input type="checkbox" className="toggle" checked={checked} onChange={onToggle} />
-    </div>
-  );
-
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
       <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
@@ -59,7 +64,6 @@ export default function Settings({ guildId }: Props) {
   );
 
   if (!settings) {
-    // Auto-create default settings with save
     const defaults: Partial<import('../lib/db').GuildSetting> = {
       prefix: '!', use_slash_commands: true, moderation_enabled: true,
       levelling_enabled: true, fun_enabled: true, tickets_enabled: true,
@@ -93,7 +97,6 @@ export default function Settings({ guildId }: Props) {
         </div>
       )}
 
-      {/* Basic config */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px', marginBottom: 16 }}>
         <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 20 }}>Basic Configuration</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -109,7 +112,6 @@ export default function Settings({ guildId }: Props) {
         </div>
       </div>
 
-      {/* Feature toggles */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px', marginBottom: 20 }}>
         <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>Feature Modules</div>
         <Row label="Slash Commands" sub="Enable Discord slash commands alongside prefix commands" checked={settings.use_slash_commands} onToggle={() => toggle('use_slash_commands')} />

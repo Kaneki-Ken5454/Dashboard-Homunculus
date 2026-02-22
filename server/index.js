@@ -38,7 +38,7 @@ function ok(res, data) {
 }
 
 function err(res, message, status = 400) {
-  console.error(`API error: ${message}`);
+  console.error(`[API ${status}] ${message}`);
   res.status(status).json({ success: false, error: message });
 }
 
@@ -109,10 +109,10 @@ app.post('/api/query', async (req, res) => {
           { key: 'commandCount', q: `SELECT COUNT(*)::int AS c FROM custom_commands WHERE guild_id = $1` },
           { key: 'ticketCount',  q: `SELECT COUNT(*)::int AS c FROM tickets         WHERE guild_id = $1` },
           { key: 'auditCount',   q: `SELECT COUNT(*)::int AS c FROM audit_logs      WHERE guild_id = $1` },
-          { key: 'triggerCount', q: `SELECT COUNT(*)::int AS c FROM triggers        WHERE guild_id = $1::bigint` },
+          { key: 'triggerCount', q: `SELECT COUNT(*)::int AS c FROM triggers        WHERE guild_id::text = $1` },
           { key: 'autoRespCount',q: `SELECT COUNT(*)::int AS c FROM auto_responders WHERE guild_id = $1` },
-          { key: 'voteCount',    q: `SELECT COUNT(*)::int AS c FROM votes           WHERE guild_id = $1::bigint` },
-          { key: 'topicCount',   q: `SELECT COUNT(*)::int AS c FROM info_topics     WHERE guild_id = $1::bigint` },
+          { key: 'voteCount',    q: `SELECT COUNT(*)::int AS c FROM votes           WHERE guild_id::text = $1` },
+          { key: 'topicCount',   q: `SELECT COUNT(*)::int AS c FROM info_topics     WHERE guild_id::text = $1` },
           { key: 'warnCount',    q: `SELECT COALESCE(SUM(jsonb_array_length(warns)), 0)::int AS c FROM warns_data WHERE guild_id::text = $1` },
         ];
         const stats = {};
@@ -146,9 +146,10 @@ app.post('/api/query', async (req, res) => {
         const d = params.data;
         await sql(
           `INSERT INTO guild_settings
-            (guild_id, prefix, use_slash_commands, moderation_enabled, levelling_enabled,
-             fun_enabled, tickets_enabled, custom_commands_enabled, auto_responders_enabled, global_cooldown)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            (id, guild_id, prefix, use_slash_commands, moderation_enabled, levelling_enabled,
+             fun_enabled, tickets_enabled, custom_commands_enabled, auto_responders_enabled,
+             global_cooldown, created_at, updated_at)
+           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now(), now())
            ON CONFLICT (guild_id) DO UPDATE SET
              prefix=$2, use_slash_commands=$3, moderation_enabled=$4, levelling_enabled=$5,
              fun_enabled=$6, tickets_enabled=$7, custom_commands_enabled=$8,
@@ -189,9 +190,9 @@ app.post('/api/query', async (req, res) => {
         const d = params.data;
         await sql(
           `INSERT INTO custom_commands
-            (guild_id, trigger, name, description, response, response_type,
+            (id, guild_id, trigger, name, description, response, response_type,
              permission_level, cooldown_seconds, is_tag, is_enabled, usage_count, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,'dashboard')`,
+           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,'dashboard')`,
           [params.guildId, d.trigger, d.name ?? null, d.description ?? null,
            d.response, d.response_type ?? 'text', d.permission_level ?? 'everyone',
            d.cooldown_seconds ?? 0, d.is_tag ?? false]
@@ -231,8 +232,8 @@ app.post('/api/query', async (req, res) => {
         const d = params.data;
         await sql(
           `INSERT INTO auto_responders
-            (guild_id, trigger_text, match_type, response, response_type, is_enabled, trigger_count, created_by)
-           VALUES ($1,$2,$3,$4,$5,true,0,'dashboard')`,
+            (id, guild_id, trigger_text, match_type, response, response_type, is_enabled, trigger_count, created_by)
+           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,true,0,'dashboard')`,
           [params.guildId, d.trigger_text, d.match_type ?? 'contains', d.response, d.response_type ?? 'text']
         );
         return ok(res, { success: true });
@@ -257,7 +258,7 @@ app.post('/api/query', async (req, res) => {
       // ── Triggers ──
       case 'getTriggers': {
         const rows = await sql(
-          `SELECT * FROM triggers WHERE guild_id = $1::bigint ORDER BY created_at DESC`,
+          `SELECT * FROM triggers WHERE guild_id::text = $1 ORDER BY created_at DESC`,
           [params.guildId]
         ).catch(() => []);
         return ok(res, rows);
@@ -267,7 +268,7 @@ app.post('/api/query', async (req, res) => {
         const d = params.data;
         await sql(
           `INSERT INTO triggers (guild_id, trigger_text, response, match_type, enabled, use_count)
-           VALUES ($1::bigint,$2,$3,$4,true,0)`,
+           VALUES ($1,$2,$3,$4,true,0)`,
           [params.guildId, d.trigger_text, d.response, d.match_type ?? 'contains']
         );
         return ok(res, { success: true });
@@ -354,7 +355,7 @@ app.post('/api/query', async (req, res) => {
       // ── Votes ──
       case 'getVotes': {
         const rows = await sql(
-          `SELECT * FROM votes WHERE guild_id = $1::bigint ORDER BY created_at DESC`,
+          `SELECT * FROM votes WHERE guild_id::text = $1 ORDER BY created_at DESC`,
           [params.guildId]
         ).catch(() => []);
         return ok(res, rows);
@@ -365,8 +366,9 @@ app.post('/api/query', async (req, res) => {
           return err(res, 'Invalid channel ID — must be 17–19 digits');
         }
         await sql(
-          `INSERT INTO votes (guild_id, question, options, results_posted, channel_id)
-           VALUES ($1::bigint,$2,$3,false,$4)`,
+          `INSERT INTO votes (vote_id, guild_id, question, options, results_posted, channel_id, created_at)
+           VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb, false, $4, now())
+           ON CONFLICT DO NOTHING`,
           [params.guildId, params.question, JSON.stringify(params.options ?? []), params.channelId || null]
         );
         return ok(res, { success: true });
@@ -380,7 +382,7 @@ app.post('/api/query', async (req, res) => {
       // ── Info Topics ──
       case 'getInfoTopics': {
         const rows = await sql(
-          `SELECT * FROM info_topics WHERE guild_id = $1::bigint ORDER BY section, subcategory, name`,
+          `SELECT * FROM info_topics WHERE guild_id::text = $1 ORDER BY section, subcategory, name`,
           [params.guildId]
         ).catch(() => []);
         return ok(res, rows);
@@ -390,8 +392,8 @@ app.post('/api/query', async (req, res) => {
         const d = params.data;
         await sql(
           `INSERT INTO info_topics
-            (guild_id, section, subcategory, topic_id, name, embed_title, embed_description, embed_color, emoji)
-           VALUES ($1::bigint,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            (id, guild_id, section, subcategory, topic_id, name, embed_title, embed_description, embed_color, emoji)
+           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [params.guildId, d.section ?? 'common', d.subcategory ?? 'General',
            d.topic_id || (d.name || '').toLowerCase().replace(/\s+/g, '_'),
            d.name, d.embed_title ?? null, d.embed_description ?? null,
@@ -451,7 +453,7 @@ app.post('/api/query', async (req, res) => {
         return err(res, `Unknown action: ${action}`);
     }
   } catch (e) {
-    return err(res, e.message, 500);
+    console.error('[Unhandled]', e?.stack || e); return err(res, e.message, 500);
   }
 });
 
@@ -464,8 +466,14 @@ app.get('*', (_req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`✅  API server running on http://localhost:${PORT}`);
-  console.log(`   NeonDB: ${DATABASE_URL.replace(/:([^:@]+)@/, ':***@')}`);
-});
+// Export the app for Vercel (serverless) usage.
+// When running locally (node server/index.js), start the HTTP server normally.
+export default app;
+
+if (!process.env.VERCEL) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`✅  API server running on http://localhost:${PORT}`);
+    console.log(`   NeonDB: ${DATABASE_URL.replace(/:([^:@]+)@/, ':***@')}`);
+  });
+}

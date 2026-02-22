@@ -9,6 +9,16 @@ import Badge from '../components/Badge';
 
 interface Props { guildId: string; }
 
+function F({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+
 export default function Triggers({ guildId }: Props) {
   const [tab, setTab] = useState<'triggers' | 'auto'>('triggers');
   const [triggers, setTriggers] = useState<Trigger[]>([]);
@@ -66,13 +76,6 @@ export default function Triggers({ guildId }: Props) {
       load();
     } catch (e) { setError((e as Error).message); }
   }
-
-  const F = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <div style={{ marginBottom: 14 }}>
-      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>{label}</label>
-      {children}
-    </div>
-  );
 
   const items = tab === 'triggers' ? triggers : autoRes;
   const enabledKey = tab === 'triggers' ? 'enabled' : 'is_enabled';

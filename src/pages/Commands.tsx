@@ -6,7 +6,17 @@ import Badge from '../components/Badge';
 
 interface Props { guildId: string; }
 
+function F({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
 const EMPTY: Partial<CustomCommand> = { trigger: '', name: '', description: '', response: '', response_type: 'text', permission_level: 'everyone', cooldown_seconds: 0, is_tag: false, is_enabled: true };
+
 
 export default function Commands({ guildId }: Props) {
   const [commands, setCommands] = useState<CustomCommand[]>([]);
@@ -52,13 +62,6 @@ export default function Commands({ guildId }: Props) {
     try { await deleteCustomCommand(id); load(); }
     catch (e) { setError((e as Error).message); }
   }
-
-  const F = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <div style={{ marginBottom: 14 }}>
-      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>{label}</label>
-      {children}
-    </div>
-  );
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>

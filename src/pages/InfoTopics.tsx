@@ -6,6 +6,15 @@ import Badge from '../components/Badge';
 
 interface Props { guildId: string; }
 
+function F({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 13 }}>
+      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 5 }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
 const EMPTY: Partial<InfoTopic> = {
   section: 'common', subcategory: 'General', topic_id: '', name: '',
   embed_title: '', embed_description: '', embed_color: '#5865F2', emoji: '📄',
@@ -63,13 +72,6 @@ export default function InfoTopicsPage({ guildId }: Props) {
     acc[t.section].push(t);
     return acc;
   }, {});
-
-  const F = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <div style={{ marginBottom: 13 }}>
-      <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 5 }}>{label}</label>
-      {children}
-    </div>
-  );
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>

@@ -23,13 +23,11 @@ async function apiCall<T = unknown>(action: string, params: Record<string, unkno
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, params }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API error (${res.status}): ${text}`);
-  }
-  const data = await res.json() as { success: boolean; data?: T; error?: string };
-  if (!data.success) throw new Error(data.error ?? 'Unknown API error');
-  return data.data as T;
+  // Always parse JSON — the server always returns { success, data|error }
+  let body: { success: boolean; data?: T; error?: string } | null = null;
+  try { body = await res.json(); } catch { throw new Error(`API error (${res.status}): unparseable response`); }
+  if (!res.ok || !body?.success) throw new Error(body?.error ?? `HTTP ${res.status}`);
+  return body.data as T;
 }
 
 // ── Test connection ────────────────────────────────────────────────────────────
