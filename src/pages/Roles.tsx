@@ -1,9 +1,23 @@
 import { useEffect, useState } from 'react';
-import { Tag, MousePointer, Trash2 } from 'lucide-react';
-import { getReactionRoles, deleteReactionRole, getButtonRoles, deleteButtonRole, type ReactionRole, type ButtonRole } from '../lib/db';
+import { Tag, MousePointer, Trash2, Plus, X } from 'lucide-react';
+import {
+  getReactionRoles, deleteReactionRole, createReactionRole,
+  getButtonRoles, deleteButtonRole, createButtonRole,
+  type ReactionRole, type ButtonRole,
+} from '../lib/db';
 import Badge from '../components/Badge';
 
 interface Props { guildId: string; }
+
+const inputStyle: React.CSSProperties = {
+  background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8,
+  color: 'var(--text)', fontSize: 13, padding: '8px 12px', width: '100%', fontFamily: 'Lexend',
+  outline: 'none', boxSizing: 'border-box',
+};
+const labelStyle: React.CSSProperties = {
+  fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em',
+  textTransform: 'uppercase', marginBottom: 5, display: 'block',
+};
 
 export default function Roles({ guildId }: Props) {
   const [tab, setTab] = useState<'reaction' | 'button'>('reaction');
@@ -11,6 +25,15 @@ export default function Roles({ guildId }: Props) {
   const [button, setButton] = useState<ButtonRole[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const [showRRForm, setShowRRForm] = useState(false);
+  const [rrForm, setRRForm] = useState({ message_id: '', channel_id: '', emoji: '', role_id: '', role_name: '' });
+  const [rrSaving, setRRSaving] = useState(false);
+
+  const [showBRForm, setShowBRForm] = useState(false);
+  const [brForm, setBRForm] = useState({ role_id: '', button_label: 'Get Role', button_emoji: '', button_style: 'PRIMARY', message_id: '', channel_id: '' });
+  const [brSaving, setBRSaving] = useState(false);
 
   const load = () => {
     if (!guildId) return;
@@ -23,21 +46,56 @@ export default function Roles({ guildId }: Props) {
 
   useEffect(load, [guildId]);
 
+  function flash(msg: string) { setSuccess(msg); setTimeout(() => setSuccess(''), 3500); }
+
   async function delReaction(id: string) {
     if (!confirm('Delete this reaction role?')) return;
-    try { await deleteReactionRole(id); setReaction(p => p.filter(r => r.id !== id)); }
+    try { await deleteReactionRole(id); setReaction(p => p.filter(r => r.id !== id)); flash('Reaction role removed'); }
     catch (e) { setError((e as Error).message); }
   }
 
   async function delButton(id: string) {
     if (!confirm('Delete this button role?')) return;
-    try { await deleteButtonRole(id); setButton(p => p.filter(b => b.id !== id)); }
+    try { await deleteButtonRole(id); setButton(p => p.filter(b => b.id !== id)); flash('Button role removed'); }
     catch (e) { setError((e as Error).message); }
+  }
+
+  async function submitReactionRole() {
+    if (!rrForm.message_id.trim() || !rrForm.channel_id.trim() || !rrForm.emoji.trim() || !rrForm.role_id.trim()) {
+      setError('Message ID, Channel ID, Emoji, and Role ID are all required.'); return;
+    }
+    setRRSaving(true);
+    try {
+      await createReactionRole(guildId, { ...rrForm, guild_id: guildId });
+      setShowRRForm(false);
+      setRRForm({ message_id: '', channel_id: '', emoji: '', role_id: '', role_name: '' });
+      flash('Reaction role created! Use /reactionrole add in Discord to add the bot reaction to the message.');
+      load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setRRSaving(false); }
+  }
+
+  async function submitButtonRole() {
+    if (!brForm.role_id.trim()) { setError('Role ID is required.'); return; }
+    setBRSaving(true);
+    try {
+      await createButtonRole(guildId, { ...brForm, guild_id: guildId });
+      setShowBRForm(false);
+      setBRForm({ role_id: '', button_label: 'Get Role', button_emoji: '', button_style: 'PRIMARY', message_id: '', channel_id: '' });
+      flash('Button role registered! Use /buttonrole setup in Discord to send the button message.');
+      load();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBRSaving(false); }
   }
 
   const styleMap: Record<string, 'primary' | 'success' | 'danger' | 'muted'> = {
     PRIMARY: 'primary', SUCCESS: 'success', DANGER: 'danger', SECONDARY: 'muted',
   };
+  const cardStyle: React.CSSProperties = {
+    background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12,
+    padding: 20, marginBottom: 16,
+  };
+  const rowStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 };
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
@@ -47,23 +105,139 @@ export default function Roles({ guildId }: Props) {
 
   return (
     <div className="animate-fade">
-      {error && <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '12px 16px', color: 'var(--danger)', fontSize: 13, marginBottom: 14 }}>{error}</div>}
+      {error && (
+        <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '12px 16px', color: 'var(--danger)', fontSize: 13, marginBottom: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          {error}
+          <button onClick={() => setError('')} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', padding: 0 }}><X size={14} /></button>
+        </div>
+      )}
+      {success && (
+        <div style={{ background: '#052e16', border: '1px solid #22c55e', borderRadius: 10, padding: '12px 16px', color: '#22c55e', fontSize: 13, marginBottom: 14 }}>
+          {success}
+        </div>
+      )}
 
-      <div style={{ display: 'flex', gap: 4, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 4, marginBottom: 16, width: 'fit-content' }}>
-        {([['reaction', 'Reaction Roles', Tag, reaction.length], ['button', 'Button Roles', MousePointer, button.length]] as const).map(([t, label, Icon, count]) => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            padding: '7px 18px', borderRadius: 7, border: 'none', cursor: 'pointer',
-            background: tab === t ? 'var(--elevated)' : 'transparent',
-            color: tab === t ? 'var(--text)' : 'var(--text-muted)',
-            fontSize: 13, fontFamily: 'Lexend', fontWeight: 500,
-            display: 'flex', alignItems: 'center', gap: 7,
-          }}>
-            <Icon size={13} /> {label}
-            <span style={{ background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 600 }}>{count}</span>
-          </button>
-        ))}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 4, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 4, width: 'fit-content' }}>
+          {([['reaction', 'Reaction Roles', Tag, reaction.length], ['button', 'Button Roles', MousePointer, button.length]] as const).map(([t, label, Icon, count]) => (
+            <button key={t} onClick={() => setTab(t)} style={{
+              padding: '7px 18px', borderRadius: 7, border: 'none', cursor: 'pointer',
+              background: tab === t ? 'var(--elevated)' : 'transparent',
+              color: tab === t ? 'var(--text)' : 'var(--text-muted)',
+              fontSize: 13, fontFamily: 'Lexend', fontWeight: 500,
+              display: 'flex', alignItems: 'center', gap: 7,
+            }}>
+              <Icon size={13} /> {label}
+              <span style={{ background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 600 }}>{count}</span>
+            </button>
+          ))}
+        </div>
+        <button
+          className="btn btn-primary"
+          onClick={() => tab === 'reaction' ? setShowRRForm(v => !v) : setShowBRForm(v => !v)}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+        >
+          <Plus size={14} /> Add {tab === 'reaction' ? 'Reaction Role' : 'Button Role'}
+        </button>
       </div>
 
+      {/* Reaction Role Form */}
+      {tab === 'reaction' && showRRForm && (
+        <div style={cardStyle}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14, color: 'var(--text)', display: 'flex', justifyContent: 'space-between' }}>
+            <span>🔔 New Reaction Role</span>
+            <button onClick={() => setShowRRForm(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={14} /></button>
+          </div>
+          <div style={rowStyle}>
+            <div>
+              <label style={labelStyle}>Message ID *</label>
+              <input style={inputStyle} placeholder="123456789012345678" value={rrForm.message_id}
+                onChange={e => setRRForm(p => ({ ...p, message_id: e.target.value }))} />
+            </div>
+            <div>
+              <label style={labelStyle}>Channel ID *</label>
+              <input style={inputStyle} placeholder="987654321098765432" value={rrForm.channel_id}
+                onChange={e => setRRForm(p => ({ ...p, channel_id: e.target.value }))} />
+            </div>
+          </div>
+          <div style={rowStyle}>
+            <div>
+              <label style={labelStyle}>Emoji *</label>
+              <input style={inputStyle} placeholder="✅  or  :custom_emoji:" value={rrForm.emoji}
+                onChange={e => setRRForm(p => ({ ...p, emoji: e.target.value }))} />
+            </div>
+            <div>
+              <label style={labelStyle}>Role ID *</label>
+              <input style={inputStyle} placeholder="111222333444555666" value={rrForm.role_id}
+                onChange={e => setRRForm(p => ({ ...p, role_id: e.target.value }))} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={labelStyle}>Role Name (optional display label)</label>
+            <input style={inputStyle} placeholder="e.g. Member, VIP..." value={rrForm.role_name}
+              onChange={e => setRRForm(p => ({ ...p, role_name: e.target.value }))} />
+          </div>
+          <div style={{ background: 'var(--primary-subtle)', border: '1px solid #4f46e5', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#a5b4fc', marginBottom: 14 }}>
+            💡 <strong>Bot command:</strong> <code>/reactionrole add</code> in Discord will also add the reaction automatically to the message.
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setShowRRForm(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitReactionRole} disabled={rrSaving}>
+              {rrSaving ? 'Saving…' : 'Create Reaction Role'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Button Role Form */}
+      {tab === 'button' && showBRForm && (
+        <div style={cardStyle}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14, color: 'var(--text)', display: 'flex', justifyContent: 'space-between' }}>
+            <span>🔘 New Button Role</span>
+            <button onClick={() => setShowBRForm(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={14} /></button>
+          </div>
+          <div style={rowStyle}>
+            <div>
+              <label style={labelStyle}>Role ID *</label>
+              <input style={inputStyle} placeholder="111222333444555666" value={brForm.role_id}
+                onChange={e => setBRForm(p => ({ ...p, role_id: e.target.value }))} />
+            </div>
+            <div>
+              <label style={labelStyle}>Button Label</label>
+              <input style={inputStyle} placeholder="Get Role" value={brForm.button_label}
+                onChange={e => setBRForm(p => ({ ...p, button_label: e.target.value }))} />
+            </div>
+          </div>
+          <div style={rowStyle}>
+            <div>
+              <label style={labelStyle}>Button Emoji (optional)</label>
+              <input style={inputStyle} placeholder="🎮" value={brForm.button_emoji}
+                onChange={e => setBRForm(p => ({ ...p, button_emoji: e.target.value }))} />
+            </div>
+            <div>
+              <label style={labelStyle}>Button Style</label>
+              <select style={inputStyle} value={brForm.button_style}
+                onChange={e => setBRForm(p => ({ ...p, button_style: e.target.value }))}>
+                <option value="PRIMARY">Primary (Blue)</option>
+                <option value="SECONDARY">Secondary (Grey)</option>
+                <option value="SUCCESS">Success (Green)</option>
+                <option value="DANGER">Danger (Red)</option>
+              </select>
+            </div>
+          </div>
+          <div style={{ background: 'var(--primary-subtle)', border: '1px solid #4f46e5', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#a5b4fc', marginBottom: 14 }}>
+            💡 <strong>Bot command:</strong> Use <code>/buttonrole setup &lt;channel&gt; &lt;role&gt;</code> in Discord to send the actual button message and auto-register it.
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setShowBRForm(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitButtonRole} disabled={brSaving}>
+              {brSaving ? 'Saving…' : 'Register Button Role'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Reaction Roles Table */}
       {tab === 'reaction' && (
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -76,7 +250,9 @@ export default function Roles({ guildId }: Props) {
             </thead>
             <tbody>
               {reaction.length === 0 ? (
-                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>No reaction roles configured</td></tr>
+                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                  No reaction roles configured yet. Use the <strong>Add Reaction Role</strong> button or <code>/reactionrole add</code> in Discord.
+                </td></tr>
               ) : reaction.map(r => (
                 <tr key={r.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
                   <td style={{ padding: '11px 14px', fontSize: 22 }}>{r.emoji}</td>
@@ -103,6 +279,7 @@ export default function Roles({ guildId }: Props) {
         </div>
       )}
 
+      {/* Button Roles Table */}
       {tab === 'button' && (
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -115,7 +292,9 @@ export default function Roles({ guildId }: Props) {
             </thead>
             <tbody>
               {button.length === 0 ? (
-                <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>No button roles configured</td></tr>
+                <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                  No button roles configured yet. Use <strong>Add Button Role</strong> above or <code>/buttonrole setup</code> in Discord.
+                </td></tr>
               ) : button.map(b => (
                 <tr key={b.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
                   <td style={{ padding: '11px 14px', fontSize: 13, fontWeight: 500 }}>{b.button_label || '—'}</td>

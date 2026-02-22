@@ -190,3 +190,28 @@ export async function getButtonRoles(guildId: string): Promise<ButtonRole[]> {
 export async function deleteButtonRole(id: string) {
   return apiCall('deleteButtonRole', { id });
 }
+
+// ── Create / Update Reaction & Button Roles ────────────────────────────────────
+export async function createReactionRole(guildId: string, d: Partial<ReactionRole>) {
+  return apiCall('createReactionRole', { guildId, data: d });
+}
+export async function updateReactionRole(id: string, d: Partial<ReactionRole>) {
+  return apiCall('updateReactionRole', { id, data: d });
+}
+export async function createButtonRole(guildId: string, d: Partial<ButtonRole>) {
+  return apiCall('createButtonRole', { guildId, data: d });
+}
+export async function updateButtonRole(id: string, d: Partial<ButtonRole>) {
+  return apiCall('updateButtonRole', { id, data: d });
+}
+
+// ── Combined Moderation ────────────────────────────────────────────────────────
+export async function getModerationLogs(guildId: string) {
+  return apiCall<AuditLog[]>('getModerationLogs', { guildId });
+}
+export async function getAllTickets(guildId: string): Promise<Ticket[]> {
+  return apiCall<Ticket[]>('getAllTickets', { guildId });
+}
+export async function getAllWarns(guildId: string): Promise<WarnEntry[]> {
+  return apiCall<WarnEntry[]>('getAllWarns', { guildId });
+}

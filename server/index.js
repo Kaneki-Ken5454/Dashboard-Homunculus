@@ -32,6 +32,121 @@ if (!DATABASE_URL) {
 
 const sql = neon(DATABASE_URL);
 
+// ── Auto-create missing tables on startup ─────────────────────────────────────
+async function ensureTables() {
+  const ddls = [
+    `CREATE TABLE IF NOT EXISTS guild_settings (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      guild_id TEXT UNIQUE NOT NULL,
+      prefix TEXT DEFAULT '!',
+      use_slash_commands BOOLEAN DEFAULT TRUE,
+      moderation_enabled BOOLEAN DEFAULT TRUE,
+      levelling_enabled BOOLEAN DEFAULT TRUE,
+      fun_enabled BOOLEAN DEFAULT TRUE,
+      tickets_enabled BOOLEAN DEFAULT TRUE,
+      custom_commands_enabled BOOLEAN DEFAULT TRUE,
+      auto_responders_enabled BOOLEAN DEFAULT TRUE,
+      global_cooldown INTEGER DEFAULT 1000,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS guild_members (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      username TEXT NOT NULL DEFAULT '',
+      discriminator TEXT DEFAULT '0',
+      avatar_url TEXT,
+      message_count INTEGER DEFAULT 0,
+      level INTEGER DEFAULT 0,
+      xp INTEGER DEFAULT 0,
+      joined_at TIMESTAMPTZ DEFAULT NOW(),
+      last_active TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (guild_id, user_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS auto_responders (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      guild_id TEXT NOT NULL,
+      trigger_text TEXT NOT NULL,
+      match_type TEXT NOT NULL DEFAULT 'contains',
+      response TEXT NOT NULL,
+      response_type TEXT NOT NULL DEFAULT 'text',
+      is_enabled BOOLEAN DEFAULT TRUE,
+      trigger_count INTEGER DEFAULT 0,
+      created_by TEXT DEFAULT 'dashboard',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS reaction_roles (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      guild_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      role_name TEXT,
+      is_reaction BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS button_roles (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      guild_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      button_id TEXT,
+      role_id TEXT NOT NULL,
+      button_style TEXT DEFAULT 'PRIMARY',
+      button_label TEXT DEFAULT 'Get Role',
+      button_emoji TEXT,
+      custom_id TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS tickets (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      guild_id TEXT NOT NULL,
+      panel_id TEXT,
+      channel_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      username TEXT NOT NULL DEFAULT '',
+      title TEXT,
+      priority TEXT DEFAULT 'medium',
+      category TEXT DEFAULT 'general',
+      messages_count INTEGER DEFAULT 0,
+      assigned_to TEXT,
+      status TEXT DEFAULT 'open',
+      opened_at TIMESTAMPTZ DEFAULT NOW(),
+      closed_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      guild_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      user_id TEXT,
+      moderator_id TEXT,
+      bot_action BOOLEAN DEFAULT FALSE,
+      reason TEXT,
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS warns_data (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      warns JSONB DEFAULT '[]',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (guild_id, user_id)
+    )`,
+  ];
+  for (const ddl of ddls) {
+    try { await sql(ddl); } catch (e) { console.warn('[DDL]', e.message?.slice(0, 80)); }
+  }
+  console.log('✅  Tables verified/created');
+}
+ensureTables().catch(console.error);
+
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function ok(res, data) {
   res.json({ success: true, data });
@@ -447,6 +562,120 @@ app.post('/api/query', async (req, res) => {
       case 'deleteButtonRole': {
         await sql(`DELETE FROM button_roles WHERE id=$1`, [params.id]);
         return ok(res, { success: true });
+      }
+
+
+      // ── Reaction Roles CRUD ──
+      case 'createReactionRole': {
+        const d = params.data;
+        await sql(
+          `INSERT INTO reaction_roles (id, guild_id, message_id, channel_id, emoji, role_id, role_name, is_reaction, created_at)
+           VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,TRUE,now())`,
+          [params.guildId, d.message_id, d.channel_id, d.emoji, d.role_id, d.role_name ?? null]
+        );
+        return ok(res, { success: true });
+      }
+
+      case 'updateReactionRole': {
+        const d = params.data;
+        await sql(
+          `UPDATE reaction_roles SET emoji=$1, role_id=$2, role_name=$3 WHERE id=$4`,
+          [d.emoji, d.role_id, d.role_name ?? null, params.id]
+        );
+        return ok(res, { success: true });
+      }
+
+      // ── Button Roles CRUD ──
+      case 'createButtonRole': {
+        const d = params.data;
+        const brId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+        await sql(
+          `INSERT INTO button_roles (id, guild_id, message_id, channel_id, button_id, role_id,
+             button_style, button_label, button_emoji, custom_id, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())`,
+          [brId, params.guildId, d.message_id ?? '', d.channel_id ?? '',
+           brId, d.role_id, d.button_style ?? 'PRIMARY',
+           d.button_label ?? 'Get Role', d.button_emoji ?? null,
+           `btnrole_${brId}`]
+        );
+        return ok(res, { success: true });
+      }
+
+      case 'updateButtonRole': {
+        const d = params.data;
+        await sql(
+          `UPDATE button_roles SET role_id=$1, button_style=$2, button_label=$3, button_emoji=$4 WHERE id=$5`,
+          [d.role_id, d.button_style ?? 'PRIMARY', d.button_label ?? 'Get Role', d.button_emoji ?? null, params.id]
+        );
+        return ok(res, { success: true });
+      }
+
+      // ── Moderation ──
+      case 'getModerationLogs': {
+        // Query both mod_actions and audit_logs for completeness
+        const rows = await sql(
+          `SELECT id::text, guild_id::text, action_type, mod_id::text AS moderator_id, target_id::text AS user_id,
+                  reason, timestamp AS created_at, FALSE AS bot_action, '{}'::jsonb AS metadata
+           FROM mod_actions WHERE guild_id::text = $1
+           UNION ALL
+           SELECT id, guild_id, action_type, moderator_id, user_id,
+                  reason, created_at, bot_action, metadata
+           FROM audit_logs WHERE guild_id = $1
+           ORDER BY created_at DESC LIMIT 200`,
+          [params.guildId]
+        ).catch(() => []);
+        return ok(res, rows);
+      }
+
+      // ── Fixed Tickets (also query Prisma "Ticket" table) ──
+      case 'getAllTickets': {
+        const ticketsA = await sql(
+          `SELECT id, guild_id::text AS guild_id, NULL AS panel_id, "channelId" AS channel_id,
+                  "userId" AS user_id, "username", "title", "priority",
+                  'general' AS category, "messagesCount" AS messages_count,
+                  "assignedTo" AS assigned_to, "status",
+                  "openedAt" AS opened_at, "closedAt" AS closed_at
+           FROM "Ticket" WHERE "guildId" = $1 ORDER BY "openedAt" DESC LIMIT 200`,
+          [params.guildId]
+        ).catch(() => []);
+        const ticketsB = await sql(
+          `SELECT * FROM tickets WHERE guild_id = $1 ORDER BY opened_at DESC LIMIT 200`,
+          [params.guildId]
+        ).catch(() => []);
+        return ok(res, [...ticketsA, ...ticketsB]);
+      }
+
+      // ── Warns — also query warn_data (bot's table) ──
+      case 'getAllWarns': {
+        // From warn_data (bot native format, per-warning rows)
+        const nativeWarns = await sql(
+          `SELECT id, guild_id, user_id, moderator_id, reason, severity, created_at
+           FROM warn_data WHERE guild_id = $1 ORDER BY created_at DESC`,
+          [params.guildId]
+        ).catch(() => []);
+        // From warns_data (dashboard sync format)
+        const rawRows = await sql(
+          `SELECT * FROM warns_data WHERE guild_id = $1`,
+          [params.guildId]
+        ).catch(() => []);
+        const dashWarns = [];
+        for (const row of rawRows) {
+          const warns = Array.isArray(row.warns) ? row.warns : [];
+          for (const w of warns) {
+            dashWarns.push({
+              id: `warndata-${row.id}-${w.timestamp || Math.random()}`,
+              guild_id: String(row.guild_id),
+              user_id: row.user_id,
+              moderator_id: w.moderator_id ? String(w.moderator_id) : '—',
+              reason: w.reason || null,
+              severity: 'medium',
+              created_at: w.timestamp || row.created_at || new Date().toISOString(),
+            });
+          }
+        }
+        const combined = [...nativeWarns, ...dashWarns];
+        combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        return ok(res, combined);
       }
 
       default:
