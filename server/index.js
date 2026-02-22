@@ -24,13 +24,15 @@ try {
   // .env not present — rely on real environment variables
 }
 
-const DATABASE_URL = process.env.NEON_DATABASE_URL || process.env.VITE_DATABASE_URL;
+const DATABASE_URL = process.env.NEON_DATABASE_URL || process.env.VITE_DATABASE_URL || process.env.DATABASE_URL;
+// Don't crash at module load — let individual requests fail with a clear error.
+// On Vercel, env vars are available at request time, not necessarily at import time.
+const sql = DATABASE_URL
+  ? neon(DATABASE_URL)
+  : new Proxy({}, { get: () => () => { throw new Error('No database URL configured. Set NEON_DATABASE_URL in Vercel environment variables.'); } });
 if (!DATABASE_URL) {
-  console.error('❌  No database URL found. Set NEON_DATABASE_URL (or VITE_DATABASE_URL) in your .env file.');
-  process.exit(1);
+  console.error('⚠️  No database URL found. Set NEON_DATABASE_URL in Vercel project settings.');
 }
-
-const sql = neon(DATABASE_URL);
 
 // ── Auto-create missing tables on startup ─────────────────────────────────────
 async function ensureTables() {
@@ -144,7 +146,15 @@ async function ensureTables() {
   }
   console.log('✅  Tables verified/created');
 }
-ensureTables().catch(console.error);
+// Lazy init — runs once per serverless instance, not at import time
+let _tablesReady = false;
+let _tablesPromise = null;
+async function ensureTablesOnce() {
+  if (_tablesReady) return;
+  if (!_tablesPromise) _tablesPromise = ensureTables().then(() => { _tablesReady = true; }).catch(console.error);
+  await _tablesPromise;
+}
+
 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -185,21 +195,36 @@ app.post('/api/query', async (req, res) => {
   const { action, params = {} } = req.body;
   if (!action) return err(res, 'Missing action');
 
+  // Ensure all tables exist before handling any query
+  await ensureTablesOnce().catch(() => {});
+
   try {
     switch (action) {
 
       case 'discoverGuilds': {
+        // Scan ALL tables — both bot-native and dashboard-compat names
         const tables = [
-          'guild_settings', 'custom_commands', 'auto_responders', 'tickets',
-          'audit_logs', 'guild_members', 'reaction_roles', 'button_roles',
-          'info_topics', 'votes', 'triggers', 'warns_data', 'mod_actions',
+          'guild_settings', 'guild_config',   // settings
+          'custom_commands',                   // commands
+          'auto_responders', 'triggers',       // triggers/responders
+          'tickets', '"Ticket"', '"TicketPanel"', // tickets (both Prisma + flat)
+          'audit_logs', 'mod_actions',         // moderation
+          'guild_members', 'messages',         // members/activity
+          'reaction_roles', 'button_roles',    // roles
+          'info_topics',                       // info
+          'votes',                             // votes
+          'warns_data', 'warn_data',           // warnings
+          'blacklist_data',                    // blacklist
         ];
         const results = [];
         for (const table of tables) {
           try {
+            // Prisma-quoted tables use "guildId" column, others use guild_id
+            const isPrisma = table.startsWith('"');
+            const colExpr = isPrisma ? `"guildId"::text` : `guild_id::text`;
             const rows = await sql(
-              `SELECT guild_id::text, '${table}' AS source, COUNT(*)::int AS count
-               FROM ${table} WHERE guild_id IS NOT NULL GROUP BY guild_id`
+              `SELECT ${colExpr} AS guild_id, '${table.replace(/"/g,'')}' AS source, COUNT(*)::int AS count
+               FROM ${table} WHERE ${isPrisma ? '"guildId"' : 'guild_id'} IS NOT NULL GROUP BY ${colExpr}`
             );
             results.push(...rows);
           } catch { /* table may not exist */ }
