@@ -1,5 +1,5 @@
-// Pure fetch() → Neon HTTP API. Zero npm packages needed.
-// Neon exposes: POST https://<host>/sql/v1   { query, params }
+// All DB calls go through the Express API server at /api/query.
+// This avoids CORS issues — the browser never contacts NeonDB directly.
 
 // ── URL storage ────────────────────────────────────────────────────────────────
 export function setDatabaseUrl(url: string) {
@@ -16,45 +16,29 @@ export function getDatabaseUrl(): string {
 }
 export function isConfigured(): boolean { return getDatabaseUrl().length > 0; }
 
-// ── Parse conn string → host + password ───────────────────────────────────────
-function parseConn(url: string): { host: string; password: string } {
-  // postgresql://user:password@host/db?params
-  const s = url.replace(/^postgres(?:ql)?:\/\//, '');
-  const at = s.lastIndexOf('@');
-  if (at === -1) throw new Error('Invalid connection string (missing @)');
-  const creds = s.slice(0, at);
-  const afterAt = s.slice(at + 1);
-  const colon = creds.indexOf(':');
-  const password = colon === -1 ? '' : decodeURIComponent(creds.slice(colon + 1));
-  const host = afterAt.split('/')[0].split('?')[0];
-  if (!host) throw new Error('Invalid connection string (no host)');
-  return { host, password };
+// ── Core API call ─────────────────────────────────────────────────────────────
+async function apiCall<T = unknown>(action: string, params: Record<string, unknown> = {}): Promise<T> {
+  const res = await fetch('/api/query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, params }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`API error (${res.status}): ${text}`);
+  }
+  const data = await res.json() as { success: boolean; data?: T; error?: string };
+  if (!data.success) throw new Error(data.error ?? 'Unknown API error');
+  return data.data as T;
 }
 
-// ── Core query ────────────────────────────────────────────────────────────────
-export async function testConnection(url: string): Promise<void> {
-  const { host, password } = parseConn(url);
-  const res = await fetch(`https://${host}/sql/v1`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${password}` },
-    body: JSON.stringify({ query: 'SELECT 1', params: [] }),
-  });
-  if (!res.ok) throw new Error(`Connection failed (${res.status}): ${await res.text().catch(() => res.statusText)}`);
-}
-
-async function q(sql: string, params: unknown[] = []): Promise<unknown[]> {
-  const url = getDatabaseUrl();
-  if (!url) throw new Error('No database URL configured.');
-  const { host, password } = parseConn(url);
-  const res = await fetch(`https://${host}/sql/v1`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${password}` },
-    body: JSON.stringify({ query: sql, params }),
-  });
-  if (!res.ok) throw new Error(`Query error (${res.status}): ${await res.text().catch(() => res.statusText)}`);
-  const data = await res.json() as { rows?: unknown[]; message?: string };
-  if (data.message) throw new Error(data.message);
-  return data.rows ?? [];
+// ── Test connection ────────────────────────────────────────────────────────────
+// Hits the server health endpoint — no direct Neon call from the browser.
+export async function testConnection(_url: string): Promise<void> {
+  const res = await fetch('/api/health');
+  if (!res.ok) throw new Error(`Server unreachable (${res.status}). Make sure the Express server is running: node server/index.js`);
+  const json = await res.json() as { ok?: boolean };
+  if (!json.ok) throw new Error('API server returned unhealthy status');
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -74,102 +58,137 @@ export interface DiscoveredGuild { guild_id: string; source: string; count: numb
 
 // ── Guild Discovery ────────────────────────────────────────────────────────────
 export async function discoverAllGuildIds(): Promise<DiscoveredGuild[]> {
-  const tables = ['guild_settings','custom_commands','auto_responders','tickets','audit_logs','guild_members','reaction_roles','button_roles','info_topics','votes','triggers','warns_data','mod_actions'];
-  const results: DiscoveredGuild[] = [];
-  for (const table of tables) {
-    try { results.push(...(await q(`SELECT guild_id::text, '${table}' AS source, COUNT(*)::int AS count FROM ${table} WHERE guild_id IS NOT NULL GROUP BY guild_id`) as DiscoveredGuild[])); }
-    catch { /* table may not exist */ }
-  }
-  const map = new Map<string, DiscoveredGuild>();
-  for (const r of results) { if (map.has(r.guild_id)) map.get(r.guild_id)!.count += r.count; else map.set(r.guild_id, { ...r }); }
-  return [...map.values()].sort((a, b) => b.count - a.count);
+  return apiCall<DiscoveredGuild[]>('discoverGuilds');
 }
 
 // ── Stats ──────────────────────────────────────────────────────────────────────
 export async function getDashboardStats(guildId: string) {
-  const qs = [
-    { key: 'memberCount',   sql: `SELECT COUNT(*)::int AS c FROM guild_members   WHERE guild_id=$1`, p: [guildId] },
-    { key: 'commandCount',  sql: `SELECT COUNT(*)::int AS c FROM custom_commands WHERE guild_id=$1`, p: [guildId] },
-    { key: 'ticketCount',   sql: `SELECT COUNT(*)::int AS c FROM tickets         WHERE guild_id=$1`, p: [guildId] },
-    { key: 'auditCount',    sql: `SELECT COUNT(*)::int AS c FROM audit_logs      WHERE guild_id=$1`, p: [guildId] },
-    { key: 'triggerCount',  sql: `SELECT COUNT(*)::int AS c FROM triggers        WHERE guild_id=$1::bigint`, p: [guildId] },
-    { key: 'autoRespCount', sql: `SELECT COUNT(*)::int AS c FROM auto_responders WHERE guild_id=$1`, p: [guildId] },
-    { key: 'voteCount',     sql: `SELECT COUNT(*)::int AS c FROM votes           WHERE guild_id=$1::bigint`, p: [guildId] },
-    { key: 'topicCount',    sql: `SELECT COUNT(*)::int AS c FROM info_topics     WHERE guild_id=$1::bigint`, p: [guildId] },
-    { key: 'warnCount',     sql: `SELECT COALESCE(SUM(jsonb_array_length(warns)),0)::int AS c FROM warns_data WHERE guild_id::text=$1`, p: [guildId] },
-  ];
-  const stats: Record<string, number> = {};
-  for (const { key, sql, p } of qs) { try { stats[key] = ((await q(sql, p))[0] as { c: number })?.c ?? 0; } catch { stats[key] = 0; } }
-  return stats as { memberCount: number; commandCount: number; ticketCount: number; auditCount: number; triggerCount: number; warnCount: number; autoRespCount: number; voteCount: number; topicCount: number; };
+  return apiCall<{ memberCount: number; commandCount: number; ticketCount: number; auditCount: number; triggerCount: number; warnCount: number; autoRespCount: number; voteCount: number; topicCount: number }>('getDashboardStats', { guildId });
 }
-export async function getRecentActivity(guildId: string): Promise<AuditLog[]> { try { return await q(`SELECT * FROM audit_logs WHERE guild_id=$1 ORDER BY created_at DESC LIMIT 10`, [guildId]) as AuditLog[]; } catch { return []; } }
+export async function getRecentActivity(guildId: string): Promise<AuditLog[]> {
+  return apiCall<AuditLog[]>('getRecentActivity', { guildId });
+}
 
 // ── Guild Settings ─────────────────────────────────────────────────────────────
-export async function getGuildSetting(guildId: string): Promise<GuildSetting | null> { try { return (await q(`SELECT * FROM guild_settings WHERE guild_id=$1 LIMIT 1`, [guildId]))[0] as GuildSetting ?? null; } catch { return null; } }
+export async function getGuildSetting(guildId: string): Promise<GuildSetting | null> {
+  return apiCall<GuildSetting | null>('getGuildSetting', { guildId });
+}
 export async function upsertGuildSetting(guildId: string, data: Partial<GuildSetting>) {
-  await q(`INSERT INTO guild_settings(guild_id,prefix,use_slash_commands,moderation_enabled,levelling_enabled,fun_enabled,tickets_enabled,custom_commands_enabled,auto_responders_enabled,global_cooldown) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(guild_id) DO UPDATE SET prefix=$2,use_slash_commands=$3,moderation_enabled=$4,levelling_enabled=$5,fun_enabled=$6,tickets_enabled=$7,custom_commands_enabled=$8,auto_responders_enabled=$9,global_cooldown=$10,updated_at=now()`,
-    [guildId, data.prefix??'!', data.use_slash_commands??true, data.moderation_enabled??true, data.levelling_enabled??true, data.fun_enabled??true, data.tickets_enabled??true, data.custom_commands_enabled??true, data.auto_responders_enabled??true, data.global_cooldown??1000]);
+  return apiCall('upsertGuildSetting', { guildId, data });
 }
 
 // ── Members ────────────────────────────────────────────────────────────────────
-export async function getMembers(guildId: string): Promise<GuildMember[]> { try { return await q(`SELECT * FROM guild_members WHERE guild_id=$1 ORDER BY xp DESC LIMIT 200`, [guildId]) as GuildMember[]; } catch { return []; } }
-export async function updateMemberXP(id: string, xp: number, level: number) { await q(`UPDATE guild_members SET xp=$1,level=$2 WHERE id=$3`, [xp, level, id]); }
+export async function getMembers(guildId: string): Promise<GuildMember[]> {
+  return apiCall<GuildMember[]>('getMembers', { guildId });
+}
+export async function updateMemberXP(id: string, xp: number, level: number) {
+  return apiCall('updateMemberXP', { id, xp, level });
+}
 
 // ── Custom Commands ────────────────────────────────────────────────────────────
-export async function getCustomCommands(guildId: string): Promise<CustomCommand[]> { try { return await q(`SELECT * FROM custom_commands WHERE guild_id=$1 ORDER BY created_at DESC`, [guildId]) as CustomCommand[]; } catch { return []; } }
-export async function createCustomCommand(d: Partial<CustomCommand>) { await q(`INSERT INTO custom_commands(guild_id,trigger,name,description,response,response_type,permission_level,cooldown_seconds,is_tag,is_enabled,usage_count,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,'dashboard')`, [d.guild_id,d.trigger,d.name??null,d.description??null,d.response,d.response_type??'text',d.permission_level??'everyone',d.cooldown_seconds??0,d.is_tag??false]); }
-export async function updateCustomCommand(id: string, d: Partial<CustomCommand>) { await q(`UPDATE custom_commands SET trigger=$1,name=$2,description=$3,response=$4,permission_level=$5,cooldown_seconds=$6,is_enabled=$7,is_tag=$8,updated_at=now() WHERE id=$9`, [d.trigger,d.name??null,d.description??null,d.response,d.permission_level??'everyone',d.cooldown_seconds??0,d.is_enabled??true,d.is_tag??false,id]); }
-export async function deleteCustomCommand(id: string) { await q(`DELETE FROM custom_commands WHERE id=$1`, [id]); }
+export async function getCustomCommands(guildId: string): Promise<CustomCommand[]> {
+  return apiCall<CustomCommand[]>('getCustomCommands', { guildId });
+}
+export async function createCustomCommand(d: Partial<CustomCommand>) {
+  return apiCall('createCustomCommand', { guildId: d.guild_id, data: d });
+}
+export async function updateCustomCommand(id: string, d: Partial<CustomCommand>) {
+  return apiCall('updateCustomCommand', { id, data: d });
+}
+export async function deleteCustomCommand(id: string) {
+  return apiCall('deleteCustomCommand', { id });
+}
 
 // ── Auto Responders ────────────────────────────────────────────────────────────
-export async function getAutoResponders(guildId: string): Promise<AutoResponder[]> { try { return await q(`SELECT * FROM auto_responders WHERE guild_id=$1 ORDER BY created_at DESC`, [guildId]) as AutoResponder[]; } catch { return []; } }
-export async function createAutoResponder(d: Partial<AutoResponder>) { await q(`INSERT INTO auto_responders(guild_id,trigger_text,match_type,response,response_type,is_enabled,trigger_count,created_by) VALUES($1,$2,$3,$4,$5,true,0,'dashboard')`, [d.guild_id,d.trigger_text,d.match_type??'contains',d.response,d.response_type??'text']); }
-export async function updateAutoResponder(id: string, d: Partial<AutoResponder>) { await q(`UPDATE auto_responders SET trigger_text=$1,match_type=$2,response=$3,is_enabled=$4,updated_at=now() WHERE id=$5`, [d.trigger_text,d.match_type??'contains',d.response,d.is_enabled??true,id]); }
-export async function deleteAutoResponder(id: string) { await q(`DELETE FROM auto_responders WHERE id=$1`, [id]); }
+export async function getAutoResponders(guildId: string): Promise<AutoResponder[]> {
+  return apiCall<AutoResponder[]>('getAutoResponders', { guildId });
+}
+export async function createAutoResponder(d: Partial<AutoResponder>) {
+  return apiCall('createAutoResponder', { guildId: d.guild_id, data: d });
+}
+export async function updateAutoResponder(id: string, d: Partial<AutoResponder>) {
+  return apiCall('updateAutoResponder', { id, data: d });
+}
+export async function deleteAutoResponder(id: string) {
+  return apiCall('deleteAutoResponder', { id });
+}
 
 // ── Triggers ───────────────────────────────────────────────────────────────────
-export async function getTriggers(guildId: string): Promise<Trigger[]> { try { return await q(`SELECT * FROM triggers WHERE guild_id=$1::bigint ORDER BY created_at DESC`, [guildId]) as Trigger[]; } catch { return []; } }
-export async function createTrigger(d: Partial<Trigger> & { guild_id: string }) { await q(`INSERT INTO triggers(guild_id,trigger_text,response,match_type,enabled,use_count) VALUES($1::bigint,$2,$3,$4,true,0)`, [d.guild_id,d.trigger_text,d.response,d.match_type??'contains']); }
-export async function updateTrigger(id: number, d: Partial<Trigger>) { await q(`UPDATE triggers SET trigger_text=$1,response=$2,match_type=$3,enabled=$4,updated_at=now() WHERE id=$5`, [d.trigger_text,d.response,d.match_type??'contains',d.enabled??true,id]); }
-export async function deleteTrigger(id: number) { await q(`DELETE FROM triggers WHERE id=$1`, [id]); }
+export async function getTriggers(guildId: string): Promise<Trigger[]> {
+  return apiCall<Trigger[]>('getTriggers', { guildId });
+}
+export async function createTrigger(d: Partial<Trigger> & { guild_id: string }) {
+  return apiCall('createTrigger', { guildId: d.guild_id, data: d });
+}
+export async function updateTrigger(id: number, d: Partial<Trigger>) {
+  return apiCall('updateTrigger', { id, data: d });
+}
+export async function deleteTrigger(id: number) {
+  return apiCall('deleteTrigger', { id });
+}
 
 // ── Tickets ────────────────────────────────────────────────────────────────────
-export async function getTickets(guildId: string): Promise<Ticket[]> { try { return await q(`SELECT * FROM tickets WHERE guild_id=$1 ORDER BY opened_at DESC LIMIT 200`, [guildId]) as Ticket[]; } catch { return []; } }
-export async function updateTicketStatus(id: string, status: string) { await q(`UPDATE tickets SET status=$1,closed_at=$2 WHERE id=$3`, [status, status==='closed'?new Date().toISOString():null, id]); }
-export async function deleteTicket(id: string) { await q(`DELETE FROM tickets WHERE id=$1`, [id]); }
+export async function getTickets(guildId: string): Promise<Ticket[]> {
+  return apiCall<Ticket[]>('getTickets', { guildId });
+}
+export async function updateTicketStatus(id: string, status: string) {
+  return apiCall('updateTicketStatus', { id, status });
+}
+export async function deleteTicket(id: string) {
+  return apiCall('deleteTicket', { id });
+}
 
 // ── Audit Logs ─────────────────────────────────────────────────────────────────
-export async function getAuditLogs(guildId: string): Promise<AuditLog[]> { try { return await q(`SELECT * FROM audit_logs WHERE guild_id=$1 ORDER BY created_at DESC LIMIT 200`, [guildId]) as AuditLog[]; } catch { return []; } }
-export async function deleteAuditLog(id: string) { await q(`DELETE FROM audit_logs WHERE id=$1`, [id]); }
+export async function getAuditLogs(guildId: string): Promise<AuditLog[]> {
+  return apiCall<AuditLog[]>('getAuditLogs', { guildId });
+}
+export async function deleteAuditLog(id: string) {
+  return apiCall('deleteAuditLog', { id });
+}
 
 // ── Warns ──────────────────────────────────────────────────────────────────────
 export async function getWarns(guildId: string): Promise<WarnEntry[]> {
-  try {
-    const rows = await q(`SELECT * FROM warns_data WHERE guild_id::text=$1`, [guildId]) as Record<string,unknown>[];
-    const flat: WarnEntry[] = [];
-    for (const row of rows) {
-      for (const w of (Array.isArray(row.warns) ? row.warns as Record<string,unknown>[] : [])) {
-        flat.push({ id:`${row.id}-${w.timestamp||Math.random()}`, guild_id:String(row.guild_id), user_id:row.user_id as string, moderator_id:w.moderator_id?String(w.moderator_id):(w.moderator as string)||'—', reason:(w.reason as string)||null!, severity:(w.severity as string)||'low', created_at:(w.timestamp as string)||(row.created_at as string)||new Date().toISOString() });
-      }
-    }
-    return flat.sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime());
-  } catch { return []; }
+  return apiCall<WarnEntry[]>('getWarns', { guildId });
 }
-export async function deleteWarn(id: string) { await q(`DELETE FROM warns_data WHERE id=$1`, [id]); }
+export async function deleteWarn(id: string) {
+  return apiCall('deleteWarn', { id });
+}
 
 // ── Votes ──────────────────────────────────────────────────────────────────────
-export async function getVotes(guildId: string): Promise<Vote[]> { try { return await q(`SELECT * FROM votes WHERE guild_id=$1::bigint ORDER BY created_at DESC`, [guildId]) as Vote[]; } catch { return []; } }
-export async function createVote(d:{guild_id:string;question:string;options:unknown;channel_id?:string}) { await q(`INSERT INTO votes(guild_id,question,options,results_posted,channel_id) VALUES($1::bigint,$2,$3,false,$4)`, [d.guild_id,d.question,JSON.stringify(d.options??[]),d.channel_id||null]); }
-export async function deleteVote(id: number) { await q(`DELETE FROM votes WHERE id=$1`, [id]); }
+export async function getVotes(guildId: string): Promise<Vote[]> {
+  return apiCall<Vote[]>('getVotes', { guildId });
+}
+export async function createVote(d: { guild_id: string; question: string; options: unknown; channel_id?: string }) {
+  return apiCall('createVote', { guildId: d.guild_id, question: d.question, options: d.options, channelId: d.channel_id });
+}
+export async function deleteVote(id: number) {
+  return apiCall('deleteVote', { id });
+}
 
 // ── Info Topics ────────────────────────────────────────────────────────────────
-export async function getInfoTopics(guildId: string): Promise<InfoTopic[]> { try { return await q(`SELECT * FROM info_topics WHERE guild_id=$1::bigint ORDER BY section,subcategory,name`, [guildId]) as InfoTopic[]; } catch { return []; } }
-export async function createInfoTopic(guildId: string, d: Partial<InfoTopic>) { await q(`INSERT INTO info_topics(guild_id,section,subcategory,topic_id,name,embed_title,embed_description,embed_color,emoji) VALUES($1::bigint,$2,$3,$4,$5,$6,$7,$8,$9)`, [guildId,d.section??'common',d.subcategory??'General',d.topic_id||(d.name||'').toLowerCase().replace(/\s+/g,'_'),d.name,d.embed_title??null,d.embed_description??null,d.embed_color??'#5865F2',d.emoji??'📄']); }
-export async function updateInfoTopic(id: number, d: Partial<InfoTopic>) { await q(`UPDATE info_topics SET section=$1,subcategory=$2,name=$3,embed_title=$4,embed_description=$5,embed_color=$6,emoji=$7,updated_at=now() WHERE id=$8`, [d.section??'common',d.subcategory??'General',d.name,d.embed_title??null,d.embed_description??null,d.embed_color??'#5865F2',d.emoji??'📄',id]); }
-export async function deleteInfoTopic(id: number) { await q(`DELETE FROM info_topics WHERE id=$1`, [id]); }
+export async function getInfoTopics(guildId: string): Promise<InfoTopic[]> {
+  return apiCall<InfoTopic[]>('getInfoTopics', { guildId });
+}
+export async function createInfoTopic(guildId: string, d: Partial<InfoTopic>) {
+  return apiCall('createInfoTopic', { guildId, data: d });
+}
+export async function updateInfoTopic(id: number, d: Partial<InfoTopic>) {
+  return apiCall('updateInfoTopic', { id, data: d });
+}
+export async function deleteInfoTopic(id: number) {
+  return apiCall('deleteInfoTopic', { id });
+}
 
 // ── Reaction / Button Roles ────────────────────────────────────────────────────
-export async function getReactionRoles(guildId: string): Promise<ReactionRole[]> { try { return await q(`SELECT * FROM reaction_roles WHERE guild_id=$1 ORDER BY created_at DESC`, [guildId]) as ReactionRole[]; } catch { return []; } }
-export async function deleteReactionRole(id: string) { await q(`DELETE FROM reaction_roles WHERE id=$1`, [id]); }
-export async function getButtonRoles(guildId: string): Promise<ButtonRole[]> { try { return await q(`SELECT * FROM button_roles WHERE guild_id=$1 ORDER BY created_at DESC`, [guildId]) as ButtonRole[]; } catch { return []; } }
-export async function deleteButtonRole(id: string) { await q(`DELETE FROM button_roles WHERE id=$1`, [id]); }
+export async function getReactionRoles(guildId: string): Promise<ReactionRole[]> {
+  return apiCall<ReactionRole[]>('getReactionRoles', { guildId });
+}
+export async function deleteReactionRole(id: string) {
+  return apiCall('deleteReactionRole', { id });
+}
+export async function getButtonRoles(guildId: string): Promise<ButtonRole[]> {
+  return apiCall<ButtonRole[]>('getButtonRoles', { guildId });
+}
+export async function deleteButtonRole(id: string) {
+  return apiCall('deleteButtonRole', { id });
+}

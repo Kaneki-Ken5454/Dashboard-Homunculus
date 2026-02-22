@@ -1,6 +1,0 @@
-project_id = "qmcsjzvkcwxbyvwkbrty"
-
-[functions.neon-query]
-verify_jwt = false
-[env]
-NEON_DATABASE_URL = "postgresql://neondb_owner:npg_dJjb8k0EAUGf@ep-floral-resonance-a1spd9bz-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"

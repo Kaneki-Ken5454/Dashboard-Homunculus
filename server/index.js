@@ -24,9 +24,9 @@ try {
   // .env not present — rely on real environment variables
 }
 
-const DATABASE_URL = process.env.NEON_DATABASE_URL;
+const DATABASE_URL = process.env.NEON_DATABASE_URL || process.env.VITE_DATABASE_URL;
 if (!DATABASE_URL) {
-  console.error('❌  NEON_DATABASE_URL is not set. Copy .env.example to .env and add your connection string.');
+  console.error('❌  No database URL found. Set NEON_DATABASE_URL (or VITE_DATABASE_URL) in your .env file.');
   process.exit(1);
 }
 
