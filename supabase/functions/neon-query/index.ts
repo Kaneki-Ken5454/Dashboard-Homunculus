@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
           { key: "ticketCount", sql: `SELECT COUNT(*)::int AS c FROM tickets WHERE guild_id = $1`, params: [gid] },
           { key: "auditCount", sql: `SELECT COUNT(*)::int AS c FROM audit_logs WHERE guild_id = $1`, params: [gid] },
           { key: "triggerCount", sql: `SELECT COUNT(*)::int AS c FROM triggers WHERE guild_id = $1::bigint`, params: [gid] },
-          { key: "warnCount", sql: `SELECT COUNT(*)::int AS c FROM warns_data WHERE guild_id = $1`, params: [gid] },
+          { key: "warnCount", sql: `SELECT COALESCE(SUM(jsonb_array_length(warns)), 0)::int AS c FROM warns_data WHERE guild_id::text = $1`, params: [gid] },
           { key: "autoRespCount", sql: `SELECT COUNT(*)::int AS c FROM auto_responders WHERE guild_id = $1`, params: [gid] },
           { key: "voteCount", sql: `SELECT COUNT(*)::int AS c FROM votes WHERE guild_id = $1::bigint`, params: [gid] },
           { key: "topicCount", sql: `SELECT COUNT(*)::int AS c FROM info_topics WHERE guild_id = $1::bigint`, params: [gid] },
@@ -287,11 +287,28 @@ Deno.serve(async (req) => {
 
       // ── Warns ──
       case "getWarns": {
-        const rows = await db.unsafe(
-          `SELECT * FROM warns_data WHERE guild_id = $1 ORDER BY created_at DESC`,
+        // warns_data stores warns as a JSONB array per user; flatten into individual entries
+        const rawRows = await db.unsafe(
+          `SELECT * FROM warns_data WHERE guild_id::text = $1`,
           [p.guildId]
         ).catch(() => []);
-        return ok(rows);
+        const flat: unknown[] = [];
+        for (const row of rawRows as any[]) {
+          const warns = Array.isArray(row.warns) ? row.warns : [];
+          for (const w of warns) {
+            flat.push({
+              id: `${row.id}-${w.timestamp || Math.random()}`,
+              guild_id: String(row.guild_id),
+              user_id: row.user_id,
+              moderator_id: w.moderator_id ? String(w.moderator_id) : w.moderator || '—',
+              reason: w.reason || null,
+              severity: w.severity || 'low',
+              created_at: w.timestamp || row.created_at || new Date().toISOString(),
+            });
+          }
+        }
+        flat.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        return ok(flat);
       }
 
       case "deleteWarn": {
