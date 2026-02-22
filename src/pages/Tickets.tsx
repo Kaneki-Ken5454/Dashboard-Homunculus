@@ -25,16 +25,25 @@ export default function Tickets({ guildId }: Props) {
   const [filter, setFilter] = useState('all');
   const [error, setError] = useState('');
 
-  const load = () => {
+  const load = async () => {
     if (!guildId) return;
-    setLoading(true);
-    getTickets(guildId)
-      .then(setTickets)
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+    setLoading(true); setError('');
+    try {
+      console.log(`Loading tickets for guild: ${guildId}`);
+      const tickets = await getTickets(guildId);
+      console.log(`Loaded ${tickets.length} tickets`);
+      setTickets(tickets);
+    } catch (e) {
+      console.error('Error loading tickets:', e);
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  useEffect(load, [guildId]);
+  useEffect(() => {
+    load();
+  }, [guildId]);
 
   const filtered = filter === 'all' ? tickets : tickets.filter(t => t.status === filter);
 
@@ -46,19 +55,34 @@ export default function Tickets({ guildId }: Props) {
   };
 
   async function changeStatus(id: string, status: string) {
-    try { await updateTicketStatus(id, status); load(); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      console.log(`Updating ticket ${id} status to: ${status}`);
+      await updateTicketStatus(id, status);
+      await load(); // Reload data
+    } catch (e) {
+      console.error('Error updating ticket status:', e);
+      setError((e as Error).message);
+    }
   }
 
   async function del(id: string) {
     if (!confirm('Delete this ticket permanently?')) return;
-    try { await deleteTicket(id); load(); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      console.log(`Deleting ticket: ${id}`);
+      await deleteTicket(id);
+      await load(); // Reload data
+    } catch (e) {
+      console.error('Error deleting ticket:', e);
+      setError((e as Error).message);
+    }
   }
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
-      <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading tickets...</div>
+      </div>
     </div>
   );
 
@@ -99,12 +123,19 @@ export default function Tickets({ guildId }: Props) {
           </thead>
           <tbody>
             {filtered.length === 0 ? (
-              <tr><td colSpan={8}>
-                <div style={{ padding: '48px 16px', textAlign: 'center' }}>
-                  <Ticket size={28} style={{ color: 'var(--text-faint)', display: 'block', margin: '0 auto 10px' }} />
-                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>No {filter !== 'all' ? filter : ''} tickets</div>
-                </div>
-              </td></tr>
+              <tr>
+                <td colSpan={8}>
+                  <div style={{ padding: '48px 16px', textAlign: 'center' }}>
+                    <Ticket size={28} style={{ color: 'var(--text-faint)', display: 'block', margin: '0 auto 10px' }} />
+                    <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+                      {filter !== 'all' 
+                        ? `No ${filter} tickets found` 
+                        : 'No tickets in this server'
+                      }
+                    </div>
+                  </div>
+                </td>
+              </tr>
             ) : filtered.map(t => (
               <tr key={t.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '11px 14px' }}>

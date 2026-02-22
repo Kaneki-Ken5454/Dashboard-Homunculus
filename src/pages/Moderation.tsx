@@ -21,26 +21,53 @@ export default function Moderation({ guildId }: Props) {
   const [warns, setWarns] = useState<WarnEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 20;
 
-  const load = () => {
+  const load = async () => {
     if (!guildId) return;
-    setLoading(true);
-    Promise.all([getAuditLogs(guildId), getWarns(guildId)])
-      .then(([l, w]) => { setLogs(l); setWarns(w); })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+    setLoading(true); setError('');
+    try {
+      console.log(`Loading moderation data for guild: ${guildId}`);
+      const [logs, warns] = await Promise.all([getAuditLogs(guildId), getWarns(guildId)]);
+      console.log(`Loaded ${logs.length} audit logs and ${warns.length} warns`);
+      setLogs(logs); 
+      setWarns(warns); 
+      setCurrentPage(1); // Reset to first page when data loads
+    } catch (e) {
+      console.error('Error loading moderation data:', e);
+      setError((e as Error).message); 
+    } finally {
+      setLoading(false);
+    }
   };
 
-  useEffect(load, [guildId]);
+  useEffect(() => {
+    load();
+  }, [guildId]);
 
   async function delLog(id: string) {
-    try { await deleteAuditLog(id); setLogs(prev => prev.filter(l => l.id !== id)); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      console.log(`Deleting audit log: ${id}`);
+      await deleteAuditLog(id);
+      setLogs(prev => prev.filter(l => l.id !== id));
+    } catch (e) {
+      console.error('Error deleting audit log:', e);
+      setError((e as Error).message);
+    }
   }
 
   async function delWarn(id: string) {
-    try { await deleteWarn(id); setWarns(prev => prev.filter(w => w.id !== id)); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      console.log(`Deleting warn: ${id}`);
+      await deleteWarn(id);
+      setWarns(prev => prev.filter(w => w.id !== id));
+    } catch (e) {
+      console.error('Error deleting warn:', e);
+      setError((e as Error).message);
+    }
   }
 
   const actionVariant = (type: string): 'danger' | 'warning' | 'success' | 'primary' | 'muted' => {
@@ -55,7 +82,10 @@ export default function Moderation({ guildId }: Props) {
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
-      <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading moderation data...</div>
+      </div>
     </div>
   );
 
@@ -92,32 +122,71 @@ export default function Moderation({ guildId }: Props) {
             </thead>
             <tbody>
               {logs.length === 0 ? (
-                <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>No audit logs</td></tr>
-              ) : logs.map(log => (
-                <tr key={log.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <td style={{ padding: '10px 14px' }}>
-                    <Badge label={log.action_type.replace(/_/g, ' ')} variant={actionVariant(log.action_type)} />
-                  </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{log.user_id || '—'}</span>
-                  </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{log.moderator_id || '—'}</span>
-                  </td>
-                  <td style={{ padding: '10px 14px', maxWidth: 240 }}>
-                    <span style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>{log.reason || '—'}</span>
-                  </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    {log.bot_action && <Badge label="bot" variant="primary" />}
-                  </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{timeAgo(log.created_at)}</td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <button className="btn btn-danger btn-sm" onClick={() => delLog(log.id)}><Trash2 size={11} /></button>
+                <tr>
+                  <td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                    No audit logs found
                   </td>
                 </tr>
-              ))}
+              ) : (() => {
+                const startIndex = (currentPage - 1) * itemsPerPage;
+                const endIndex = startIndex + itemsPerPage;
+                const paginatedLogs = logs.slice(startIndex, endIndex);
+                
+                return (
+                  <>
+                    {paginatedLogs.map(log => (
+                      <tr key={log.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td style={{ padding: '10px 14px' }}>
+                          <Badge label={log.action_type.replace(/_/g, ' ')} variant={actionVariant(log.action_type)} />
+                        </td>
+                        <td style={{ padding: '10px 14px' }}>
+                          <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{log.user_id || '—'}</span>
+                        </td>
+                        <td style={{ padding: '10px 14px' }}>
+                          <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{log.moderator_id || '—'}</span>
+                        </td>
+                        <td style={{ padding: '10px 14px', maxWidth: 240 }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>{log.reason || '—'}</span>
+                        </td>
+                        <td style={{ padding: '10px 14px' }}>
+                          {log.bot_action && <Badge label="bot" variant="primary" />}
+                        </td>
+                        <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{timeAgo(log.created_at)}</td>
+                        <td style={{ padding: '10px 14px' }}>
+                          <button className="btn btn-danger btn-sm" onClick={() => delLog(log.id)}><Trash2 size={11} /></button>
+                        </td>
+                      </tr>
+                    ))}
+                  </>
+                );
+              })()}
             </tbody>
           </table>
+          
+          {/* Pagination */}
+          {logs.length > itemsPerPage && (
+            <div style={{ borderTop: '1px solid var(--border)', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Showing {Math.min(currentPage * itemsPerPage, logs.length)} of {logs.length} logs
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button 
+                  className="btn btn-ghost btn-sm" 
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                >
+                  Previous
+                </button>
+                <button 
+                  className="btn btn-ghost btn-sm" 
+                  onClick={() => setCurrentPage(p => Math.min(Math.ceil(logs.length / itemsPerPage), p + 1))}
+                  disabled={currentPage === Math.ceil(logs.length / itemsPerPage)}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -133,7 +202,11 @@ export default function Moderation({ guildId }: Props) {
             </thead>
             <tbody>
               {warns.length === 0 ? (
-                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>No warnings recorded</td></tr>
+                <tr>
+                  <td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                    No warnings recorded
+                  </td>
+                </tr>
               ) : warns.map(w => (
                 <tr key={w.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
                   <td style={{ padding: '11px 14px' }}>

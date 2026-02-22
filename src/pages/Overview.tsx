@@ -29,12 +29,24 @@ export default function Overview({ guildId }: Props) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!guildId) return;
-    setLoading(true); setError('');
-    Promise.all([getDashboardStats(guildId), getRecentActivity(guildId)])
-      .then(([s, a]) => { setStats(s); setActivity(a); })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+    const loadOverview = async () => {
+      if (!guildId) return;
+      setLoading(true); setError('');
+      try {
+        console.log(`Loading overview data for guild: ${guildId}`);
+        const [stats, activity] = await Promise.all([getDashboardStats(guildId), getRecentActivity(guildId)]);
+        console.log('Loaded overview data:', { stats, activityCount: activity.length });
+        setStats(stats); 
+        setActivity(activity);
+      } catch (e) {
+        console.error('Error loading overview data:', e);
+        setError((e as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    loadOverview();
   }, [guildId]);
 
   const statCards = stats ? [

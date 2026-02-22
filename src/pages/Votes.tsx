@@ -12,6 +12,7 @@ export default function Votes({ guildId }: Props) {
   const [modal, setModal] = useState(false);
   const [question, setQuestion] = useState('');
   const [optionsText, setOptionsText] = useState('');
+  const [channelId, setChannelId] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -20,7 +21,7 @@ export default function Votes({ guildId }: Props) {
     setLoading(true);
     getVotes(guildId)
       .then(setVotes)
-      .catch(e => setError(e.message))
+      .catch(e => setError((e as Error).message))
       .finally(() => setLoading(false));
   };
 
@@ -29,12 +30,25 @@ export default function Votes({ guildId }: Props) {
   async function submit() {
     if (!question.trim()) return;
     const options = optionsText.split('\n').map(s => s.trim()).filter(Boolean);
+    if (options.length < 2) { setError('Please provide at least 2 options'); return; }
+    if (channelId.trim() && !/^\d{17,19}$/.test(channelId.trim())) {
+      setError('Channel ID must be 17–19 digits'); return;
+    }
     setSaving(true); setError('');
     try {
-      await createVote({ guild_id: guildId, question: question.trim(), options });
-      setModal(false); setQuestion(''); setOptionsText(''); load();
-    } catch (e) { setError((e as Error).message); }
-    finally { setSaving(false); }
+      await createVote({
+        guild_id: guildId,
+        question: question.trim(),
+        options,
+        channel_id: channelId.trim() || undefined,
+      });
+      setModal(false); setQuestion(''); setOptionsText(''); setChannelId('');
+      load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function del(id: number) {
@@ -57,10 +71,16 @@ export default function Votes({ guildId }: Props) {
 
   return (
     <div className="animate-fade">
-      {error && <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '12px 16px', color: 'var(--danger)', fontSize: 13, marginBottom: 14 }}>{error}</div>}
+      {error && (
+        <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '12px 16px', color: 'var(--danger)', fontSize: 13, marginBottom: 14 }}>
+          {error}
+        </div>
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-        <button className="btn btn-primary" onClick={() => setModal(true)}><Plus size={14} /> Create Vote</button>
+        <button className="btn btn-primary" onClick={() => setModal(true)}>
+          <Plus size={14} /> Create Vote
+        </button>
       </div>
 
       {votes.length === 0 ? (
@@ -112,14 +132,19 @@ export default function Votes({ guildId }: Props) {
       )}
 
       {modal && (
-        <Modal title="Create Vote" onClose={() => setModal(false)}>
+        <Modal title="Create Vote" onClose={() => setModal(false)} width="540px">
           <div style={{ marginBottom: 14 }}>
             <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Question *</label>
             <input className="inp" placeholder="What should we do?" value={question} onChange={e => setQuestion(e.target.value)} />
           </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Channel ID <span style={{ color: 'var(--text-faint)' }}>(optional)</span></label>
+            <input className="inp" placeholder="123456789012345678" value={channelId} onChange={e => setChannelId(e.target.value)} />
+            <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4 }}>Leave empty to save without posting to a channel</div>
+          </div>
           <div style={{ marginBottom: 20 }}>
-            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Options (one per line)</label>
-            <textarea className="inp" style={{ minHeight: 100 }} placeholder={"Option A\nOption B\nOption C"} value={optionsText} onChange={e => setOptionsText(e.target.value)} />
+            <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Options — one per line *</label>
+            <textarea className="inp" style={{ minHeight: 100 }} placeholder={'Option A\nOption B\nOption C'} value={optionsText} onChange={e => setOptionsText(e.target.value)} />
           </div>
           {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 12 }}>{error}</div>}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>

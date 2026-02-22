@@ -16,16 +16,26 @@ export default function Members({ guildId }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const load = () => {
+  const load = async () => {
     if (!guildId) return;
-    setLoading(true);
-    getMembers(guildId)
-      .then(m => { setMembers(m); setFiltered(m); })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+    setLoading(true); setError('');
+    try {
+      console.log(`Loading members for guild: ${guildId}`);
+      const members = await getMembers(guildId);
+      console.log(`Loaded ${members.length} members`);
+      setMembers(members); 
+      setFiltered(members);
+    } catch (e) {
+      console.error('Error loading members:', e);
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  useEffect(load, [guildId]);
+  useEffect(() => {
+    load();
+  }, [guildId]);
 
   useEffect(() => {
     const q = search.toLowerCase();
@@ -38,19 +48,28 @@ export default function Members({ guildId }: Props) {
 
   async function saveEdit() {
     if (!editing) return;
-    setSaving(true);
+    setSaving(true); setError('');
     try {
+      console.log(`Updating XP for member ${editing.id}: XP=${editXp}, Level=${editLevel}`);
       await updateMemberXP(editing.id, Number(editXp), Number(editLevel));
-      setEditing(null); load();
-    } catch (e) { setError((e as Error).message); }
-    finally { setSaving(false); }
+      setEditing(null); 
+      await load(); // Reload data
+    } catch (e) {
+      console.error('Error updating member XP:', e);
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   const rankColor = (i: number) => i === 0 ? '#f1c40f' : i === 1 ? '#bdc3c7' : i === 2 ? '#cd7f32' : 'var(--text-faint)';
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
-      <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading members...</div>
+      </div>
     </div>
   );
 
@@ -78,9 +97,21 @@ export default function Members({ guildId }: Props) {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 ? (
-              <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>No members found</td></tr>
-            ) : filtered.map((m, i) => (
+          {filtered.length === 0 ? (
+            <tr>
+              <td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center' }}>
+                {search ? (
+                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+                    No members found for "{search}"
+                  </div>
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+                    No members in this server
+                  </div>
+                )}
+              </td>
+            </tr>
+          ) : filtered.map((m, i) => (
               <tr key={m.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '12px 16px' }}>
                   <Trophy size={13} style={{ color: rankColor(i) }} />
