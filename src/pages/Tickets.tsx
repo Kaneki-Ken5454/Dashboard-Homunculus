@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Ticket, Filter } from 'lucide-react';
+import { Ticket, Filter, Bell, Plus, X } from 'lucide-react';
+import { apiCall } from '../lib/db';
 import { getTickets, updateTicketStatus, deleteTicket, type Ticket as TicketType } from '../lib/db';
 import Badge from '../components/Badge';
 
@@ -90,6 +91,38 @@ export default function Tickets({ guildId }: Props) {
     <div className="animate-fade">
       {error && <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '12px 16px', color: 'var(--danger)', fontSize: 13, marginBottom: 14 }}>{error}</div>}
 
+      {/* Notification Roles section */}
+      {panels.length > 0 && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px', marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Bell size={14} style={{ color: 'var(--primary)' }} />
+            Ticket Panel Notification Roles
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 14 }}>
+            Configure which roles get pinged (beyond the default staff roles) when a ticket is opened in each panel.
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {panels.map(p => (
+              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--elevated)', borderRadius: 8, padding: '10px 14px' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>{p.name}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                    {p.notificationRoles.length === 0 ? (
+                      <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>No additional notification roles</span>
+                    ) : p.notificationRoles.map((r, i) => (
+                      <code key={i} style={{ fontSize: 11, background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 4, padding: '2px 7px' }}>@{r}</code>
+                    ))}
+                  </div>
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={() => setPingModal({ panelId: p.id, name: p.name, roles: [...p.notificationRoles] })}>
+                  Configure
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Status filter tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <Filter size={14} style={{ color: 'var(--text-muted)', alignSelf: 'center' }} />
@@ -168,5 +201,38 @@ export default function Tickets({ guildId }: Props) {
         </table>
       </div>
     </div>
+
+      {/* Ping roles modal */}
+      {pingModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+          <div style={{ background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 14, padding: 24, width: 440, maxWidth: '90vw' }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Notification Roles</div>
+            <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 16 }}>Panel: {pingModal.name}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>Role IDs to ping when a ticket opens:</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12, minHeight: 32 }}>
+              {pingModal.roles.map((r, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'var(--primary-subtle)', border: '1px solid #4f46e5', borderRadius: 6, padding: '3px 8px' }}>
+                  <code style={{ fontSize: 11, color: '#818cf8' }}>{r}</code>
+                  <button onClick={() => setPingModal(p => p ? { ...p, roles: p.roles.filter((_, j) => j !== i) } : null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#818cf8', padding: 0, lineHeight: 1 }}>
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+              <input className="inp" style={{ flex: 1, fontSize: 12 }} placeholder="Role ID (17–19 digits)" value={newRole} onChange={e => setNewRole(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && /^\d{17,19}$/.test(newRole.trim())) { setPingModal(p => p ? { ...p, roles: [...p.roles, newRole.trim()] } : null); setNewRole(''); } }} />
+              <button className="btn btn-primary btn-sm" disabled={!/^\d{17,19}$/.test(newRole.trim())} onClick={() => { if (/^\d{17,19}$/.test(newRole.trim())) { setPingModal(p => p ? { ...p, roles: [...p.roles, newRole.trim()] } : null); setNewRole(''); } }}>
+                <Plus size={12} /> Add
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 18 }}>These roles will be mentioned in addition to your server's MOD_ROLE_IDS / ADMIN_ROLE_IDS configured in .env</div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setPingModal(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={savePingRoles} disabled={savingPing}>{savingPing ? 'Saving…' : 'Save'}</button>
+            </div>
+          </div>
+        </div>
+      )}
   );
 }

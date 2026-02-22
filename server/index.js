@@ -328,11 +328,12 @@ app.post('/api/query', async (req, res) => {
 
       case 'createCustomCommand': {
         const d = params.data;
+        // id is BIGSERIAL - DO NOT INSERT it; updated_at has NOT NULL DEFAULT NOW()
         await sql(
           `INSERT INTO custom_commands
-            (id, guild_id, trigger, name, description, response, response_type,
-             permission_level, cooldown_seconds, is_tag, is_enabled, usage_count, created_by)
-           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,'dashboard')`,
+            (guild_id, trigger, name, description, response, response_type,
+             permission_level, cooldown_seconds, is_tag, is_enabled, usage_count, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,NOW(),NOW())`,
           [params.guildId, d.trigger, d.name ?? null, d.description ?? null,
            d.response, d.response_type ?? 'text', d.permission_level ?? 'everyone',
            d.cooldown_seconds ?? 0, d.is_tag ?? false]
@@ -505,17 +506,46 @@ app.post('/api/query', async (req, res) => {
         if (params.channelId && !/^\d{17,19}$/.test(params.channelId)) {
           return err(res, 'Invalid channel ID — must be 17–19 digits');
         }
+        const durationMins = parseInt(params.durationMinutes) || 1440;
         await sql(
-          `INSERT INTO votes (vote_id, guild_id, question, options, results_posted, channel_id, created_at)
-           VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb, false, $4, now())
+          `INSERT INTO votes (vote_id, guild_id, question, options, results_posted, channel_id,
+                              start_time, end_time, anonymous, created_at)
+           VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb, false, $4,
+                   now(), now() + ($5 || ' minutes')::interval, $6, now())
            ON CONFLICT DO NOTHING`,
-          [params.guildId, params.question, JSON.stringify(params.options ?? []), params.channelId || null]
+          [params.guildId, params.question, JSON.stringify(params.options ?? []),
+           params.channelId || null, String(durationMins), params.anonymous ?? false]
         );
         return ok(res, { success: true });
       }
 
+
+      case 'getVoteVoters': {
+        // Returns voter breakdown for dashboard (non-anonymous view)
+        const rows = await sql(
+          `SELECT vc.user_id, vc.option, vc.timestamp,
+                  COALESCE(gm.username, vc.user_id::text) AS username
+           FROM votes_cast vc
+           LEFT JOIN guild_members gm ON gm.user_id = vc.user_id::text AND gm.guild_id = $1
+           WHERE vc.vote_id = $2
+           ORDER BY vc.timestamp ASC`,
+          [params.guildId, params.voteId]
+        ).catch(() => []);
+        return ok(res, rows);
+      }
+
+      case 'getVoteResults': {
+        const rows = await sql(
+          `SELECT option, COUNT(*)::int AS count, SUM(weight) AS total_weight
+           FROM votes_cast WHERE vote_id=$1
+           GROUP BY option ORDER BY count DESC`,
+          [params.voteId]
+        ).catch(() => []);
+        return ok(res, rows);
+      }
+
       case 'deleteVote': {
-        await sql(`DELETE FROM votes WHERE id=$1`, [params.id]);
+        await sql(`DELETE FROM votes WHERE vote_id=$1`, [params.id]);
         return ok(res, { success: true });
       }
 
@@ -530,10 +560,11 @@ app.post('/api/query', async (req, res) => {
 
       case 'createInfoTopic': {
         const d = params.data;
+        // id is BIGSERIAL - DO NOT INSERT it, let Postgres auto-generate
         await sql(
           `INSERT INTO info_topics
-            (id, guild_id, section, subcategory, topic_id, name, embed_title, embed_description, embed_color, emoji)
-           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            (guild_id, section, subcategory, topic_id, name, embed_title, embed_description, embed_color, emoji)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [params.guildId, d.section ?? 'common', d.subcategory ?? 'General',
            d.topic_id || (d.name || '').toLowerCase().replace(/\s+/g, '_'),
            d.name, d.embed_title ?? null, d.embed_description ?? null,
@@ -548,7 +579,7 @@ app.post('/api/query', async (req, res) => {
           `UPDATE info_topics SET
              section=$1, subcategory=$2, name=$3, embed_title=$4,
              embed_description=$5, embed_color=$6, emoji=$7, updated_at=now()
-           WHERE id=$8`,
+           WHERE id=$8::bigint`,
           [d.section ?? 'common', d.subcategory ?? 'General', d.name,
            d.embed_title ?? null, d.embed_description ?? null,
            d.embed_color ?? '#5865F2', d.emoji ?? '📄', params.id]
@@ -557,7 +588,7 @@ app.post('/api/query', async (req, res) => {
       }
 
       case 'deleteInfoTopic': {
-        await sql(`DELETE FROM info_topics WHERE id=$1`, [params.id]);
+        await sql(`DELETE FROM info_topics WHERE id=$1::bigint`, [params.id]);
         return ok(res, { success: true });
       }
 
@@ -576,6 +607,24 @@ app.post('/api/query', async (req, res) => {
       }
 
       // ── Button Roles ──
+
+      case 'getTicketPanelPingRoles': {
+        const rows = await sql(
+          `SELECT id, "guildId" AS guild_id, name, "notificationRoles", "supportRoles" FROM "TicketPanel" WHERE "guildId"=$1`,
+          [params.guildId]
+        ).catch(() => []);
+        return ok(res, rows);
+      }
+
+      case 'updateTicketPanelPingRoles': {
+        // Update which roles get pinged when a ticket opens
+        await sql(
+          `UPDATE "TicketPanel" SET "notificationRoles"=$1::jsonb, "updatedAt"=NOW() WHERE id=$2`,
+          [JSON.stringify(params.notificationRoles ?? []), params.panelId]
+        );
+        return ok(res, { success: true });
+      }
+
       case 'getButtonRoles': {
         const rows = await sql(
           `SELECT * FROM button_roles WHERE guild_id = $1 ORDER BY created_at DESC`,
@@ -593,10 +642,15 @@ app.post('/api/query', async (req, res) => {
       // ── Reaction Roles CRUD ──
       case 'createReactionRole': {
         const d = params.data;
+        if (!d.message_id || !d.channel_id || !d.emoji || !d.role_id) {
+          return err(res, 'message_id, channel_id, emoji, and role_id are required');
+        }
+        // After saving, the bot polls and adds the reaction to the message automatically
         await sql(
-          `INSERT INTO reaction_roles (id, guild_id, message_id, channel_id, emoji, role_id, role_name, is_reaction, created_at)
-           VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,TRUE,now())`,
-          [params.guildId, d.message_id, d.channel_id, d.emoji, d.role_id, d.role_name ?? null]
+          `INSERT INTO reaction_roles (id, guild_id, message_id, channel_id, emoji, role_id, role_name, is_reaction, created_at, bot_synced)
+           VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,TRUE,now(),FALSE)
+           ON CONFLICT DO NOTHING`,
+          [params.guildId, String(d.message_id), String(d.channel_id), d.emoji, String(d.role_id), d.role_name ?? null]
         );
         return ok(res, { success: true });
       }
@@ -613,13 +667,17 @@ app.post('/api/query', async (req, res) => {
       // ── Button Roles CRUD ──
       case 'createButtonRole': {
         const d = params.data;
+        if (!d.channel_id || !d.role_id) {
+          return err(res, 'channel_id and role_id are required');
+        }
         const brId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+        // bot_synced=FALSE means the bot will detect this and send the button message to channel_id
         await sql(
           `INSERT INTO button_roles (id, guild_id, message_id, channel_id, button_id, role_id,
-             button_style, button_label, button_emoji, custom_id, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())`,
-          [brId, params.guildId, d.message_id ?? '', d.channel_id ?? '',
-           brId, d.role_id, d.button_style ?? 'PRIMARY',
+             button_style, button_label, button_emoji, custom_id, created_at, bot_synced)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),FALSE)`,
+          [brId, params.guildId, '', String(d.channel_id),
+           brId, String(d.role_id), d.button_style ?? 'PRIMARY',
            d.button_label ?? 'Get Role', d.button_emoji ?? null,
            `btnrole_${brId}`]
         );
