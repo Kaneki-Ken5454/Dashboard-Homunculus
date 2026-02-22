@@ -48,7 +48,7 @@ export default function Triggers({ guildId }: Props) {
     try {
       if (tab === 'triggers') {
         if (editItem) await updateTrigger((editItem as Trigger).id, { ...form, guild_id: guildId } as Partial<Trigger>);
-        else await createTrigger({ ...form, guild_id: guildId } as Partial<Trigger>);
+        else await createTrigger({ ...form, guild_id: guildId } as Partial<Trigger> & { guild_id: string });
       } else {
         if (editItem) await updateAutoResponder((editItem as AutoResponder).id, form as Partial<AutoResponder>);
         else await createAutoResponder({ ...form, guild_id: guildId } as Partial<AutoResponder>);
@@ -126,11 +126,12 @@ export default function Triggers({ guildId }: Props) {
                 </div>
               </td></tr>
             ) : items.map((item) => {
-              const enabled = (item as Record<string, unknown>)[enabledKey] as boolean;
-              const text = (item as Record<string, unknown>)[textKey] as string;
-              const count = (item as Record<string, unknown>)[countKey] as number;
+              const itemAny = item as unknown as Record<string, unknown>;
+              const enabled = itemAny[enabledKey] as boolean;
+              const text = itemAny[textKey] as string;
+              const count = itemAny[countKey] as number;
               return (
-                <tr key={(item as Record<string, unknown>).id as string} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
+                <tr key={String(itemAny.id)} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
                   <td style={{ padding: '11px 14px' }}>
                     <span className="mono" style={{ fontSize: 13, color: '#818cf8' }}>{text}</span>
                   </td>
