@@ -10,8 +10,5 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index.js" },
     { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "env": {
-    "NEON_DATABASE_URL": "@neon_database_url"
-  }
+  ]
 }
