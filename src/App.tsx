@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Settings, Zap,
   Ticket, Shield, Tag, BarChart2, BookOpen,
   RefreshCw, Server, Search, ChevronDown,
-  Database, Loader2, LogOut, Activity, ShieldBan,
+  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { discoverAllGuildIds, isConfigured, setDatabaseUrl, type DiscoveredGuild } from './lib/db';
@@ -19,8 +19,9 @@ import Votes        from './pages/Votes';
 import InfoTopics   from './pages/InfoTopics';
 import ActivityPage from './pages/Activity';
 import BlacklistPage from './pages/Blacklist';
+import HelpPage     from './pages/Help';
 
-type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist';
+type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'help';
 
 const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',      icon: LayoutDashboard },
@@ -33,6 +34,7 @@ const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'info',       label: 'Info Topics',    icon: BookOpen        },
   { id: 'activity',   label: 'Activity',       icon: Activity        },
   { id: 'blacklist',  label: 'Blacklist',      icon: ShieldBan       },
+  { id: 'help',       label: 'Help',           icon: HelpCircle      },
 ];
 
 
@@ -75,6 +77,7 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
   if (page === 'info')        return <InfoTopics   guildId={guildId} />;
   if (page === 'activity')    return <ActivityPage guildId={guildId} />;
   if (page === 'blacklist')   return <BlacklistPage guildId={guildId} />;
+  if (page === 'help')        return <HelpPage      guildId={guildId} />;
   return null;
 }
 export default function App() {

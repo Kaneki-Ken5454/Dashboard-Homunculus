@@ -1,180 +1,217 @@
 import { useState } from 'react';
-import { Search, Terminal, Hash } from 'lucide-react';
+import { Search, Terminal, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface Cmd {
-  name: string;
   syntax: string;
   description: string;
-  prefix?: boolean;   // true = prefix command (~)
-  slash?: boolean;    // true = slash command (/)
+  type: 'slash' | 'prefix' | 'both';
+  perms?: string;
 }
 
 interface Category {
   label: string;
   emoji: string;
-  color: string;
+  accent: string;
+  description: string;
   commands: Cmd[];
 }
 
 const CATEGORIES: Category[] = [
   {
-    label: 'Moderation', emoji: '🛡️', color: '#ef4444',
+    label: 'Moderation', emoji: '🛡️', accent: '#ef4444',
+    description: 'Ban, kick, timeout, warn, purge and lock channels. Requires Mod or Admin role.',
     commands: [
-      { name: 'ban',       syntax: '/ban @user [reason]',              description: 'Permanently ban a member', slash: true },
-      { name: 'kick',      syntax: '/kick @user [reason]',             description: 'Kick a member from the server', slash: true },
-      { name: 'timeout',   syntax: '/timeout @user <minutes> [reason]',description: 'Timeout a member', slash: true },
-      { name: 'untimeout', syntax: '/untimeout @user',                 description: 'Remove a timeout', slash: true },
-      { name: 'warn',      syntax: '/warn @user <reason>',             description: 'Issue a warning', slash: true },
-      { name: 'warnremove',syntax: '/warnremove <warn_id>',            description: 'Remove a warning by ID', slash: true },
-      { name: 'purge',     syntax: '/purge <amount>',                  description: 'Bulk-delete messages (1–100)', slash: true },
-      { name: 'lock',      syntax: '/lock [channel]',                  description: 'Lock a channel from sending messages', slash: true },
-      { name: 'unlock',    syntax: '/unlock [channel]',                description: 'Unlock a channel', slash: true },
+      { syntax: '/ban @user [reason]',               type: 'both',   perms: 'Mod+',         description: 'Permanently ban a member from the server. Logged to audit channel.' },
+      { syntax: '/kick @user [reason]',              type: 'both',   perms: 'Mod+',         description: 'Kick a member. They can rejoin if the server is open.' },
+      { syntax: '/timeout @user <minutes> [reason]', type: 'both',   perms: 'Mod+',         description: "Mute a member for N minutes using Discord's native timeout feature." },
+      { syntax: '/untimeout @user',                  type: 'both',   perms: 'Mod+',         description: "Remove a member's active timeout early." },
+      { syntax: '/warn @user [reason]',              type: 'both',   perms: 'Mod+',         description: 'Issue a formal warning. Saved to database and visible on the dashboard.' },
+      { syntax: '/warnremove @user <#>',             type: 'both',   perms: 'Mod+',         description: 'Remove warning #N from a member.' },
+      { syntax: '/purge <amount> [@user]',           type: 'both',   perms: 'Mod+',         description: 'Bulk-delete 1-100 messages. Optionally filter by a specific user.' },
+      { syntax: '/lock [channel]',                   type: 'both',   perms: 'Mod+',         description: 'Lock a channel - prevents @everyone from sending messages.' },
+      { syntax: '/unlock [channel]',                 type: 'both',   perms: 'Mod+',         description: 'Unlock a channel, restoring @everyone send permissions.' },
     ],
   },
   {
-    label: 'Custom Commands', emoji: '⚡', color: '#8b5cf6',
+    label: 'Auto-Response Triggers', emoji: '⚡', accent: '#06b6d4',
+    description: 'Automatically reply when a message matches a phrase. Supports regex, cooldowns, embed responses and more.',
     commands: [
-      { name: 'cc add',     syntax: '~cc add <trigger> | <response>',  description: 'Create a new custom command', prefix: true },
-      { name: 'cc edit',    syntax: '~cc edit <trigger> | <response>', description: 'Edit an existing command's response', prefix: true },
-      { name: 'cc delete',  syntax: '~cc delete <trigger>',            description: 'Delete a custom command', prefix: true },
-      { name: 'cc list',    syntax: '~cc list [page]',                 description: 'List all custom commands (10 per page)', prefix: true },
-      { name: 'cc info',    syntax: '~cc info <trigger>',              description: 'Show details about a command', prefix: true },
-      { name: 'cc enable',  syntax: '~cc enable <trigger>',            description: 'Enable a disabled command', prefix: true },
-      { name: 'cc disable', syntax: '~cc disable <trigger>',           description: 'Disable a command without deleting it', prefix: true },
-      { name: 'cc set',     syntax: '~cc set <trigger> <field> <val>', description: 'Set rtype, cooldown, perm, name or description', prefix: true },
+      { syntax: '~addtrigger <phrase> | <response>',  type: 'prefix', perms: 'Manage Server', description: 'Create a trigger. Pipe | separates phrase from response.' },
+      { syntax: '~edittrigger <phrase> | <response>', type: 'prefix', perms: 'Manage Server', description: 'Update the response of an existing trigger.' },
+      { syntax: '~deltrigger <phrase>',               type: 'prefix', perms: 'Manage Server', description: 'Permanently delete a trigger.' },
+      { syntax: '~triggerenable <phrase>',            type: 'prefix', perms: 'Manage Server', description: 'Re-enable a disabled trigger.' },
+      { syntax: '~triggerdisable <phrase>',           type: 'prefix', perms: 'Manage Server', description: 'Disable a trigger without deleting it.' },
+      { syntax: '~triggers [page]',                   type: 'prefix', perms: 'Everyone',      description: 'List all triggers with status, match type, response type and use count.' },
+      { syntax: '~triggerinfo <phrase>',              type: 'prefix', perms: 'Everyone',      description: 'Show every detail of one trigger.' },
+      { syntax: '~triggerset <phrase> <field> <val>', type: 'prefix', perms: 'Manage Server', description: 'Set: type (contains/exact/startswith/endswith/regex), rtype (text/embed/reply/dm), cooldown, perm, channel, deletemsg, title, color.' },
+      { syntax: '~triggerimport',                     type: 'prefix', perms: 'Admin+',        description: 'Bulk-import triggers. Paste multiple phrase | response lines.' },
     ],
   },
   {
-    label: 'Triggers', emoji: '🔁', color: '#06b6d4',
+    label: 'Tickets', emoji: '🎫', accent: '#ec4899',
+    description: 'Full ticket system with persistent panels, staff assignment, transcripts, and ratings.',
     commands: [
-      { name: 'addtrigger',    syntax: '/addtrigger <text> <response>',  description: 'Add an auto-trigger', slash: true },
-      { name: 'edittrigger',   syntax: '/edittrigger <id> <field> <val>',description: 'Edit a trigger field', slash: true },
-      { name: 'deltrigger',    syntax: '/deltrigger <id>',               description: 'Delete a trigger', slash: true },
-      { name: 'triggerenable', syntax: '/triggerenable <id>',            description: 'Enable a trigger', slash: true },
-      { name: 'triggerdisable',syntax: '/triggerdisable <id>',           description: 'Disable a trigger', slash: true },
-      { name: 'triggerset',    syntax: '/triggerset <id> <field> <val>', description: 'Set cooldown, match type, response type', slash: true },
-      { name: 'triggerinfo',   syntax: '/triggerinfo <id>',              description: 'Show trigger details', slash: true },
-      { name: 'triggers',      syntax: '/triggers [page]',               description: 'List all triggers', slash: true },
-      { name: 'triggerimport', syntax: '/triggerimport',                 description: 'Bulk-import triggers from JSON', slash: true },
+      { syntax: '/ticket-panel create <channel> <name> [options]', type: 'slash', perms: 'Admin+', description: 'Create a panel with a persistent Open Ticket button. Options: title, desc, label, color.' },
+      { syntax: '/ticket-panel list',                              type: 'slash', perms: 'Admin+', description: 'List all panels with open ticket counts.' },
+      { syntax: '/ticket-panel edit <id> [options]',              type: 'slash', perms: 'Admin+', description: "Edit a panel's label, message or button colour." },
+      { syntax: '/ticket-panel delete <id>',                      type: 'slash', perms: 'Admin+', description: 'Remove a panel and its associated tickets.' },
+      { syntax: '/ticket list [status]',                          type: 'slash', perms: 'Mod+',   description: 'List open/closed/all tickets for this server.' },
+      { syntax: '/ticket close <id>',                             type: 'slash', perms: 'Mod+',   description: 'Close a ticket, generate a transcript, and DM a rating request.' },
+      { syntax: '/ticket claim <id>',                             type: 'slash', perms: 'Mod+',   description: 'Assign the ticket to yourself.' },
+      { syntax: '/ticket unclaim <id>',                           type: 'slash', perms: 'Mod+',   description: 'Release your claim on a ticket.' },
+      { syntax: '/ticket transcript',                             type: 'slash', perms: 'Mod+',   description: 'Download a .txt transcript of the current ticket channel.' },
+      { syntax: '/ticket stats',                                  type: 'slash', perms: 'Mod+',   description: 'Server-wide ticket statistics.' },
     ],
   },
   {
-    label: 'Activity', emoji: '📊', color: '#22c55e',
+    label: 'Votes', emoji: '🗳️', accent: '#6366f1',
+    description: 'Create timed polls with up to 10 options, optional anonymity, and channel targeting.',
     commands: [
-      { name: 'leaderboard', syntax: '~leaderboard [top]',  description: 'Top active members by message count (default top 10, max 25)', prefix: true },
-      { name: 'rank',        syntax: '~rank [@user]',       description: 'Show your or another member's activity rank', prefix: true },
-      { name: 'activity',    syntax: '~activity',           description: 'Server-wide activity snapshot (24h / 7d / all time)', prefix: true },
+      { syntax: '/votecreate <question> <options> [duration] [anon] [channel]', type: 'slash', perms: 'Mod+',    description: 'Create a poll. Options are comma-separated. Duration in minutes (default 1440 = 24h).' },
+      { syntax: '/voteresults <vote_id>',                                       type: 'slash', perms: 'Everyone', description: 'Show the current or final tally for a vote.' },
+      { syntax: '/voteinfo <vote_id>',                                          type: 'slash', perms: 'Everyone', description: 'Show metadata - creator, end time, option list.' },
+      { syntax: '/vote',                                                         type: 'slash', perms: 'Everyone', description: 'Vote help overview and quick reference.' },
     ],
   },
   {
-    label: 'Info System', emoji: '📖', color: '#f59e0b',
+    label: 'Info System', emoji: '📖', accent: '#f59e0b',
+    description: 'A searchable, embed-based knowledge base. Organised by section > subcategory > topic.',
     commands: [
-      { name: 'infoview',       syntax: '/infoview <topic_id>',                   description: 'View an info topic embed', slash: true },
-      { name: 'newtopic',       syntax: '/newtopic <section> <name> [emoji]',     description: 'Create a new info topic (modal)', slash: true },
-      { name: 'edittopic',      syntax: '/edittopic <section> <topic_id>',        description: 'Edit an existing topic (modal)', slash: true },
-      { name: 'deletetopic',    syntax: '/deletetopic <section> <topic_id>',      description: 'Delete a topic', slash: true },
-      { name: 'addimages',      syntax: '/addimages <section> <topic_id>',        description: 'Add image/thumbnail to a topic (modal)', slash: true },
-      { name: 'newcategory',    syntax: '/newcategory <section> <name> [emoji]',  description: 'Create a new category (modal)', slash: true },
-      { name: 'editcategory',   syntax: '/editcategory <section> <old> <new>',    description: 'Rename a category', slash: true },
-      { name: 'editsubcategory',syntax: '/editsubcategory <section> <name>',      description: 'Rename + set emoji for a subcategory (modal)', slash: true },
-      { name: 'deletecategory', syntax: '/deletecategory <section> <name>',       description: 'Delete a category', slash: true },
-      { name: 'infolist',       syntax: '/infolist [section]',                    description: 'List all topics or topics in a section', slash: true },
-      { name: 'infostats',      syntax: '/infostats',                             description: 'Info system stats and top topics', slash: true },
-      { name: 'inforeset',      syntax: '/inforeset <section>',                   description: 'Reset view counts for a section', slash: true },
-      { name: 'infohelp',       syntax: '/infohelp',                              description: 'Show info system help', slash: true },
+      { syntax: '/infoview <topic_id>',                  type: 'slash',  perms: 'Everyone', description: 'Display an info topic embed in the current channel.' },
+      { syntax: '/newtopic <section> <name> [emoji]',    type: 'both',   perms: 'Admin+',   description: 'Create a new info topic using a modal form.' },
+      { syntax: '/edittopic <section> <topic_id>',       type: 'both',   perms: 'Admin+',   description: 'Edit an existing info topic (title, description, colour, image).' },
+      { syntax: '/deletetopic <section> <topic_id>',     type: 'both',   perms: 'Admin+',   description: 'Permanently delete a topic.' },
+      { syntax: '/addimages <section> <topic_id>',       type: 'both',   perms: 'Admin+',   description: 'Add or replace the image and thumbnail on a topic.' },
+      { syntax: '/newcategory <section> <name> [emoji]', type: 'both',   perms: 'Admin+',   description: 'Add a new subcategory to a section.' },
+      { syntax: '/editcategory <section> <old> <new>',   type: 'both',   perms: 'Admin+',   description: 'Rename a subcategory across all its topics.' },
+      { syntax: '/editsubcategory <section> <name>',     type: 'both',   perms: 'Admin+',   description: 'Rename a subcategory and set its emoji via modal.' },
+      { syntax: '/deletecategory <section> <name>',      type: 'both',   perms: 'Admin+',   description: 'Delete a subcategory and all its topics.' },
+      { syntax: '/infolist [section]',                   type: 'both',   perms: 'Admin+',   description: 'List all topics, or filter to a specific section.' },
+      { syntax: '/infostats',                            type: 'both',   perms: 'Admin+',   description: "Show view counts per topic - useful for seeing what's most read." },
+      { syntax: '/inforeset <section>',                  type: 'both',   perms: 'Admin+',   description: 'Reset view counters for a section.' },
+      { syntax: '/infohelp',                             type: 'slash',  perms: 'Everyone', description: 'Show in-Discord info system help.' },
     ],
   },
   {
-    label: 'Tickets', emoji: '🎫', color: '#ec4899',
+    label: 'Roles', emoji: '🏷️', accent: '#14b8a6',
+    description: 'Reaction roles, button roles, and direct role management for members.',
     commands: [
-      { name: 'ticket',       syntax: '/ticket',        description: 'Open a support ticket', slash: true },
-      { name: 'ticket-panel', syntax: '/ticket-panel',  description: 'Post a ticket panel in the current channel', slash: true },
+      { syntax: '/reactionrole add <msg_id> <channel> <emoji> <role>', type: 'slash', perms: 'Admin+', description: 'Register an emoji reaction to role mapping. Bot adds the reaction automatically.' },
+      { syntax: '/reactionrole remove <id>',                           type: 'slash', perms: 'Admin+', description: 'Remove a reaction role entry by its ID.' },
+      { syntax: '/reactionrole list',                                  type: 'slash', perms: 'Admin+', description: 'Show all reaction roles configured for this server.' },
+      { syntax: '/buttonrole setup <channel> <role> [options]',        type: 'slash', perms: 'Admin+', description: 'Send a button-role message. Options: label, emoji, style (primary/secondary/success/danger), message text.' },
+      { syntax: '/buttonrole remove <id>',                             type: 'slash', perms: 'Admin+', description: 'Unregister a button role entry.' },
+      { syntax: '/buttonrole list',                                    type: 'slash', perms: 'Admin+', description: 'Show all button roles configured for this server.' },
+      { syntax: '/addrole @user @role',                                type: 'both',  perms: 'Admin+', description: 'Manually give a role to a member.' },
+      { syntax: '/removerole @user @role',                             type: 'both',  perms: 'Admin+', description: 'Remove a role from a member.' },
     ],
   },
   {
-    label: 'Voting', emoji: '🗳️', color: '#6366f1',
+    label: 'Activity & Leaderboard', emoji: '📊', accent: '#22c55e',
+    description: 'Track real message activity - no XP or fake levels. Automatically updated on every message.',
     commands: [
-      { name: 'votecreate',  syntax: '/votecreate <question> <options> [duration]', description: 'Create a vote (up to 10 options, comma-separated)', slash: true },
-      { name: 'voteresults', syntax: '/voteresults <vote_id>',                      description: 'Show current results of a vote', slash: true },
-      { name: 'vote',        syntax: '/vote',                                        description: 'Vote help overview', slash: true },
-      { name: 'voteinfo',    syntax: '/voteinfo <vote_id>',                          description: 'Show info about a specific vote', slash: true },
+      { syntax: '~leaderboard [top]', type: 'prefix', perms: 'Everyone', description: 'Top active members by message count. Default top 10, max 25. Shows an activity bar.' },
+      { syntax: '~rank [@user]',      type: 'prefix', perms: 'Everyone', description: "Show your (or another member's) rank, message count, and percentile." },
+      { syntax: '~activity',          type: 'prefix', perms: 'Everyone', description: 'Server-wide activity snapshot: active members, 24h/7d counts, total messages, top 5.' },
     ],
   },
   {
-    label: 'Reaction & Button Roles', emoji: '🏷️', color: '#14b8a6',
+    label: 'Blacklist / Word Filter', emoji: '🚫', accent: '#dc2626',
+    description: 'Auto-moderate messages containing blacklisted words with progressive timeouts (10/15/20/25... minutes).',
     commands: [
-      { name: 'reactionrole', syntax: '/reactionrole add|remove|list', description: 'Manage emoji reaction roles', slash: true },
-      { name: 'buttonrole',   syntax: '/buttonrole add|remove|list',   description: 'Manage button-based roles', slash: true },
-      { name: 'addrole',      syntax: '/addrole @user @role',           description: 'Manually give a role to a member', slash: true },
-      { name: 'removerole',   syntax: '/removerole @user @role',        description: 'Remove a role from a member', slash: true },
+      { syntax: '~bw <word>',                 type: 'prefix', perms: 'Admin', description: 'Add a word to the blacklist. Uses exact word matching.' },
+      { syntax: '~removebw <word>',           type: 'prefix', perms: 'Admin', description: 'Remove a word from the blacklist.' },
+      { syntax: '~listbw',                    type: 'prefix', perms: 'Admin', description: 'List all blacklisted words (hidden in spoiler tags for privacy).' },
+      { syntax: '~checkbwviolations [@user]', type: 'prefix', perms: 'Admin', description: "Check a user's violation count and their next punishment duration." },
+      { syntax: '~clearbwviolations @user',   type: 'prefix', perms: 'Admin', description: "Reset a user's violation counter to zero." },
     ],
   },
   {
-    label: 'Governance', emoji: '⚖️', color: '#a855f7',
+    label: 'Embeds', emoji: '🖼️', accent: '#f97316',
+    description: 'Save named embeds and send them on demand with a single command.',
     commands: [
-      { name: 'config',      syntax: '/config',              description: 'View and change bot configuration', slash: true },
-      { name: 'stats',       syntax: '/stats',               description: 'Server governance statistics', slash: true },
-      { name: 'reputation',  syntax: '/reputation [@user]',  description: 'View reputation and stats', slash: true },
-      { name: 'contributors',syntax: '/contributors',        description: 'Top governance contributors', slash: true },
+      { syntax: '/addembed <name> <content>',  type: 'both', perms: 'Admin+',   description: 'Save a new embed to the database.' },
+      { syntax: '/editembed <name> <content>', type: 'both', perms: 'Admin+',   description: 'Edit an existing saved embed.' },
+      { syntax: '/delembed <name>',            type: 'both', perms: 'Admin+',   description: 'Delete a saved embed.' },
+      { syntax: '/sendembed <name>',           type: 'both', perms: 'Mod+',     description: 'Send a saved embed to the current channel.' },
+      { syntax: '/listembeds',                 type: 'both', perms: 'Everyone', description: 'List all saved embeds for this server.' },
     ],
   },
   {
-    label: 'Embeds', emoji: '🖼️', color: '#f97316',
+    label: 'Logging', emoji: '📋', accent: '#64748b',
+    description: 'Configure per-type log channels. All log types are independent and can point to different channels.',
     commands: [
-      { name: 'addembed',  syntax: '/addembed <name>',          description: 'Create a saved embed (modal)', slash: true },
-      { name: 'editembed', syntax: '/editembed <name>',         description: 'Edit a saved embed (modal)', slash: true },
-      { name: 'delembed',  syntax: '/delembed <name>',          description: 'Delete a saved embed', slash: true },
-      { name: 'sendembed', syntax: '/sendembed <name> [ch]',    description: 'Send a saved embed to a channel', slash: true },
-      { name: 'listembeds',syntax: '/listembeds',               description: 'List all saved embeds', slash: true },
+      { syntax: '/setalllogs <channel>',      type: 'slash', perms: 'Admin', description: 'Point all log types to a single channel at once.' },
+      { syntax: '/setmessagelog <channel>',   type: 'slash', perms: 'Admin', description: 'Log message edits and deletions.' },
+      { syntax: '/setchannellog <channel>',   type: 'slash', perms: 'Admin', description: 'Log channel creates, deletes and updates.' },
+      { syntax: '/setrolelog <channel>',      type: 'slash', perms: 'Admin', description: 'Log role creates, deletes, updates and member role changes.' },
+      { syntax: '/setserverlog <channel>',    type: 'slash', perms: 'Admin', description: 'Log bans, unbans, kicks and server-level events.' },
+      { syntax: '/setmodlog <channel>',       type: 'slash', perms: 'Admin', description: 'Log mod actions from bot commands (warn, timeout, etc.).' },
+      { syntax: '/setticketlog <channel>',    type: 'slash', perms: 'Admin', description: 'Log ticket open/close/claim events.' },
+      { syntax: '/setblacklistlog <channel>', type: 'slash', perms: 'Admin', description: 'Log blacklist violations with user, word used, and timeout applied.' },
+      { syntax: '/viewlogs',                  type: 'slash', perms: 'Admin', description: 'View all configured log channels.' },
+      { syntax: '/testlogs',                  type: 'slash', perms: 'Admin', description: 'Diagnose all log channels - shows which are reachable and which are missing.' },
+      { syntax: '/removealllogs',             type: 'slash', perms: 'Admin', description: 'Clear all log channel configurations for this server.' },
     ],
   },
   {
-    label: 'Logging', emoji: '📋', color: '#64748b',
+    label: 'Raid Scanner', emoji: '📡', accent: '#a855f7',
+    description: 'Watches a source channel for Pokemon raid leaderboard embeds and automatically relocates matching ones.',
     commands: [
-      { name: 'setalllogs',      syntax: '/setalllogs <channel>',    description: 'Set all log channels at once', slash: true },
-      { name: 'setmessagelog',   syntax: '/setmessagelog <channel>', description: 'Log message edits/deletes', slash: true },
-      { name: 'setchannellog',   syntax: '/setchannellog <channel>', description: 'Log channel changes', slash: true },
-      { name: 'setrolelog',      syntax: '/setrolelog <channel>',    description: 'Log role changes', slash: true },
-      { name: 'setserverlog',    syntax: '/setserverlog <channel>',  description: 'Log server events', slash: true },
-      { name: 'setmodlog',       syntax: '/setmodlog <channel>',     description: 'Log mod actions', slash: true },
-      { name: 'setticketlog',    syntax: '/setticketlog <channel>',  description: 'Log ticket events', slash: true },
-      { name: 'setblacklistlog', syntax: '/setblacklistlog <ch>',    description: 'Log blacklist violations', slash: true },
-      { name: 'viewlogs',        syntax: '/viewlogs',                description: 'View all configured log channels', slash: true },
-      { name: 'testlogs',        syntax: '/testlogs',                description: 'Send test log events to verify setup', slash: true },
-      { name: 'removealllogs',   syntax: '/removealllogs',           description: 'Remove all log channel configurations', slash: true },
+      { syntax: '~setscan_source', type: 'both', perms: 'Admin+', description: 'Set the current channel as the Scanner Source - bot watches here for raid embeds.' },
+      { syntax: '~setscan_target', type: 'both', perms: 'Admin+', description: 'Set the current channel as the Scanner Target - matching embeds are moved here.' },
+      { syntax: '~scan_add <name>', type: 'both', perms: 'Admin+', description: 'Add a Pokemon name to the watchlist (e.g. Koraidon).' },
+      { syntax: '~scan_remove <name>', type: 'both', perms: 'Admin+', description: 'Remove a Pokemon from the watchlist.' },
+      { syntax: '~scan_list',     type: 'both', perms: 'Admin+', description: 'Show current source/target channel and full watchlist.' },
     ],
   },
   {
-    label: 'Scanner / Word Filter', emoji: '🔍', color: '#dc2626',
+    label: 'Utility', emoji: '🔧', accent: '#94a3b8',
+    description: 'Public utility commands anyone can use.',
     commands: [
-      { name: 'setscan_source', syntax: '/setscan_source <channel>', description: 'Set source channel to scan', slash: true },
-      { name: 'setscan_target', syntax: '/setscan_target <channel>', description: 'Set target channel for flagged content', slash: true },
-      { name: 'scan_add',       syntax: '/scan_add <word>',          description: 'Add word to scan blacklist', slash: true },
-      { name: 'scan_remove',    syntax: '/scan_remove <word>',       description: 'Remove word from scan blacklist', slash: true },
-      { name: 'scan_list',      syntax: '/scan_list',                description: 'List all scan words', slash: true },
-    ],
-  },
-  {
-    label: 'Utility', emoji: '🔧', color: '#94a3b8',
-    commands: [
-      { name: 'ping',    syntax: '/ping',           description: 'Check bot latency', slash: true },
-      { name: 'help',    syntax: '/help [command]', description: 'Show bot help', slash: true },
-      { name: 'govhelp', syntax: '/govhelp',        description: 'Governance system help', slash: true },
+      { syntax: '~ping',              type: 'both',   perms: 'Everyone', description: "Check the bot's WebSocket latency in milliseconds." },
+      { syntax: '~userinfo [@user]',  type: 'prefix', perms: 'Everyone', description: 'Show account details, join date, and role list for a user.' },
+      { syntax: '~serverinfo',        type: 'prefix', perms: 'Everyone', description: 'Show server stats - members, channels, roles, boosts, verification level.' },
+      { syntax: '~avatar [@user]',    type: 'prefix', perms: 'Everyone', description: "Display a user's full-size avatar with a direct link." },
+      { syntax: '/help [command]',    type: 'both',   perms: 'Everyone', description: 'Open the interactive paginated help menu in Discord. Optionally get detail on one command.' },
     ],
   },
 ];
 
+const TYPE_BADGE: Record<string, { bg: string; color: string; label: string }> = {
+  slash:  { bg: '#5865f218', color: '#818cf8', label: '/' },
+  prefix: { bg: '#22c55e18', color: '#22c55e', label: '~' },
+  both:   { bg: '#f59e0b18', color: '#f59e0b', label: '/~' },
+};
+
+const PERM_COLOR: Record<string, string> = {
+  'Everyone':      '#6b7280',
+  'Mod+':          '#3b82f6',
+  'Admin+':        '#8b5cf6',
+  'Admin':         '#8b5cf6',
+  'Manage Server': '#06b6d4',
+};
+
 interface Props { guildId: string; }
 
 export default function HelpPage({ guildId: _guildId }: Props) {
-  const [search, setSearch]       = useState('');
+  const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (label: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(label) ? next.delete(label) : next.add(label);
+      return next;
+    });
+  };
 
   const filtered = CATEGORIES.map(cat => ({
     ...cat,
     commands: cat.commands.filter(c => {
       const q = search.toLowerCase();
-      return !q || c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q) || c.syntax.toLowerCase().includes(q);
+      return !q || c.syntax.toLowerCase().includes(q) || c.description.toLowerCase().includes(q);
     }),
   })).filter(cat => cat.commands.length > 0 && (!activeCategory || cat.label === activeCategory));
 
@@ -182,98 +219,121 @@ export default function HelpPage({ guildId: _guildId }: Props) {
 
   return (
     <div className="animate-fade">
-      {/* Header bar */}
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px', marginBottom: 18, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#5865f2,#7983f5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Terminal size={18} color="white" />
+
+      {/* Header */}
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '18px 22px', marginBottom: 18, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
+          <div style={{ width: 42, height: 42, borderRadius: 12, background: 'linear-gradient(135deg,#5865f2,#7983f5)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Terminal size={20} color="white" />
           </div>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>Homunculus Command Reference</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{totalCmds} commands across {CATEGORIES.length} categories</div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>Homunculus — Command Reference</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              {totalCmds} commands across {CATEGORIES.length} categories &nbsp;·&nbsp;
+              <span style={{ color: '#818cf8' }}>Run <code style={{ fontSize: 11 }}>/help</code> in Discord for the interactive menu</span>
+            </div>
           </div>
         </div>
-        <div style={{ position: 'relative', minWidth: 220 }}>
+        <div style={{ position: 'relative', minWidth: 230 }}>
           <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-faint)' }} />
-          <input className="inp" style={{ paddingLeft: 30, fontSize: 13 }} placeholder="Search commands…" value={search} onChange={e => { setSearch(e.target.value); setActiveCategory(null); }} />
+          <input className="inp" style={{ paddingLeft: 30, fontSize: 13 }} placeholder="Search commands…" value={search}
+            onChange={e => { setSearch(e.target.value); setActiveCategory(null); }} />
         </div>
       </div>
 
       {/* Legend */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)' }}>
-          <span style={{ background: '#5865f218', color: '#818cf8', borderRadius: 5, padding: '1px 7px', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>/</span> Slash command
-        </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)' }}>
-          <span style={{ background: '#22c55e18', color: '#22c55e', borderRadius: 5, padding: '1px 7px', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>~</span> Prefix command
-        </span>
+      <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        {Object.entries(TYPE_BADGE).map(([k, v]) => (
+          <span key={k} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+            <span style={{ background: v.bg, color: v.color, borderRadius: 5, padding: '1px 8px', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>{v.label}</span>
+            {k === 'slash' ? 'Slash command' : k === 'prefix' ? 'Prefix (~)' : 'Both slash & prefix'}
+          </span>
+        ))}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto', flexWrap: 'wrap' }}>
+          Permissions:
+          {(['Everyone', 'Mod+', 'Admin+'] as const).map(k => (
+            <span key={k} style={{ background: (PERM_COLOR[k] ?? '#6b7280') + '22', color: PERM_COLOR[k] ?? '#6b7280', borderRadius: 4, padding: '1px 8px', fontSize: 11, fontWeight: 600 }}>{k}</span>
+          ))}
+        </div>
       </div>
 
       {/* Category filter pills */}
       {!search && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
-          <button
-            onClick={() => setActiveCategory(null)}
-            style={{ padding: '5px 12px', borderRadius: 20, border: '1px solid var(--border)', background: !activeCategory ? 'var(--primary-subtle)' : 'var(--surface)', color: !activeCategory ? '#818cf8' : 'var(--text-muted)', cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif', fontWeight: 500 }}
-          >
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 18 }}>
+          <button onClick={() => setActiveCategory(null)}
+            style={{ padding: '5px 13px', borderRadius: 20, border: '1px solid var(--border)', background: !activeCategory ? 'var(--primary-subtle)' : 'var(--surface)', color: !activeCategory ? '#818cf8' : 'var(--text-muted)', cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif', fontWeight: 500 }}>
             All
           </button>
           {CATEGORIES.map(cat => (
-            <button
-              key={cat.label}
-              onClick={() => setActiveCategory(cat.label === activeCategory ? null : cat.label)}
-              style={{ padding: '5px 12px', borderRadius: 20, border: `1px solid ${activeCategory === cat.label ? cat.color + '60' : 'var(--border)'}`, background: activeCategory === cat.label ? cat.color + '18' : 'var(--surface)', color: activeCategory === cat.label ? cat.color : 'var(--text-muted)', cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif', fontWeight: 500, transition: 'all 0.1s' }}
-            >
+            <button key={cat.label} onClick={() => setActiveCategory(cat.label === activeCategory ? null : cat.label)}
+              style={{ padding: '5px 13px', borderRadius: 20, border: `1px solid ${activeCategory === cat.label ? cat.accent + '80' : 'var(--border)'}`, background: activeCategory === cat.label ? cat.accent + '18' : 'var(--surface)', color: activeCategory === cat.label ? cat.accent : 'var(--text-muted)', cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif', fontWeight: 500, transition: 'all 0.1s' }}>
               {cat.emoji} {cat.label}
             </button>
           ))}
         </div>
       )}
 
-      {/* Command tables */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Command cards */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {filtered.length === 0 && (
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '48px 20px', textAlign: 'center' }}>
-            <Hash size={24} style={{ color: 'var(--text-faint)', display: 'block', margin: '0 auto 10px' }} />
-            <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>No commands match "{search}"</div>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '48px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+            No commands match "{search}"
           </div>
         )}
-        {filtered.map(cat => (
-          <div key={cat.label} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
-            <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, background: `${cat.color}0c` }}>
-              <span style={{ fontSize: 18 }}>{cat.emoji}</span>
-              <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>{cat.label}</span>
-              <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-faint)', background: 'var(--elevated)', padding: '2px 8px', borderRadius: 6 }}>{cat.commands.length} commands</span>
+        {filtered.map(cat => {
+          const isOpen = expanded.has(cat.label) || !!search || !!activeCategory;
+          return (
+            <div key={cat.label} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden', borderTop: `3px solid ${cat.accent}` }}>
+
+              {/* Collapsible header */}
+              <button onClick={() => toggleExpand(cat.label)}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+                <span style={{ fontSize: 20, flexShrink: 0 }}>{cat.emoji}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 650, fontSize: 14, color: 'var(--text)' }}>{cat.label}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{cat.description}</div>
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--text-faint)', background: 'var(--elevated)', padding: '2px 9px', borderRadius: 6, flexShrink: 0 }}>{cat.commands.length} cmds</span>
+                {isOpen
+                  ? <ChevronUp size={15} style={{ color: 'var(--text-faint)', flexShrink: 0 }} />
+                  : <ChevronDown size={15} style={{ color: 'var(--text-faint)', flexShrink: 0 }} />}
+              </button>
+
+              {/* Command rows */}
+              {isOpen && (
+                <div style={{ borderTop: '1px solid var(--border)' }}>
+                  {cat.commands.map((cmd, i) => {
+                    const badge = TYPE_BADGE[cmd.type];
+                    const permColor = cmd.perms ? (PERM_COLOR[cmd.perms] ?? '#6b7280') : '#6b7280';
+                    return (
+                      <div key={i} className="data-row"
+                        style={{ display: 'grid', gridTemplateColumns: '40px 1fr auto', gap: 12, padding: '12px 18px', borderBottom: i < cat.commands.length - 1 ? '1px solid var(--border)' : 'none', alignItems: 'start' }}>
+
+                        {/* Type badge */}
+                        <div style={{ paddingTop: 3 }}>
+                          <span style={{ background: badge.bg, color: badge.color, borderRadius: 5, padding: '2px 6px', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, display: 'inline-block' }}>{badge.label}</span>
+                        </div>
+
+                        {/* Syntax + description */}
+                        <div>
+                          <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: 'var(--text)', background: 'var(--elevated)', padding: '3px 9px', borderRadius: 5, display: 'inline-block', marginBottom: 5 }}>{cmd.syntax}</code>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.55 }}>{cmd.description}</div>
+                        </div>
+
+                        {/* Permission badge */}
+                        {cmd.perms && (
+                          <div style={{ paddingTop: 3, flexShrink: 0 }}>
+                            <span style={{ background: permColor + '20', color: permColor, borderRadius: 5, padding: '2px 8px', fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap', display: 'inline-block' }}>{cmd.perms}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--elevated)' }}>
-                  {['Type', 'Syntax', 'Description'].map(h => (
-                    <th key={h} style={{ padding: '8px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {cat.commands.map(cmd => (
-                  <tr key={cmd.name} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '10px 16px', width: 48 }}>
-                      {cmd.slash && (
-                        <span style={{ background: '#5865f218', color: '#818cf8', borderRadius: 5, padding: '2px 7px', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>/</span>
-                      )}
-                      {cmd.prefix && (
-                        <span style={{ background: '#22c55e18', color: '#22c55e', borderRadius: 5, padding: '2px 7px', fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>~</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '10px 16px' }}>
-                      <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: 'var(--text)', background: 'var(--elevated)', padding: '3px 8px', borderRadius: 5, display: 'inline-block' }}>{cmd.syntax}</code>
-                    </td>
-                    <td style={{ padding: '10px 16px', fontSize: 13, color: 'var(--text-muted)' }}>{cmd.description}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

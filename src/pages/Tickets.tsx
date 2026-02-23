@@ -236,7 +236,7 @@ export default function Tickets({ guildId }: Props) {
 
       {/* Ping roles modal — INSIDE the root div */}
       {pingModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 100, padding: 'clamp(24px, 6vh, 72px) 16px 32px', overflowY: 'auto' }}>
           <div style={{ background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 14, padding: 24, width: 440, maxWidth: '90vw' }}>
             <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Notification Roles</div>
             <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 16 }}>Panel: <strong>{pingModal.name}</strong></div>

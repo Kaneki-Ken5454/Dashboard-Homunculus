@@ -34,7 +34,9 @@ body { font-family: 'Lexend', sans-serif; background: var(--bg); color: var(--te
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 50;
   background: rgba(0,0,0,0.72); backdrop-filter: blur(4px);
-  display: flex; align-items: center; justify-content: center; padding: 16px;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: clamp(24px, 6vh, 72px) 16px 32px;
+  overflow-y: auto;
 }
 
 .nav-active { background: var(--primary-subtle) !important; color: #818cf8 !important; }
