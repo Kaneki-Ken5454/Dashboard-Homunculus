@@ -101,6 +101,7 @@ async function ensureTables() {
       button_label TEXT DEFAULT 'Get Role',
       button_emoji TEXT,
       custom_id TEXT,
+      bot_synced BOOLEAN DEFAULT TRUE,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
     `CREATE TABLE IF NOT EXISTS tickets (
@@ -143,6 +144,18 @@ async function ensureTables() {
   ];
   for (const ddl of ddls) {
     try { await sql(ddl); } catch (e) { console.warn('[DDL]', e.message?.slice(0, 80)); }
+  }
+  // Idempotent column migrations for existing tables
+  const migrations = [
+    `ALTER TABLE reaction_roles ADD COLUMN IF NOT EXISTS bot_synced BOOLEAN DEFAULT TRUE`,
+    `ALTER TABLE button_roles   ADD COLUMN IF NOT EXISTS bot_synced BOOLEAN DEFAULT TRUE`,
+    `ALTER TABLE button_roles   ADD COLUMN IF NOT EXISTS custom_id  TEXT`,
+    `ALTER TABLE custom_commands ADD COLUMN IF NOT EXISTS created_by TEXT DEFAULT 'dashboard'`,
+    `ALTER TABLE votes          ADD COLUMN IF NOT EXISTS results_announced BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE votes          ADD COLUMN IF NOT EXISTS start_time TIMESTAMPTZ`,
+  ];
+  for (const m of migrations) {
+    try { await sql(m); } catch (e) { /* column already exists or table missing */ }
   }
   console.log('✅  Tables verified/created');
 }
@@ -332,8 +345,9 @@ app.post('/api/query', async (req, res) => {
         await sql(
           `INSERT INTO custom_commands
             (id, guild_id, trigger, name, description, response, response_type,
-             permission_level, cooldown_seconds, is_tag, is_enabled, usage_count, created_at, updated_at)
-           VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,NOW(),NOW())`,
+             permission_level, cooldown_seconds, is_tag, is_enabled, usage_count,
+             created_by, created_at, updated_at)
+           VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,'dashboard',NOW(),NOW())`,
           [params.guildId, d.trigger, d.name ?? null, d.description ?? null,
            d.response, d.response_type ?? 'text', d.permission_level ?? 'everyone',
            d.cooldown_seconds ?? 0, d.is_tag ?? false]
@@ -557,9 +571,9 @@ app.post('/api/query', async (req, res) => {
         }
         const durationMins = parseInt(params.durationMinutes) || 1440;
         await sql(
-          `INSERT INTO votes (vote_id, guild_id, question, options, results_posted, channel_id,
+          `INSERT INTO votes (vote_id, guild_id, question, options, results_posted, results_announced, channel_id,
                               start_time, end_time, anonymous, created_at)
-           VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb, false, $4,
+           VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb, false, false, $4,
                    now(), now() + ($5 || ' minutes')::interval, $6, now())
            ON CONFLICT DO NOTHING`,
           [params.guildId, params.question, JSON.stringify(params.options ?? []),
