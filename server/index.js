@@ -153,6 +153,9 @@ async function ensureTables() {
     `ALTER TABLE custom_commands ADD COLUMN IF NOT EXISTS created_by TEXT DEFAULT 'dashboard'`,
     `ALTER TABLE votes          ADD COLUMN IF NOT EXISTS results_announced BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE votes          ADD COLUMN IF NOT EXISTS start_time TIMESTAMPTZ`,
+    `ALTER TABLE auto_responders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`,
+    `UPDATE auto_responders SET updated_at = created_at WHERE updated_at IS NULL`,
+    `ALTER TABLE info_topics ADD COLUMN IF NOT EXISTS subcategory_emoji TEXT`,
   ];
   for (const m of migrations) {
     try { await sql(m); } catch (e) { /* column already exists or table missing */ }
@@ -387,8 +390,8 @@ app.post('/api/query', async (req, res) => {
         const d = params.data;
         await sql(
           `INSERT INTO auto_responders
-            (id, guild_id, trigger_text, match_type, response, response_type, is_enabled, trigger_count, created_by)
-           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,true,0,'dashboard')`,
+            (id, guild_id, trigger_text, match_type, response, response_type, is_enabled, trigger_count, created_by, created_at, updated_at)
+           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,true,0,'dashboard',NOW(),NOW())`,
           [params.guildId, d.trigger_text, d.match_type ?? 'contains', d.response, d.response_type ?? 'text']
         );
         return ok(res, { success: true });
