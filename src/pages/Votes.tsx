@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Plus, Trash2, BarChart2, Clock, ChevronDown, ChevronUp, Users } from 'lucide-react';
-import { getVotes, createVote, deleteVote, type Vote } from '../lib/db';
-import { apiCall } from '../lib/db';
+import { getVotes, createVote, deleteVote, apiCall, type Vote } from '../lib/db';
 import Modal from '../components/Modal';
 import Badge from '../components/Badge';
 

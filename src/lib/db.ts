@@ -17,7 +17,7 @@ export function getDatabaseUrl(): string {
 export function isConfigured(): boolean { return getDatabaseUrl().length > 0; }
 
 // ── Core API call ─────────────────────────────────────────────────────────────
-async function apiCall<T = unknown>(action: string, params: Record<string, unknown> = {}): Promise<T> {
+export async function apiCall<T = unknown>(action: string, params: Record<string, unknown> = {}): Promise<T> {
   const res = await fetch('/api/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
