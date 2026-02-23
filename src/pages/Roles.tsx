@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Tag, MousePointer, Trash2, Plus, X, Info } from 'lucide-react';
+import { Tag, MousePointer, Trash2, Plus, X, Info, CheckCircle2 } from 'lucide-react';
 import {
   getReactionRoles, deleteReactionRole, createReactionRole,
   getButtonRoles, deleteButtonRole, createButtonRole,
+  markReactionRoleSynced, markButtonRoleSynced,
   type ReactionRole, type ButtonRole,
 } from '../lib/db';
 import Badge from '../components/Badge';
@@ -288,8 +289,7 @@ export default function Roles({ guildId }: Props) {
                   <td style={{ padding: '11px 14px' }}><span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.message_id}</span></td>
                   <td style={{ padding: '11px 14px' }}><span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.channel_id}</span></td>
                   <td style={{ padding: '11px 14px' }}>
-                    <Badge label={(r as unknown as { bot_synced?: boolean }).bot_synced === false ? 'pending' : 'synced'}
-                           variant={(r as unknown as { bot_synced?: boolean }).bot_synced === false ? 'warning' : 'success'} />
+                    {(() => { const s = (r as unknown as { bot_synced?: boolean | null }).bot_synced; const pending = s === false || s === null || s === undefined; return (<><Badge label={pending ? 'pending' : 'synced'} variant={pending ? 'warning' : 'success'} />{pending && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={async () => { await markReactionRoleSynced(r.id); load(); }} title="Mark as synced"><CheckCircle2 size={11} /></button>}</>); })()}
                   </td>
                   <td style={{ padding: '11px 14px' }}>
                     <button className="btn btn-danger btn-sm" onClick={() => delReaction(r.id)}><Trash2 size={11} /></button>
@@ -331,8 +331,7 @@ export default function Roles({ guildId }: Props) {
                   </td>
                   <td style={{ padding: '11px 14px' }}><span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{b.channel_id || '—'}</span></td>
                   <td style={{ padding: '11px 14px' }}>
-                    <Badge label={(b as unknown as { bot_synced?: boolean }).bot_synced === false ? 'pending' : 'sent'}
-                           variant={(b as unknown as { bot_synced?: boolean }).bot_synced === false ? 'warning' : 'success'} />
+                    {(() => { const s = (b as unknown as { bot_synced?: boolean | null }).bot_synced; const pending = s === false || s === null || s === undefined; return (<><Badge label={pending ? 'pending' : 'sent'} variant={pending ? 'warning' : 'success'} />{pending && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={async () => { await markButtonRoleSynced(b.id); load(); }} title="Mark as synced"><CheckCircle2 size={11} /></button>}</>); })()}
                   </td>
                   <td style={{ padding: '11px 14px' }}>
                     <button className="btn btn-danger btn-sm" onClick={() => delButton(b.id)}><Trash2 size={11} /></button>

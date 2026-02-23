@@ -245,3 +245,19 @@ export async function clearUserViolations(guildId: string, userId: string) {
 export async function clearAllViolations(guildId: string) {
   return apiCall('clearAllViolations', { guildId });
 }
+
+// ── Info section / subcategory rename ────────────────────────────────────────
+export async function updateInfoSection(guildId: string, oldSection: string, newSection: string) {
+  return apiCall('updateInfoSection', { guildId, oldSection, newSection });
+}
+export async function updateInfoSubcategory(guildId: string, section: string, oldSub: string, newSub: string) {
+  return apiCall('updateInfoSubcategory', { guildId, section, oldSub, newSub });
+}
+
+// ── Role sync helpers ─────────────────────────────────────────────────────────
+export async function markReactionRoleSynced(id: string) {
+  return apiCall('markReactionRoleSynced', { id });
+}
+export async function markButtonRoleSynced(id: string) {
+  return apiCall('markButtonRoleSynced', { id });
+}

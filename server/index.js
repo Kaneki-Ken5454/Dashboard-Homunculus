@@ -394,7 +394,9 @@ app.post('/api/query', async (req, res) => {
       }
 
       case 'updateTrigger': {
-        const d = params.data;
+        // Fetch existing row first so partial updates (e.g. toggle enabled) don't null required fields
+        const existing = await sql(`SELECT * FROM triggers WHERE id=$1`, [params.id]).then(r => r[0] ?? {});
+        const d = { ...existing, ...params.data };
         await sql(
           `UPDATE triggers SET
              trigger_text=$1, response=$2, match_type=$3, enabled=$4,
@@ -691,6 +693,27 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { success: true });
       }
 
+
+      case 'updateInfoSection': {
+        // Rename a top-level section across all its topics
+        const { guildId, oldSection, newSection } = params;
+        await sql(
+          `UPDATE info_topics SET section=$1 WHERE guild_id::text=$2 AND section=$3`,
+          [newSection, guildId, oldSection]
+        );
+        return ok(res, { success: true });
+      }
+
+      case 'updateInfoSubcategory': {
+        // Rename a subcategory across all its topics within a section
+        const { guildId, section, oldSub, newSub } = params;
+        await sql(
+          `UPDATE info_topics SET subcategory=$1 WHERE guild_id::text=$2 AND section=$3 AND subcategory=$4`,
+          [newSub, guildId, section, oldSub]
+        );
+        return ok(res, { success: true });
+      }
+
       // ── Reaction Roles ──
       case 'getReactionRoles': {
         const rows = await sql(
@@ -734,6 +757,16 @@ app.post('/api/query', async (req, res) => {
 
       case 'deleteButtonRole': {
         await sql(`DELETE FROM button_roles WHERE id=$1`, [params.id]);
+        return ok(res, { success: true });
+      }
+
+      case 'markReactionRoleSynced': {
+        await sql(`UPDATE reaction_roles SET bot_synced=TRUE WHERE id=$1`, [params.id]);
+        return ok(res, { success: true });
+      }
+
+      case 'markButtonRoleSynced': {
+        await sql(`UPDATE button_roles SET bot_synced=TRUE WHERE id=$1`, [params.id]);
         return ok(res, { success: true });
       }
 
