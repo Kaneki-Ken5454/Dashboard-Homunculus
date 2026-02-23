@@ -175,36 +175,36 @@ export default function InfoTopicsPage({ guildId }: Props) {
       )}
 
       {modal && (
-        <Modal title={modal === 'create' ? 'New Info Topic' : 'Edit Topic'} onClose={() => setModal(null)} width="max-w-xl">
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Modal title={modal === 'create' ? 'New Info Topic' : 'Edit Topic'} onClose={() => setModal(null)} width="620px">
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
             <F label="Name *">
-              <input className="inp" placeholder="e.g. How to verify" value={form.name ?? ''} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+              <input className="inp" autoFocus placeholder="e.g. How to verify" value={form.name ?? ''} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
             </F>
             <F label="Emoji">
-              <input className="inp" placeholder="📄" value={form.emoji ?? ''} onChange={e => setForm(p => ({ ...p, emoji: e.target.value }))} />
+              <input className="inp" style={{ fontSize: 18 }} placeholder="📄" value={form.emoji ?? ''} onChange={e => setForm(p => ({ ...p, emoji: e.target.value }))} />
             </F>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <F label="Section">
-              <input className="inp" placeholder="common" value={form.section ?? 'common'} onChange={e => setForm(p => ({ ...p, section: e.target.value }))} />
+              <input className="inp" placeholder="general" value={form.section ?? 'general'} onChange={e => setForm(p => ({ ...p, section: e.target.value }))} />
             </F>
             <F label="Subcategory">
               <input className="inp" placeholder="General" value={form.subcategory ?? ''} onChange={e => setForm(p => ({ ...p, subcategory: e.target.value }))} />
             </F>
           </div>
-          <F label="Topic ID (auto-generated if blank)">
+          <F label="Topic ID (auto-generated from Name if blank)">
             <input className="inp mono" placeholder="e.g. how_to_verify" value={form.topic_id ?? ''} onChange={e => setForm(p => ({ ...p, topic_id: e.target.value }))} />
           </F>
           <F label="Embed Title">
-            <input className="inp" placeholder="Displayed as embed title" value={form.embed_title ?? ''} onChange={e => setForm(p => ({ ...p, embed_title: e.target.value }))} />
+            <input className="inp" placeholder="Title shown in the Discord embed" value={form.embed_title ?? ''} onChange={e => setForm(p => ({ ...p, embed_title: e.target.value }))} />
           </F>
           <F label="Embed Description">
-            <textarea className="inp" style={{ minHeight: 80 }} placeholder="Main content shown in embed" value={form.embed_description ?? ''} onChange={e => setForm(p => ({ ...p, embed_description: e.target.value }))} />
+            <textarea className="inp" style={{ minHeight: 90, resize: 'vertical' }} placeholder="Main content shown when a user runs /infoview" value={form.embed_description ?? ''} onChange={e => setForm(p => ({ ...p, embed_description: e.target.value }))} />
           </F>
           <F label="Embed Color">
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input type="color" value={form.embed_color ?? '#5865F2'} onChange={e => setForm(p => ({ ...p, embed_color: e.target.value }))}
-                style={{ width: 36, height: 36, border: 'none', borderRadius: 6, background: 'none', cursor: 'pointer', padding: 0 }} />
+                style={{ width: 40, height: 40, border: 'none', borderRadius: 6, background: 'none', cursor: 'pointer', padding: 0 }} />
               <input className="inp mono" style={{ flex: 1 }} value={form.embed_color ?? '#5865F2'} onChange={e => setForm(p => ({ ...p, embed_color: e.target.value }))} />
             </div>
           </F>

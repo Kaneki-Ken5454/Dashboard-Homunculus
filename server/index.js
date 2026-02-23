@@ -431,21 +431,70 @@ app.post('/api/query', async (req, res) => {
 
       // ── Tickets ──
       case 'getTickets': {
-        const rows = await sql(
-          `SELECT * FROM tickets WHERE guild_id = $1 ORDER BY opened_at DESC LIMIT 200`,
-          [params.guildId]
-        ).catch(() => []);
+        // The bot uses Prisma's "Ticket" table (camelCase columns).
+        // We query it and normalise columns to snake_case for the dashboard.
+        let rows = [];
+        // Try Prisma "Ticket" first (bot's primary table)
+        try {
+          const prismaRows = await sql(
+            `SELECT id, "guildId" AS guild_id, "panelId" AS panel_id,
+                    "channelId" AS channel_id, "userId" AS user_id,
+                    username, title, priority, status,
+                    COALESCE("messagesCount",0) AS messages_count,
+                    COALESCE("assignedTo",'') AS assigned_to,
+                    '' AS category,
+                    "openedAt" AS opened_at, "closedAt" AS closed_at
+             FROM "Ticket" WHERE "guildId" = $1
+             ORDER BY "openedAt" DESC LIMIT 200`,
+            [params.guildId]
+          );
+          rows = prismaRows;
+        } catch {}
+        // Also check flat tickets table (dashboard-created)
+        try {
+          const flatRows = await sql(
+            `SELECT id::text, guild_id, COALESCE(panel_id,'') AS panel_id,
+                    channel_id, user_id, COALESCE(username,'') AS username,
+                    COALESCE(title,'Ticket') AS title,
+                    COALESCE(priority,'medium') AS priority, status,
+                    0 AS messages_count, '' AS assigned_to,
+                    COALESCE(category,'') AS category,
+                    opened_at, closed_at
+             FROM tickets WHERE guild_id = $1
+             ORDER BY opened_at DESC LIMIT 200`,
+            [params.guildId]
+          );
+          rows = [...rows, ...flatRows];
+        } catch {}
+        // Deduplicate by channel_id
+        const seen = new Set();
+        rows = rows.filter(r => {
+          const key = r.channel_id || r.id;
+          if (seen.has(key)) return false;
+          seen.add(key); return true;
+        });
+        rows.sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime());
         return ok(res, rows);
       }
 
       case 'updateTicketStatus': {
         const closedAt = params.status === 'closed' ? new Date().toISOString() : null;
-        await sql(`UPDATE tickets SET status=$1, closed_at=$2 WHERE id=$3`, [params.status, closedAt, params.id]);
+        // Try Prisma table first, then flat table
+        let updated = false;
+        try {
+          await sql(`UPDATE "Ticket" SET status=$1, "closedAt"=$2, "updatedAt"=NOW() WHERE id=$3`,
+            [params.status, closedAt, params.id]);
+          updated = true;
+        } catch {}
+        if (!updated) {
+          try { await sql(`UPDATE tickets SET status=$1, closed_at=$2 WHERE id=$3`, [params.status, closedAt, params.id]); } catch {}
+        }
         return ok(res, { success: true });
       }
 
       case 'deleteTicket': {
-        await sql(`DELETE FROM tickets WHERE id=$1`, [params.id]);
+        try { await sql(`DELETE FROM "Ticket" WHERE id=$1`, [params.id]); } catch {}
+        try { await sql(`DELETE FROM tickets WHERE id=$1`, [params.id]); } catch {}
         return ok(res, { success: true });
       }
 
@@ -564,7 +613,7 @@ app.post('/api/query', async (req, res) => {
         await sql(
           `INSERT INTO info_topics
             (guild_id, section, subcategory, topic_id, name, embed_title, embed_description, embed_color, emoji)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+           VALUES ($1::bigint,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [params.guildId, d.section ?? 'common', d.subcategory ?? 'General',
            d.topic_id || (d.name || '').toLowerCase().replace(/\s+/g, '_'),
            d.name, d.embed_title ?? null, d.embed_description ?? null,
