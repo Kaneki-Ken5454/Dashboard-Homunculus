@@ -328,12 +328,12 @@ app.post('/api/query', async (req, res) => {
 
       case 'createCustomCommand': {
         const d = params.data;
-        // id is BIGSERIAL - DO NOT INSERT it; updated_at has NOT NULL DEFAULT NOW()
+        // Always supply id — works whether column is BIGSERIAL, TEXT NOT NULL, or TEXT with no default
         await sql(
           `INSERT INTO custom_commands
-            (guild_id, trigger, name, description, response, response_type,
+            (id, guild_id, trigger, name, description, response, response_type,
              permission_level, cooldown_seconds, is_tag, is_enabled, usage_count, created_at, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,NOW(),NOW())`,
+           VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,NOW(),NOW())`,
           [params.guildId, d.trigger, d.name ?? null, d.description ?? null,
            d.response, d.response_type ?? 'text', d.permission_level ?? 'everyone',
            d.cooldown_seconds ?? 0, d.is_tag ?? false]
@@ -609,15 +609,19 @@ app.post('/api/query', async (req, res) => {
 
       case 'createInfoTopic': {
         const d = params.data;
-        // id is BIGSERIAL - DO NOT INSERT it, let Postgres auto-generate
         await sql(
           `INSERT INTO info_topics
-            (guild_id, section, subcategory, topic_id, name, embed_title, embed_description, embed_color, emoji)
-           VALUES ($1::bigint,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [params.guildId, d.section ?? 'common', d.subcategory ?? 'General',
-           d.topic_id || (d.name || '').toLowerCase().replace(/\s+/g, '_'),
-           d.name, d.embed_title ?? null, d.embed_description ?? null,
-           d.embed_color ?? '#5865F2', d.emoji ?? '📄']
+            (guild_id, section, subcategory, topic_id, name, embed_title, embed_description,
+             embed_color, emoji, category_emoji_id, image, thumbnail)
+           VALUES ($1::bigint,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [params.guildId,
+           d.section  || 'general',  d.subcategory || 'General',
+           d.topic_id || (d.name || '').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,80),
+           d.name,
+           d.embed_title       || null,  d.embed_description  || null,
+           d.embed_color       || '#5865F2', d.emoji          || '📄',
+           d.category_emoji_id || null,  d.image              || null,
+           d.thumbnail         || null]
         );
         return ok(res, { success: true });
       }
@@ -627,11 +631,14 @@ app.post('/api/query', async (req, res) => {
         await sql(
           `UPDATE info_topics SET
              section=$1, subcategory=$2, name=$3, embed_title=$4,
-             embed_description=$5, embed_color=$6, emoji=$7, updated_at=now()
-           WHERE id=$8::bigint`,
-          [d.section ?? 'common', d.subcategory ?? 'General', d.name,
-           d.embed_title ?? null, d.embed_description ?? null,
-           d.embed_color ?? '#5865F2', d.emoji ?? '📄', params.id]
+             embed_description=$5, embed_color=$6, emoji=$7,
+             category_emoji_id=$8, image=$9, thumbnail=$10, updated_at=now()
+           WHERE id=$11::bigint`,
+          [d.section || 'general', d.subcategory || 'General', d.name,
+           d.embed_title || null, d.embed_description || null,
+           d.embed_color || '#5865F2', d.emoji || '📄',
+           d.category_emoji_id || null, d.image || null, d.thumbnail || null,
+           params.id]
         );
         return ok(res, { success: true });
       }
