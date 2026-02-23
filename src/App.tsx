@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import {
-  LayoutDashboard, Settings, Users, Terminal, Zap,
+  LayoutDashboard, Settings, Zap,
   Ticket, Shield, Tag, BarChart2, BookOpen,
   RefreshCw, Server, Search, ChevronDown,
   Database, Loader2, LogOut, Activity, ShieldBan,
@@ -11,8 +11,6 @@ import Setup from './components/Setup';
 
 import Overview     from './pages/Overview';
 import SettingsPage from './pages/Settings';
-import Members      from './pages/Members';
-import Commands     from './pages/Commands';
 import Triggers     from './pages/Triggers';
 import Tickets      from './pages/Tickets';
 import Moderation   from './pages/Moderation';
@@ -22,13 +20,11 @@ import InfoTopics   from './pages/InfoTopics';
 import ActivityPage from './pages/Activity';
 import BlacklistPage from './pages/Blacklist';
 
-type Page = 'overview'|'settings'|'members'|'commands'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist';
+type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist';
 
 const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',      icon: LayoutDashboard },
   { id: 'settings',   label: 'Guild Settings', icon: Settings        },
-  { id: 'members',    label: 'Members',        icon: Users           },
-  { id: 'commands',   label: 'Commands',       icon: Terminal        },
   { id: 'triggers',   label: 'Triggers',       icon: Zap             },
   { id: 'tickets',    label: 'Tickets',        icon: Ticket          },
   { id: 'moderation', label: 'Moderation',     icon: Shield          },
@@ -71,8 +67,6 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
 
   if (page === 'overview')    return <Overview     guildId={guildId} />;
   if (page === 'settings')    return <SettingsPage guildId={guildId} />;
-  if (page === 'members')     return <Members      guildId={guildId} />;
-  if (page === 'commands')    return <Commands     guildId={guildId} />;
   if (page === 'triggers')    return <Triggers     guildId={guildId} />;
   if (page === 'tickets')     return <Tickets      guildId={guildId} />;
   if (page === 'moderation')  return <Moderation   guildId={guildId} />;
