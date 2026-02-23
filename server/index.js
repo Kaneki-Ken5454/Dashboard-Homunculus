@@ -430,6 +430,48 @@ app.post('/api/query', async (req, res) => {
         return ok(res, rows);
       }
 
+
+      case 'getActivityStats': {
+        const [activeAll, active7d, active24h, totalMsgs] = await Promise.all([
+          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND message_count > 0`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
+          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND last_active >= NOW() - INTERVAL '7 days'`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
+          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND last_active >= NOW() - INTERVAL '24 hours'`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
+          sql(`SELECT COALESCE(SUM(message_count),0)::int AS tot FROM guild_members WHERE guild_id=$1`, [params.guildId]).then(r => r[0]?.tot ?? 0),
+        ]);
+        return ok(res, { activeAll, active7d, active24h, totalMsgs });
+      }
+
+      // ── Blacklist ──
+      case 'getBlacklist': {
+        const blRows = await sql(`SELECT words, violations FROM blacklist_data WHERE guild_id=$1`, [params.guildId]).catch(() => []);
+        if (!blRows.length) return ok(res, { words: [], violations: {} });
+        const blRow = blRows[0];
+        const words = Array.isArray(blRow.words) ? blRow.words : JSON.parse(blRow.words || '[]');
+        const violations = typeof blRow.violations === 'string' ? JSON.parse(blRow.violations || '{}') : (blRow.violations || {});
+        return ok(res, { words, violations });
+      }
+
+      case 'addBlacklistWord': {
+        await sql(`INSERT INTO blacklist_data (guild_id, words) VALUES ($1, '[]'::jsonb) ON CONFLICT (guild_id) DO NOTHING`, [params.guildId]);
+        await sql(`UPDATE blacklist_data SET words = CASE WHEN words @> $2::jsonb THEN words ELSE words || $2::jsonb END WHERE guild_id=$1`, [params.guildId, JSON.stringify([params.word.toLowerCase().trim()])]);
+        return ok(res, { ok: true });
+      }
+
+      case 'removeBlacklistWord': {
+        await sql(`UPDATE blacklist_data SET words = COALESCE((SELECT jsonb_agg(w) FROM jsonb_array_elements_text(words) w WHERE lower(w) != lower($2)), '[]'::jsonb) WHERE guild_id=$1`, [params.guildId, params.word]);
+        return ok(res, { ok: true });
+      }
+
+      case 'clearUserViolations': {
+        await sql(`UPDATE blacklist_data SET violations = violations - $1 WHERE guild_id=$2`, [params.userId, params.guildId]).catch(() => {});
+        return ok(res, { ok: true });
+      }
+
+      case 'clearAllViolations': {
+        await sql(`UPDATE blacklist_data SET violations = '{}' WHERE guild_id=$1`, [params.guildId]).catch(() => {});
+        return ok(res, { ok: true });
+      }
+
       // ── Tickets ──
       case 'getTickets': {
         // The bot uses Prisma's "Ticket" table (camelCase columns).

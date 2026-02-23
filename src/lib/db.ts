@@ -215,3 +215,33 @@ export async function getAllTickets(guildId: string): Promise<Ticket[]> {
 export async function getAllWarns(guildId: string): Promise<WarnEntry[]> {
   return apiCall<WarnEntry[]>('getAllWarns', { guildId });
 }
+
+// ── Activity ───────────────────────────────────────────────────────────────────
+export interface ActivityStats { activeAll: number; active7d: number; active24h: number; totalMsgs: number; }
+export interface ActivityMember { user_id: string; username: string; message_count: number; last_active: string; }
+
+export async function getLeaderboard(guildId: string, limit = 25): Promise<ActivityMember[]> {
+  return apiCall<ActivityMember[]>('getLeaderboard', { guildId, limit });
+}
+export async function getActivityStats(guildId: string): Promise<ActivityStats> {
+  return apiCall<ActivityStats>('getActivityStats', { guildId });
+}
+
+// ── Blacklist ──────────────────────────────────────────────────────────────────
+export interface BlacklistData { words: string[]; violations: Record<string, number>; }
+
+export async function getBlacklist(guildId: string): Promise<BlacklistData> {
+  return apiCall<BlacklistData>('getBlacklist', { guildId });
+}
+export async function addBlacklistWord(guildId: string, word: string) {
+  return apiCall('addBlacklistWord', { guildId, word });
+}
+export async function removeBlacklistWord(guildId: string, word: string) {
+  return apiCall('removeBlacklistWord', { guildId, word });
+}
+export async function clearUserViolations(guildId: string, userId: string) {
+  return apiCall('clearUserViolations', { guildId, userId });
+}
+export async function clearAllViolations(guildId: string) {
+  return apiCall('clearAllViolations', { guildId });
+}

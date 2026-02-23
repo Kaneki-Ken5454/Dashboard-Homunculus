@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Settings, Users, Terminal, Zap,
   Ticket, Shield, Tag, BarChart2, BookOpen,
   RefreshCw, Server, Search, ChevronDown,
-  Database, Loader2, LogOut,
+  Database, Loader2, LogOut, Activity, ShieldBan,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { discoverAllGuildIds, isConfigured, setDatabaseUrl, type DiscoveredGuild } from './lib/db';
@@ -19,8 +19,10 @@ import Moderation   from './pages/Moderation';
 import Roles        from './pages/Roles';
 import Votes        from './pages/Votes';
 import InfoTopics   from './pages/InfoTopics';
+import ActivityPage from './pages/Activity';
+import BlacklistPage from './pages/Blacklist';
 
-type Page = 'overview'|'settings'|'members'|'commands'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info';
+type Page = 'overview'|'settings'|'members'|'commands'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist';
 
 const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',      icon: LayoutDashboard },
@@ -33,6 +35,8 @@ const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'roles',      label: 'Roles',          icon: Tag             },
   { id: 'votes',      label: 'Votes',          icon: BarChart2       },
   { id: 'info',       label: 'Info Topics',    icon: BookOpen        },
+  { id: 'activity',   label: 'Activity',       icon: Activity        },
+  { id: 'blacklist',  label: 'Blacklist',      icon: ShieldBan       },
 ];
 
 
@@ -75,6 +79,8 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
   if (page === 'roles')       return <Roles        guildId={guildId} />;
   if (page === 'votes')       return <Votes        guildId={guildId} />;
   if (page === 'info')        return <InfoTopics   guildId={guildId} />;
+  if (page === 'activity')    return <ActivityPage guildId={guildId} />;
+  if (page === 'blacklist')   return <BlacklistPage guildId={guildId} />;
   return null;
 }
 export default function App() {
