@@ -156,6 +156,13 @@ async function ensureTables() {
     `ALTER TABLE auto_responders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`,
     `UPDATE auto_responders SET updated_at = created_at WHERE updated_at IS NULL`,
     `ALTER TABLE info_topics ADD COLUMN IF NOT EXISTS subcategory_emoji TEXT`,
+    `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS response_type TEXT DEFAULT 'text'`,
+    `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS cooldown_seconds INTEGER DEFAULT 0`,
+    `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS permission_level TEXT DEFAULT 'everyone'`,
+    `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS channel_id TEXT`,
+    `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS delete_message BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS embed_title TEXT`,
+    `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS embed_color TEXT DEFAULT '#5865F2'`,
   ];
   for (const m of migrations) {
     try { await sql(m); } catch (e) { /* column already exists or table missing */ }
@@ -334,89 +341,30 @@ app.post('/api/query', async (req, res) => {
       }
 
       // ── Custom Commands ──
-      case 'getCustomCommands': {
-        const rows = await sql(
-          `SELECT * FROM custom_commands WHERE guild_id = $1 ORDER BY created_at DESC`,
-          [params.guildId]
-        ).catch(() => []);
-        return ok(res, rows);
-      }
+      case 'getCustomCommands':
+        // Custom commands removed — redirect to triggers
+        return ok(res, []);
 
-      case 'createCustomCommand': {
-        const d = params.data;
-        // Always supply id — works whether column is BIGSERIAL, TEXT NOT NULL, or TEXT with no default
-        await sql(
-          `INSERT INTO custom_commands
-            (id, guild_id, trigger, name, description, response, response_type,
-             permission_level, cooldown_seconds, is_tag, is_enabled, usage_count,
-             created_by, created_at, updated_at)
-           VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,$7,$8,$9,true,0,'dashboard',NOW(),NOW())`,
-          [params.guildId, d.trigger, d.name ?? null, d.description ?? null,
-           d.response, d.response_type ?? 'text', d.permission_level ?? 'everyone',
-           d.cooldown_seconds ?? 0, d.is_tag ?? false]
-        );
-        return ok(res, { success: true });
-      }
+      case 'createCustomCommand':
+      case 'updateCustomCommand':
+      case 'deleteCustomCommand':
+        return ok(res, { success: true, message: 'Custom commands removed — use Triggers instead' });
 
-      case 'updateCustomCommand': {
-        const d = params.data;
-        await sql(
-          `UPDATE custom_commands SET
-             trigger=$1, name=$2, description=$3, response=$4,
-             permission_level=$5, cooldown_seconds=$6, is_enabled=$7, is_tag=$8, updated_at=now()
-           WHERE id=$9`,
-          [d.trigger, d.name ?? null, d.description ?? null, d.response,
-           d.permission_level ?? 'everyone', d.cooldown_seconds ?? 0,
-           d.is_enabled ?? true, d.is_tag ?? false, params.id]
-        );
-        return ok(res, { success: true });
-      }
+      case 'getAutoResponders':
+        // Auto responders removed — redirect to triggers
+        return ok(res, []);
 
-      case 'deleteCustomCommand': {
-        await sql(`DELETE FROM custom_commands WHERE id=$1`, [params.id]);
-        return ok(res, { success: true });
-      }
+      case 'createAutoResponder':
+      case 'updateAutoResponder':
+      case 'deleteAutoResponder':
+        return ok(res, { success: true, message: 'Auto responders removed — use Triggers instead' });
 
-      // ── Auto Responders ──
-      case 'getAutoResponders': {
-        const rows = await sql(
-          `SELECT * FROM auto_responders WHERE guild_id = $1 ORDER BY created_at DESC`,
-          [params.guildId]
-        ).catch(() => []);
-        return ok(res, rows);
-      }
-
-      case 'createAutoResponder': {
-        const d = params.data;
-        await sql(
-          `INSERT INTO auto_responders
-            (id, guild_id, trigger_text, match_type, response, response_type, is_enabled, trigger_count, created_by, created_at, updated_at)
-           VALUES (gen_random_uuid(),$1,$2,$3,$4,$5,true,0,'dashboard',NOW(),NOW())`,
-          [params.guildId, d.trigger_text, d.match_type ?? 'contains', d.response, d.response_type ?? 'text']
-        );
-        return ok(res, { success: true });
-      }
-
-      case 'updateAutoResponder': {
-        const d = params.data;
-        await sql(
-          `UPDATE auto_responders SET
-             trigger_text=$1, match_type=$2, response=$3, is_enabled=$4, updated_at=now()
-           WHERE id=$5`,
-          [d.trigger_text, d.match_type ?? 'contains', d.response, d.is_enabled ?? true, params.id]
-        );
-        return ok(res, { success: true });
-      }
-
-      case 'deleteAutoResponder': {
-        await sql(`DELETE FROM auto_responders WHERE id=$1`, [params.id]);
-        return ok(res, { success: true });
-      }
-
-      // ── Triggers ──
       case 'getTriggers': {
         const rows = await sql(
-          `SELECT * FROM triggers WHERE guild_id::text = $1 ORDER BY created_at DESC`,
+          `SELECT id, guild_id, trigger_text, response, match_type, enabled,
+                  use_count, response_type, cooldown_seconds, permission_level,
+                  channel_id, delete_message, embed_title, embed_color, created_at
+           FROM triggers WHERE guild_id::text = $1 ORDER BY created_at DESC`,
           [params.guildId]
         ).catch(() => []);
         return ok(res, rows);
@@ -425,9 +373,22 @@ app.post('/api/query', async (req, res) => {
       case 'createTrigger': {
         const d = params.data;
         await sql(
-          `INSERT INTO triggers (guild_id, trigger_text, response, match_type, enabled, use_count)
-           VALUES ($1,$2,$3,$4,true,0)`,
-          [params.guildId, d.trigger_text, d.response, d.match_type ?? 'contains']
+          `INSERT INTO triggers
+            (guild_id, trigger_text, response, match_type, enabled, use_count,
+             response_type, cooldown_seconds, permission_level, channel_id,
+             delete_message, embed_title, embed_color)
+           VALUES ($1,$2,$3,$4,true,0,$5,$6,$7,$8,$9,$10,$11)`,
+          [
+            params.guildId, d.trigger_text, d.response,
+            d.match_type ?? 'contains',
+            d.response_type ?? 'text',
+            d.cooldown_seconds ?? 0,
+            d.permission_level ?? 'everyone',
+            d.channel_id ?? null,
+            d.delete_message ?? false,
+            d.embed_title ?? null,
+            d.embed_color ?? '#5865F2',
+          ]
         );
         return ok(res, { success: true });
       }
@@ -435,8 +396,19 @@ app.post('/api/query', async (req, res) => {
       case 'updateTrigger': {
         const d = params.data;
         await sql(
-          `UPDATE triggers SET trigger_text=$1, response=$2, match_type=$3, enabled=$4, updated_at=now() WHERE id=$5`,
-          [d.trigger_text, d.response, d.match_type ?? 'contains', d.enabled ?? true, params.id]
+          `UPDATE triggers SET
+             trigger_text=$1, response=$2, match_type=$3, enabled=$4,
+             response_type=$5, cooldown_seconds=$6, permission_level=$7,
+             channel_id=$8, delete_message=$9, embed_title=$10, embed_color=$11
+           WHERE id=$12`,
+          [
+            d.trigger_text, d.response, d.match_type ?? 'contains', d.enabled ?? true,
+            d.response_type ?? 'text', d.cooldown_seconds ?? 0,
+            d.permission_level ?? 'everyone', d.channel_id ?? null,
+            d.delete_message ?? false, d.embed_title ?? null,
+            d.embed_color ?? '#5865F2',
+            params.id,
+          ]
         );
         return ok(res, { success: true });
       }
@@ -444,6 +416,18 @@ app.post('/api/query', async (req, res) => {
       case 'deleteTrigger': {
         await sql(`DELETE FROM triggers WHERE id=$1`, [params.id]);
         return ok(res, { success: true });
+      }
+
+      case 'getLeaderboard': {
+        const limit = Math.min(params.limit ?? 10, 50);
+        const rows = await sql(
+          `SELECT user_id, username, message_count, last_active
+           FROM guild_members
+           WHERE guild_id = $1 AND message_count > 0
+           ORDER BY message_count DESC LIMIT $2`,
+          [params.guildId, limit]
+        ).catch(() => []);
+        return ok(res, rows);
       }
 
       // ── Tickets ──
