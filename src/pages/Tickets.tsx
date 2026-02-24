@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Ticket, Filter, Bell, Plus, X } from 'lucide-react';
-import { getTickets, updateTicketStatus, deleteTicket, apiCall, type Ticket as TicketType } from '../lib/db';
+import { Ticket, Filter, Bell, Plus, X, Trash2 } from 'lucide-react';
+import { getTickets, updateTicketStatus, deleteTicket, deleteTicketPanel, apiCall, type Ticket as TicketType } from '../lib/db';
 import Badge from '../components/Badge';
 
 interface Props { guildId: string; }
@@ -99,6 +99,14 @@ export default function Tickets({ guildId }: Props) {
     finally { setSavingPing(false); }
   };
 
+  async function delPanel(panelId: string, name: string) {
+    if (!confirm(`Delete panel "${name}"?\n\nThis removes the panel from the database. Existing open tickets are kept but unlinked from the panel. The bot will no longer post new tickets from this panel.`)) return;
+    try {
+      await deleteTicketPanel(panelId, guildId);
+      setPanels(p => p.filter(x => x.id !== panelId));
+    } catch (e) { setError((e as Error).message); }
+  }
+
   const addRole = () => {
     if (!/^\d{17,19}$/.test(newRole.trim())) return;
     setPingModal(p => p ? { ...p, roles: [...p.roles, newRole.trim()] } : null);
@@ -146,12 +154,21 @@ export default function Tickets({ guildId }: Props) {
                     }
                   </div>
                 </div>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setPingModal({ panelId: p.id, name: p.name, roles: [...p.notificationRoles] })}
-                >
-                  Configure
-                </button>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setPingModal({ panelId: p.id, name: p.name, roles: [...p.notificationRoles] })}
+                  >
+                    Configure
+                  </button>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => delPanel(p.id, p.name)}
+                    title="Delete panel"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>

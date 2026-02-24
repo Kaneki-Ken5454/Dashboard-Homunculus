@@ -135,6 +135,9 @@ export async function updateTicketStatus(id: string, status: string) {
 export async function deleteTicket(id: string) {
   return apiCall('deleteTicket', { id });
 }
+export async function deleteTicketPanel(panelId: string, guildId: string) {
+  return apiCall('deleteTicketPanel', { panelId, guildId });
+}
 
 // ── Audit Logs ─────────────────────────────────────────────────────────────────
 export async function getAuditLogs(guildId: string): Promise<AuditLog[]> {

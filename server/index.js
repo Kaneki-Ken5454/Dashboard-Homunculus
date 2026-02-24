@@ -747,6 +747,13 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { success: true });
       }
 
+      case 'deleteTicketPanel': {
+        // Nullify panelId on child tickets first (FK is ON DELETE SET NULL, but be explicit)
+        await sql(`UPDATE "Ticket" SET "panelId"=NULL WHERE "panelId"=$1`, [params.panelId]);
+        await sql(`DELETE FROM "TicketPanel" WHERE id=$1 AND "guildId"=$2`, [params.panelId, params.guildId]);
+        return ok(res, { success: true });
+      }
+
       case 'getButtonRoles': {
         const rows = await sql(
           `SELECT * FROM button_roles WHERE guild_id = $1 ORDER BY created_at DESC`,
