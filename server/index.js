@@ -141,6 +141,15 @@ async function ensureTables() {
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (guild_id, user_id)
     )`,
+    // blacklist — one row per guild; guild_id TEXT matches all other tables.
+    // The bot previously created this with guild_id BIGINT; the migration below
+    // converts existing rows so queries from both bot and dashboard always match.
+    `CREATE TABLE IF NOT EXISTS blacklist_data (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT UNIQUE NOT NULL,
+      words JSONB DEFAULT '[]',
+      violations JSONB DEFAULT '{}'
+    )`,
   ];
   for (const ddl of ddls) {
     try { await sql(ddl); } catch (e) { console.warn('[DDL]', e.message?.slice(0, 80)); }
@@ -163,6 +172,20 @@ async function ensureTables() {
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS delete_message BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS embed_title TEXT`,
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS embed_color TEXT DEFAULT '#5865F2'`,
+    // Ensure violations column exists on blacklist_data (may be missing on older bot installs)
+    `ALTER TABLE blacklist_data ADD COLUMN IF NOT EXISTS violations JSONB DEFAULT '{}'`,
+    // If blacklist_data was created by the bot with guild_id BIGINT, cast it to TEXT.
+    // This is idempotent — it's a no-op if the column is already TEXT.
+    `DO $$ BEGIN
+       IF EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'blacklist_data'
+           AND column_name = 'guild_id'
+           AND data_type = 'bigint'
+       ) THEN
+         ALTER TABLE blacklist_data ALTER COLUMN guild_id TYPE TEXT USING guild_id::text;
+       END IF;
+     END $$`,
   ];
   for (const m of migrations) {
     try { await sql(m); } catch (e) { /* column already exists or table missing */ }
