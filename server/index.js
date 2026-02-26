@@ -300,6 +300,7 @@ app.post('/api/query', async (req, res) => {
           { key: 'voteCount',    q: `SELECT COUNT(*)::int AS c FROM votes           WHERE guild_id::text = $1` },
           { key: 'topicCount',   q: `SELECT COUNT(*)::int AS c FROM info_topics     WHERE guild_id::text = $1` },
           { key: 'warnCount',    q: `SELECT COALESCE(SUM(jsonb_array_length(warns)), 0)::int AS c FROM warns_data WHERE guild_id::text = $1` },
+          { key: 'blacklistViolationCount', q: `SELECT COALESCE(SUM((value::text)::int), 0)::int AS c FROM blacklist_data, jsonb_each_text(violations) WHERE guild_id::text = $1` },
         ];
         const stats = {};
         for (const { key, q } of queries) {
@@ -605,8 +606,53 @@ app.post('/api/query', async (req, res) => {
         return ok(res, flat);
       }
 
-      case 'deleteWarn': {
-        await sql(`DELETE FROM warns_data WHERE id=$1`, [params.id]);
+      case 'getMemberStats': {
+        // Returns warn counts and blacklist violations per user for a guild
+        const warnRows = await sql(
+          `SELECT user_id, COALESCE(jsonb_array_length(warns), 0) AS warn_count
+           FROM warns_data WHERE guild_id::text = $1`,
+          [params.guildId]
+        ).catch(() => []);
+        const blRow = await sql(
+          `SELECT violations FROM blacklist_data WHERE guild_id::text = $1`,
+          [params.guildId]
+        ).catch(() => []);
+        const violations = blRow[0]?.violations ?? {};
+        // Merge into a map by user_id
+        const map = {};
+        for (const row of warnRows) {
+          map[row.user_id] = { warns: row.warn_count, violations: 0 };
+        }
+        for (const [userId, count] of Object.entries(violations)) {
+          if (!map[userId]) map[userId] = { warns: 0, violations: 0 };
+          map[userId].violations = count;
+        }
+        return ok(res, map);
+      }
+
+
+        // params.id is formatted as "{rowId}-{timestamp}" — split to find the row and the specific warn
+        const dashIdx = params.id.indexOf('-');
+        if (dashIdx > -1) {
+          const rowId = params.id.slice(0, dashIdx);
+          const timestamp = params.id.slice(dashIdx + 1);
+          // Remove the specific warn entry from the JSONB array
+          await sql(
+            `UPDATE warns_data
+             SET warns = COALESCE(
+               (SELECT jsonb_agg(w) FROM jsonb_array_elements(warns) w
+                WHERE (w->>'timestamp') IS DISTINCT FROM $2),
+               '[]'::jsonb
+             )
+             WHERE id = $1`,
+            [rowId, timestamp]
+          ).catch(async () => {
+            // Fallback: if rowId lookup fails, try deleting by full id
+            await sql(`DELETE FROM warns_data WHERE id=$1`, [params.id]);
+          });
+        } else {
+          await sql(`DELETE FROM warns_data WHERE id=$1`, [params.id]);
+        }
         return ok(res, { success: true });
       }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Users, Terminal, Ticket, Shield, Zap, AlertTriangle, BarChart2, MessageSquare } from 'lucide-react';
+import { Users, Terminal, Ticket, Shield, Zap, AlertTriangle, BarChart2, MessageSquare, ShieldBan } from 'lucide-react';
 import { getDashboardStats, getRecentActivity, type AuditLog } from '../lib/db';
 import Badge from '../components/Badge';
 
@@ -8,7 +8,7 @@ interface Props { guildId: string; }
 interface Stats {
   memberCount: number; commandCount: number; ticketCount: number;
   auditCount: number; triggerCount: number; warnCount: number;
-  autoRespCount: number; voteCount: number;
+  autoRespCount: number; voteCount: number; blacklistViolationCount: number;
 }
 
 function fmt(n: number) { return n.toLocaleString(); }
@@ -56,6 +56,7 @@ export default function Overview({ guildId }: Props) {
     { label: 'Audit Logs', value: fmt(stats.auditCount), icon: Shield, color: '#9b59b6' },
     { label: 'Triggers', value: fmt(stats.triggerCount), icon: Zap, color: '#e91e63' },
     { label: 'Warns', value: fmt(stats.warnCount), icon: AlertTriangle, color: '#ed4245' },
+    { label: 'Blacklist Violations', value: fmt(stats.blacklistViolationCount ?? 0), icon: ShieldBan, color: '#ff6b35' },
     { label: 'Auto Responses', value: fmt(stats.autoRespCount), icon: MessageSquare, color: '#1abc9c' },
     { label: 'Votes', value: fmt(stats.voteCount), icon: BarChart2, color: '#f39c12' },
   ] : [];

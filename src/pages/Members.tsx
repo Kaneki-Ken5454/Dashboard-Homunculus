@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Trophy, Search } from 'lucide-react';
-import { getMembers, updateMemberXP, type GuildMember } from '../lib/db';
+import { Trophy, Search, AlertTriangle, ShieldBan } from 'lucide-react';
+import { getMembers, updateMemberXP, getMemberStats, type GuildMember } from '../lib/db';
 import Modal from '../components/Modal';
 
 interface Props { guildId: string; }
@@ -8,6 +8,7 @@ interface Props { guildId: string; }
 export default function Members({ guildId }: Props) {
   const [members, setMembers] = useState<GuildMember[]>([]);
   const [filtered, setFiltered] = useState<GuildMember[]>([]);
+  const [memberStats, setMemberStats] = useState<Record<string, { warns: number; violations: number }>>({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<GuildMember | null>(null);
@@ -20,22 +21,18 @@ export default function Members({ guildId }: Props) {
     if (!guildId) return;
     setLoading(true); setError('');
     try {
-      console.log(`Loading members for guild: ${guildId}`);
-      const members = await getMembers(guildId);
-      console.log(`Loaded ${members.length} members`);
+      const [members, stats] = await Promise.all([getMembers(guildId), getMemberStats(guildId)]);
       setMembers(members); 
       setFiltered(members);
+      setMemberStats(stats);
     } catch (e) {
-      console.error('Error loading members:', e);
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    load();
-  }, [guildId]);
+  useEffect(() => { load(); }, [guildId]);
 
   useEffect(() => {
     const q = search.toLowerCase();
@@ -50,12 +47,10 @@ export default function Members({ guildId }: Props) {
     if (!editing) return;
     setSaving(true); setError('');
     try {
-      console.log(`Updating XP for member ${editing.id}: XP=${editXp}, Level=${editLevel}`);
       await updateMemberXP(editing.id, Number(editXp), Number(editLevel));
       setEditing(null); 
-      await load(); // Reload data
+      await load();
     } catch (e) {
-      console.error('Error updating member XP:', e);
       setError((e as Error).message);
     } finally {
       setSaving(false);
@@ -91,7 +86,7 @@ export default function Members({ guildId }: Props) {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['#', 'User', 'Level', 'XP', 'Messages', 'Last Active', ''].map(h => (
+              {['#', 'User', 'Level', 'XP', 'Messages', 'Warns', 'Violations', 'Last Active', ''].map(h => (
                 <th key={h} style={{ padding: '11px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{h}</th>
               ))}
             </tr>
@@ -99,19 +94,17 @@ export default function Members({ guildId }: Props) {
           <tbody>
           {filtered.length === 0 ? (
             <tr>
-              <td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center' }}>
+              <td colSpan={9} style={{ padding: '40px 16px', textAlign: 'center' }}>
                 {search ? (
-                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-                    No members found for "{search}"
-                  </div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>No members found for "{search}"</div>
                 ) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-                    No members in this server
-                  </div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>No members in this server</div>
                 )}
               </td>
             </tr>
-          ) : filtered.map((m, i) => (
+          ) : filtered.map((m, i) => {
+            const stats = memberStats[m.user_id] ?? { warns: 0, violations: 0 };
+            return (
               <tr key={m.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '12px 16px' }}>
                   <Trophy size={13} style={{ color: rankColor(i) }} />
@@ -136,6 +129,24 @@ export default function Members({ guildId }: Props) {
                 <td style={{ padding: '12px 16px' }}>
                   <span className="mono" style={{ fontSize: 13 }}>{m.message_count.toLocaleString()}</span>
                 </td>
+                <td style={{ padding: '12px 16px' }}>
+                  {stats.warns > 0 ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#ed424522', color: '#ed4245', borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}>
+                      <AlertTriangle size={11} /> {stats.warns}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>—</span>
+                  )}
+                </td>
+                <td style={{ padding: '12px 16px' }}>
+                  {stats.violations > 0 ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#ff6b3522', color: '#ff6b35', borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}>
+                      <ShieldBan size={11} /> {stats.violations}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>—</span>
+                  )}
+                </td>
                 <td style={{ padding: '12px 16px', fontSize: 12, color: 'var(--text-muted)' }}>
                   {new Date(m.last_active).toLocaleDateString()}
                 </td>
@@ -143,7 +154,8 @@ export default function Members({ guildId }: Props) {
                   <button className="btn btn-ghost btn-sm" onClick={() => openEdit(m)}>Edit XP</button>
                 </td>
               </tr>
-            ))}
+            );
+          })}
           </tbody>
         </table>
       </div>

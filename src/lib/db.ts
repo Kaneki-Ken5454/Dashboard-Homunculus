@@ -61,7 +61,10 @@ export async function discoverAllGuildIds(): Promise<DiscoveredGuild[]> {
 
 // ── Stats ──────────────────────────────────────────────────────────────────────
 export async function getDashboardStats(guildId: string) {
-  return apiCall<{ memberCount: number; commandCount: number; ticketCount: number; auditCount: number; triggerCount: number; warnCount: number; autoRespCount: number; voteCount: number; topicCount: number }>('getDashboardStats', { guildId });
+  return apiCall<{ memberCount: number; commandCount: number; ticketCount: number; auditCount: number; triggerCount: number; warnCount: number; autoRespCount: number; voteCount: number; topicCount: number; blacklistViolationCount: number }>('getDashboardStats', { guildId });
+}
+export async function getMemberStats(guildId: string): Promise<Record<string, { warns: number; violations: number }>> {
+  return apiCall<Record<string, { warns: number; violations: number }>>('getMemberStats', { guildId });
 }
 export async function getRecentActivity(guildId: string): Promise<AuditLog[]> {
   return apiCall<AuditLog[]>('getRecentActivity', { guildId });
