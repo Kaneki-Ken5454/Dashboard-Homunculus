@@ -234,10 +234,38 @@ try {
 } catch {}
 
 // ── Health check ──────────────────────────────────────────────────────────────
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/api/health', async (_req, res) => {
+  try {
+    await sql('SELECT 1 AS ok');
+    res.json({ ok: true, db: 'connected' });
+  } catch (e) {
+    // Still return ok:true so the Setup screen connects, but surface the DB error
+    res.json({ ok: true, db: 'error', dbError: e?.message });
+  }
+});
 
-// ── Guild Discovery ───────────────────────────────────────────────────────────
-app.post('/api/query', async (req, res) => {
+// ── Debug: list all tables and row counts (useful for diagnosing missing guilds) ──
+app.get('/api/debug', async (_req, res) => {
+  try {
+    const tables = await sql(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'public' ORDER BY table_name`
+    );
+    const counts = {};
+    for (const { table_name } of tables) {
+      try {
+        const r = await sql(`SELECT COUNT(*)::int AS c FROM "${table_name}"`);
+        counts[table_name] = r[0]?.c ?? 0;
+      } catch { counts[table_name] = 'error'; }
+    }
+    res.json({ ok: true, tables: counts });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message });
+  }
+});
+
+// ── Main API ───────────────────────────────────────────────────────────────────
+  (async () => {
   const { action, params = {} } = req.body;
   if (!action) return err(res, 'Missing action');
 
@@ -267,19 +295,24 @@ app.post('/api/query', async (req, res) => {
           try {
             // Prisma-quoted tables use "guildId" column, others use guild_id
             const isPrisma = table.startsWith('"');
-            const colExpr = isPrisma ? `"guildId"::text` : `guild_id::text`;
+            const guildCol = isPrisma ? '"guildId"' : 'guild_id';
+            const colExpr  = isPrisma ? '"guildId"::text' : 'guild_id::text';
+            const safeTable = table.replace(/"/g, '');
+            // Use parameterized-safe plain strings — dynamic table name is safe here
+            // because it's from our hardcoded list above (no user input)
             const rows = await sql(
-              `SELECT ${colExpr} AS guild_id, '${table.replace(/"/g,'')}' AS source, COUNT(*)::int AS count
-               FROM ${table} WHERE ${isPrisma ? '"guildId"' : 'guild_id'} IS NOT NULL GROUP BY ${colExpr}`
+              `SELECT ${colExpr} AS guild_id, '${safeTable}' AS source, COUNT(*)::int AS count
+               FROM ${table} WHERE ${guildCol} IS NOT NULL GROUP BY ${colExpr} LIMIT 500`
             );
-            results.push(...rows);
-          } catch { /* table may not exist */ }
+            if (Array.isArray(rows)) results.push(...rows);
+          } catch { /* table doesn't exist in this DB — safe to skip */ }
         }
         // Deduplicate — sum counts per guild_id, keep first source
         const map = new Map();
         for (const r of results) {
+          if (!r?.guild_id) continue;
           if (map.has(r.guild_id)) {
-            map.get(r.guild_id).count += r.count;
+            map.get(r.guild_id).count += (r.count ?? 0);
           } else {
             map.set(r.guild_id, { ...r });
           }
@@ -300,7 +333,7 @@ app.post('/api/query', async (req, res) => {
           { key: 'voteCount',    q: `SELECT COUNT(*)::int AS c FROM votes           WHERE guild_id::text = $1` },
           { key: 'topicCount',   q: `SELECT COUNT(*)::int AS c FROM info_topics     WHERE guild_id::text = $1` },
           { key: 'warnCount',    q: `SELECT COALESCE(SUM(jsonb_array_length(warns)), 0)::int AS c FROM warns_data WHERE guild_id::text = $1` },
-          { key: 'blacklistViolationCount', q: `SELECT COALESCE(SUM((value::text)::int), 0)::int AS c FROM blacklist_data, jsonb_each_text(violations) WHERE guild_id::text = $1` },
+          { key: 'blacklistViolationCount', q: `SELECT COALESCE((SELECT SUM((v.value::text)::int) FROM blacklist_data b, jsonb_each(b.violations) v WHERE b.guild_id::text = $1), 0)::int AS c` },
         ];
         const stats = {};
         for (const { key, q } of queries) {
@@ -613,19 +646,24 @@ app.post('/api/query', async (req, res) => {
            FROM warns_data WHERE guild_id::text = $1`,
           [params.guildId]
         ).catch(() => []);
-        const blRow = await sql(
+        const blRows = await sql(
           `SELECT violations FROM blacklist_data WHERE guild_id::text = $1`,
           [params.guildId]
         ).catch(() => []);
-        const violations = blRow[0]?.violations ?? {};
-        // Merge into a map by user_id
+        // Neon may return JSONB as a string or an object depending on the driver version
+        const rawViolations = blRows[0]?.violations ?? '{}';
+        const violations = typeof rawViolations === 'string'
+          ? JSON.parse(rawViolations || '{}')
+          : (rawViolations || {});
+        // Build a map by user_id
         const map = {};
         for (const row of warnRows) {
-          map[row.user_id] = { warns: row.warn_count, violations: 0 };
+          map[String(row.user_id)] = { warns: Number(row.warn_count) || 0, violations: 0 };
         }
         for (const [userId, count] of Object.entries(violations)) {
-          if (!map[userId]) map[userId] = { warns: 0, violations: 0 };
-          map[userId].violations = count;
+          const uid = String(userId);
+          if (!map[uid]) map[uid] = { warns: 0, violations: 0 };
+          map[uid].violations = Number(count) || 0;
         }
         return ok(res, map);
       }
@@ -975,6 +1013,7 @@ app.post('/api/query', async (req, res) => {
   } catch (e) {
     console.error('[Unhandled]', e?.stack || e); return err(res, e.message, 500);
   }
+  })().catch(next);
 });
 
 // ── Fallback: serve index.html for SPA routes in production ──────────────────
@@ -983,6 +1022,18 @@ app.get('*', (_req, res) => {
     res.sendFile(resolve(distPath, 'index.html'));
   } catch {
     res.status(404).send('Not found');
+  }
+});
+
+// ── Global JSON error handler (MUST be last) ──────────────────────────────────
+// Express 4 does NOT auto-catch async errors — without this, any uncaught async
+// exception in a route sends Express's default HTML 500 page, causing the
+// "API error (500): unparseable response" the browser sees.
+// eslint-disable-next-line no-unused-vars
+app.use((err, _req, res, _next) => {
+  console.error('[Express error handler]', err?.stack || err);
+  if (!res.headersSent) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
   }
 });
 
