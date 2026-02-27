@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Users, Terminal, Ticket, Shield, Zap, AlertTriangle, BarChart2, MessageSquare, ShieldBan } from 'lucide-react';
+import { Users, Terminal, Ticket, Shield, Zap, AlertTriangle, BarChart2, MessageSquare, Ban } from 'lucide-react';
 import { getDashboardStats, getRecentActivity, type AuditLog } from '../lib/db';
 import Badge from '../components/Badge';
 
@@ -8,7 +8,7 @@ interface Props { guildId: string; }
 interface Stats {
   memberCount: number; commandCount: number; ticketCount: number;
   auditCount: number; triggerCount: number; warnCount: number;
-  autoRespCount: number; voteCount: number; blacklistViolationCount: number;
+  autoRespCount: number; voteCount: number; violationCount: number;
 }
 
 function fmt(n: number) { return n.toLocaleString(); }
@@ -33,37 +33,32 @@ export default function Overview({ guildId }: Props) {
       if (!guildId) return;
       setLoading(true); setError('');
       try {
-        console.log(`Loading overview data for guild: ${guildId}`);
-        const [stats, activity] = await Promise.all([getDashboardStats(guildId), getRecentActivity(guildId)]);
-        console.log('Loaded overview data:', { stats, activityCount: activity.length });
-        setStats(stats); 
-        setActivity(activity);
+        const [s, a] = await Promise.all([getDashboardStats(guildId), getRecentActivity(guildId)]);
+        setStats(s);
+        setActivity(a);
       } catch (e) {
-        console.error('Error loading overview data:', e);
         setError((e as Error).message);
       } finally {
         setLoading(false);
       }
     };
-    
     loadOverview();
   }, [guildId]);
 
   const statCards = stats ? [
-    { label: 'Members', value: fmt(stats.memberCount), icon: Users, color: '#5865f2' },
-    { label: 'Commands', value: fmt(stats.commandCount), icon: Terminal, color: '#3ba55d' },
-    { label: 'Tickets', value: fmt(stats.ticketCount), icon: Ticket, color: '#faa81a' },
-    { label: 'Audit Logs', value: fmt(stats.auditCount), icon: Shield, color: '#9b59b6' },
-    { label: 'Triggers', value: fmt(stats.triggerCount), icon: Zap, color: '#e91e63' },
-    { label: 'Warns', value: fmt(stats.warnCount), icon: AlertTriangle, color: '#ed4245' },
-    { label: 'Blacklist Violations', value: fmt(stats.blacklistViolationCount ?? 0), icon: ShieldBan, color: '#ff6b35' },
-    { label: 'Auto Responses', value: fmt(stats.autoRespCount), icon: MessageSquare, color: '#1abc9c' },
-    { label: 'Votes', value: fmt(stats.voteCount), icon: BarChart2, color: '#f39c12' },
+    { label: 'Members',          value: fmt(stats.memberCount),     icon: Users,         color: '#5865f2' },
+    { label: 'Triggers',         value: fmt(stats.triggerCount),    icon: Zap,           color: '#e91e63' },
+    { label: 'Tickets',          value: fmt(stats.ticketCount),     icon: Ticket,        color: '#faa81a' },
+    { label: 'Audit Logs',       value: fmt(stats.auditCount),      icon: Shield,        color: '#9b59b6' },
+    { label: 'Warns',            value: fmt(stats.warnCount),       icon: AlertTriangle, color: '#ed4245' },
+    { label: 'BL Violations',    value: fmt(stats.violationCount),  icon: Ban,           color: '#ff6b35' },
+    { label: 'Auto Responses',   value: fmt(stats.autoRespCount),   icon: MessageSquare, color: '#1abc9c' },
+    { label: 'Votes',            value: fmt(stats.voteCount),       icon: BarChart2,     color: '#f39c12' },
   ] : [];
 
   function actionVariant(type: string): 'danger' | 'warning' | 'success' | 'primary' | 'muted' {
     if (type.includes('ban') || type.includes('kick')) return 'danger';
-    if (type.includes('warn') || type.includes('mute')) return 'warning';
+    if (type.includes('warn') || type.includes('mute') || type.includes('blacklist')) return 'warning';
     if (type.includes('create') || type.includes('add')) return 'success';
     return 'muted';
   }

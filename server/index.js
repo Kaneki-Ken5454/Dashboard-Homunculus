@@ -174,18 +174,10 @@ async function ensureTables() {
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS embed_color TEXT DEFAULT '#5865F2'`,
     // Ensure violations column exists on blacklist_data (may be missing on older bot installs)
     `ALTER TABLE blacklist_data ADD COLUMN IF NOT EXISTS violations JSONB DEFAULT '{}'`,
-    // If blacklist_data was created by the bot with guild_id BIGINT, cast it to TEXT.
-    // This is idempotent — it's a no-op if the column is already TEXT.
-    `DO $$ BEGIN
-       IF EXISTS (
-         SELECT 1 FROM information_schema.columns
-         WHERE table_name = 'blacklist_data'
-           AND column_name = 'guild_id'
-           AND data_type = 'bigint'
-       ) THEN
-         ALTER TABLE blacklist_data ALTER COLUMN guild_id TYPE TEXT USING guild_id::text;
-       END IF;
-     END $$`,
+    // Migrate guild_id BIGINT → TEXT for blacklist_data.
+    // Plain ALTER with USING works if column is BIGINT; if already TEXT Postgres errors
+    // and the catch below silently ignores it — so this is safe either way.
+    `ALTER TABLE blacklist_data ALTER COLUMN guild_id TYPE TEXT USING guild_id::text`,
   ];
   for (const m of migrations) {
     try { await sql(m); } catch (e) { /* column already exists or table missing */ }
@@ -234,37 +226,10 @@ try {
 } catch {}
 
 // ── Health check ──────────────────────────────────────────────────────────────
-app.get('/api/health', async (_req, res) => {
-  try {
-    await sql('SELECT 1 AS ok');
-    res.json({ ok: true, db: 'connected' });
-  } catch (e) {
-    res.json({ ok: true, db: 'error', dbError: e?.message });
-  }
-});
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
-// Visit /api/debug to see all tables + row counts — useful for diagnosing missing guilds
-app.get('/api/debug', async (_req, res) => {
-  try {
-    const tables = await sql(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name`
-    );
-    const counts = {};
-    for (const { table_name } of tables) {
-      try {
-        const r = await sql(`SELECT COUNT(*)::int AS c FROM "${table_name}"`);
-        counts[table_name] = r[0]?.c ?? 0;
-      } catch { counts[table_name] = 'error reading'; }
-    }
-    res.json({ ok: true, tables: counts });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message });
-  }
-});
-
+// ── Guild Discovery ───────────────────────────────────────────────────────────
 app.post('/api/query', async (req, res) => {
-  // Safety net — guarantees the response is ALWAYS JSON, never Express's HTML error page
-  try {
   const { action, params = {} } = req.body;
   if (!action) return err(res, 'Missing action');
 
@@ -275,77 +240,69 @@ app.post('/api/query', async (req, res) => {
     switch (action) {
 
       case 'discoverGuilds': {
-        // Scan ALL tables — both bot-native and dashboard-compat names.
-        // NOTE: The bot stores guild_id as BIGINT (Discord snowflakes).
-        // We always cast to TEXT so JavaScript never loses precision on 64-bit IDs.
+        // Scan ALL tables — both bot-native and dashboard-compat names
         const tables = [
-          { name: 'guild_settings',  col: 'guild_id' },
-          { name: 'guild_config',    col: 'guild_id' },
-          { name: 'custom_commands', col: 'guild_id' },
-          { name: 'auto_responders', col: 'guild_id' },
-          { name: 'triggers',        col: 'guild_id' },
-          { name: 'tickets',         col: 'guild_id' },
-          { name: '"Ticket"',        col: '"guildId"' },
-          { name: '"TicketPanel"',   col: '"guildId"' },
-          { name: 'audit_logs',      col: 'guild_id' },
-          { name: 'mod_actions',     col: 'guild_id' },
-          { name: 'guild_members',   col: 'guild_id' },
-          { name: 'messages',        col: 'guild_id' },
-          { name: 'reaction_roles',  col: 'guild_id' },
-          { name: 'button_roles',    col: 'guild_id' },
-          { name: 'info_topics',     col: 'guild_id' },
-          { name: 'votes',           col: 'guild_id' },
-          { name: 'warns_data',      col: 'guild_id' },
-          { name: 'warn_data',       col: 'guild_id' },
-          { name: 'blacklist_data',  col: 'guild_id' },
+          'guild_settings', 'guild_config',   // settings
+          'custom_commands',                   // commands
+          'auto_responders', 'triggers',       // triggers/responders
+          'tickets', '"Ticket"', '"TicketPanel"', // tickets (both Prisma + flat)
+          'audit_logs', 'mod_actions',         // moderation
+          'guild_members', 'messages',         // members/activity
+          'reaction_roles', 'button_roles',    // roles
+          'info_topics',                       // info
+          'votes',                             // votes
+          'warns_data', 'warn_data',           // warnings
+          'blacklist_data',                    // blacklist
         ];
         const results = [];
-        for (const { name, col } of tables) {
+        for (const table of tables) {
           try {
-            // Always cast to TEXT — handles both BIGINT and TEXT column types without precision loss
+            // Prisma-quoted tables use "guildId" column, others use guild_id
+            const isPrisma = table.startsWith('"');
+            const colExpr = isPrisma ? `"guildId"::text` : `guild_id::text`;
             const rows = await sql(
-              `SELECT ${col}::text AS guild_id,
-                      '${name.replace(/"/g,'')}' AS source,
-                      COUNT(*)::int AS count
-               FROM ${name}
-               WHERE ${col} IS NOT NULL
-               GROUP BY ${col}::text
-               LIMIT 100`
+              `SELECT ${colExpr} AS guild_id, '${table.replace(/"/g,'')}' AS source, COUNT(*)::int AS count
+               FROM ${table} WHERE ${isPrisma ? '"guildId"' : 'guild_id'} IS NOT NULL GROUP BY ${colExpr}`
             );
-            if (Array.isArray(rows)) {
-              for (const r of rows) {
-                if (r?.guild_id) results.push(r);
-              }
-            }
-          } catch { /* table doesn't exist in this DB */ }
+            results.push(...rows);
+          } catch { /* table may not exist */ }
         }
         // Deduplicate — sum counts per guild_id, keep first source
         const map = new Map();
         for (const r of results) {
-          const id = String(r.guild_id);
-          if (map.has(id)) {
-            map.get(id).count += (Number(r.count) || 0);
+          if (map.has(r.guild_id)) {
+            map.get(r.guild_id).count += r.count;
           } else {
-            map.set(id, { guild_id: id, source: r.source, count: Number(r.count) || 0 });
+            map.set(r.guild_id, { ...r });
           }
         }
         return ok(res, [...map.values()].sort((a, b) => b.count - a.count));
       }
 
+      // ── Stats ──
       case 'getDashboardStats': {
         const { guildId } = params;
-        // All queries use guild_id::text = $1 so they work whether the column is BIGINT or TEXT
         const queries = [
-          { key: 'memberCount',  q: `SELECT COUNT(*)::int AS c FROM guild_members   WHERE guild_id::text = $1` },
-          { key: 'commandCount', q: `SELECT COUNT(*)::int AS c FROM custom_commands WHERE guild_id::text = $1` },
-          { key: 'ticketCount',  q: `SELECT COUNT(*)::int AS c FROM tickets         WHERE guild_id::text = $1` },
-          { key: 'auditCount',   q: `SELECT COUNT(*)::int AS c FROM audit_logs      WHERE guild_id::text = $1` },
+          { key: 'memberCount',  q: `SELECT COUNT(*)::int AS c FROM guild_members   WHERE guild_id = $1` },
+          { key: 'commandCount', q: `SELECT COUNT(*)::int AS c FROM custom_commands WHERE guild_id = $1` },
+          { key: 'ticketCount',  q: `SELECT COUNT(*)::int AS c FROM tickets         WHERE guild_id = $1` },
+          { key: 'auditCount',   q: `SELECT COUNT(*)::int AS c FROM audit_logs      WHERE guild_id = $1` },
           { key: 'triggerCount', q: `SELECT COUNT(*)::int AS c FROM triggers        WHERE guild_id::text = $1` },
-          { key: 'autoRespCount',q: `SELECT COUNT(*)::int AS c FROM auto_responders WHERE guild_id::text = $1` },
+          { key: 'autoRespCount',q: `SELECT COUNT(*)::int AS c FROM auto_responders WHERE guild_id = $1` },
           { key: 'voteCount',    q: `SELECT COUNT(*)::int AS c FROM votes           WHERE guild_id::text = $1` },
           { key: 'topicCount',   q: `SELECT COUNT(*)::int AS c FROM info_topics     WHERE guild_id::text = $1` },
-          { key: 'warnCount',    q: `SELECT COALESCE(SUM(jsonb_array_length(warns)), 0)::int AS c FROM warns_data WHERE guild_id::text = $1` },
-          { key: 'blacklistViolationCount', q: `SELECT COALESCE((SELECT SUM((v.value::text)::int) FROM blacklist_data b, jsonb_each(b.violations) v WHERE b.guild_id::text = $1), 0)::int AS c` },
+          // Count warns from bot's per-row table + entries packed in warns_data JSONB arrays
+          { key: 'warnCount', q: `SELECT (
+              COALESCE((SELECT COUNT(*)::int FROM warn_data WHERE guild_id = $1), 0)
+              + COALESCE((SELECT SUM(jsonb_array_length(warns))::int FROM warns_data WHERE guild_id = $1), 0)
+            ) AS c` },
+          // Sum all per-user violation counts stored in blacklist_data.violations JSONB object
+          { key: 'violationCount', q: `SELECT COALESCE((
+              SELECT SUM(val::int)
+              FROM blacklist_data,
+                   jsonb_each_text(COALESCE(violations, '{}')) kv(key, val)
+              WHERE guild_id = $1
+            ), 0)::int AS c` },
         ];
         const stats = {};
         for (const { key, q } of queries) {
@@ -359,18 +316,16 @@ app.post('/api/query', async (req, res) => {
 
       case 'getRecentActivity': {
         const rows = await sql(
-          `SELECT * FROM audit_logs WHERE guild_id::text = $1 ORDER BY created_at DESC LIMIT 10`,
+          `SELECT * FROM audit_logs WHERE guild_id = $1 ORDER BY created_at DESC LIMIT 10`,
           [params.guildId]
         ).catch(() => []);
-        return ok(res, rows);
-      }
         return ok(res, rows);
       }
 
       // ── Guild Settings ──
       case 'getGuildSetting': {
         const rows = await sql(
-          `SELECT * FROM guild_settings WHERE guild_id::text = $1 LIMIT 1`,
+          `SELECT * FROM guild_settings WHERE guild_id = $1 LIMIT 1`,
           [params.guildId]
         ).catch(() => []);
         return ok(res, rows[0] ?? null);
@@ -400,7 +355,7 @@ app.post('/api/query', async (req, res) => {
       // ── Members ──
       case 'getMembers': {
         const rows = await sql(
-          `SELECT * FROM guild_members WHERE guild_id::text = $1 ORDER BY xp DESC LIMIT 200`,
+          `SELECT * FROM guild_members WHERE guild_id = $1 ORDER BY xp DESC LIMIT 200`,
           [params.guildId]
         ).catch(() => []);
         return ok(res, rows);
@@ -516,7 +471,7 @@ app.post('/api/query', async (req, res) => {
 
       // ── Blacklist ──
       case 'getBlacklist': {
-        const blRows = await sql(`SELECT words, violations FROM blacklist_data WHERE guild_id::text=$1`, [params.guildId]).catch(() => []);
+        const blRows = await sql(`SELECT words, violations FROM blacklist_data WHERE guild_id=$1`, [params.guildId]).catch(() => []);
         if (!blRows.length) return ok(res, { words: [], violations: {} });
         const blRow = blRows[0];
         const words = Array.isArray(blRow.words) ? blRow.words : JSON.parse(blRow.words || '[]');
@@ -526,22 +481,22 @@ app.post('/api/query', async (req, res) => {
 
       case 'addBlacklistWord': {
         await sql(`INSERT INTO blacklist_data (guild_id, words) VALUES ($1, '[]'::jsonb) ON CONFLICT (guild_id) DO NOTHING`, [params.guildId]);
-        await sql(`UPDATE blacklist_data SET words = CASE WHEN words @> $2::jsonb THEN words ELSE words || $2::jsonb END WHERE guild_id::text=$1`, [params.guildId, JSON.stringify([params.word.toLowerCase().trim()])]);
+        await sql(`UPDATE blacklist_data SET words = CASE WHEN words @> $2::jsonb THEN words ELSE words || $2::jsonb END WHERE guild_id=$1`, [params.guildId, JSON.stringify([params.word.toLowerCase().trim()])]);
         return ok(res, { ok: true });
       }
 
       case 'removeBlacklistWord': {
-        await sql(`UPDATE blacklist_data SET words = COALESCE((SELECT jsonb_agg(w) FROM jsonb_array_elements_text(words) w WHERE lower(w) != lower($2)), '[]'::jsonb) WHERE guild_id::text=$1`, [params.guildId, params.word]);
+        await sql(`UPDATE blacklist_data SET words = COALESCE((SELECT jsonb_agg(w) FROM jsonb_array_elements_text(words) w WHERE lower(w) != lower($2)), '[]'::jsonb) WHERE guild_id=$1`, [params.guildId, params.word]);
         return ok(res, { ok: true });
       }
 
       case 'clearUserViolations': {
-        await sql(`UPDATE blacklist_data SET violations = violations - $1 WHERE guild_id::text=$2`, [params.userId, params.guildId]).catch(() => {});
+        await sql(`UPDATE blacklist_data SET violations = violations - $1 WHERE guild_id=$2`, [params.userId, params.guildId]).catch(() => {});
         return ok(res, { ok: true });
       }
 
       case 'clearAllViolations': {
-        await sql(`UPDATE blacklist_data SET violations = '{}' WHERE guild_id::text=$1`, [params.guildId]).catch(() => {});
+        await sql(`UPDATE blacklist_data SET violations = '{}' WHERE guild_id=$1`, [params.guildId]).catch(() => {});
         return ok(res, { ok: true });
       }
 
@@ -569,14 +524,14 @@ app.post('/api/query', async (req, res) => {
         // Also check flat tickets table (dashboard-created)
         try {
           const flatRows = await sql(
-            `SELECT id::text, guild_id::text AS guild_id, COALESCE(panel_id,'') AS panel_id,
+            `SELECT id::text, guild_id, COALESCE(panel_id,'') AS panel_id,
                     channel_id, user_id, COALESCE(username,'') AS username,
                     COALESCE(title,'Ticket') AS title,
                     COALESCE(priority,'medium') AS priority, status,
                     0 AS messages_count, '' AS assigned_to,
                     COALESCE(category,'') AS category,
                     opened_at, closed_at
-             FROM tickets WHERE guild_id::text = $1
+             FROM tickets WHERE guild_id = $1
              ORDER BY opened_at DESC LIMIT 200`,
             [params.guildId]
           );
@@ -617,7 +572,7 @@ app.post('/api/query', async (req, res) => {
       // ── Audit Logs ──
       case 'getAuditLogs': {
         const rows = await sql(
-          `SELECT * FROM audit_logs WHERE guild_id::text = $1 ORDER BY created_at DESC LIMIT 200`,
+          `SELECT * FROM audit_logs WHERE guild_id = $1 ORDER BY created_at DESC LIMIT 200`,
           [params.guildId]
         ).catch(() => []);
         return ok(res, rows);
@@ -636,12 +591,12 @@ app.post('/api/query', async (req, res) => {
         ).catch(() => []);
         const flat = [];
         for (const row of rawRows) {
-          const warns = Array.isArray(row.warns) ? row.warns : (typeof row.warns === 'string' ? JSON.parse(row.warns || '[]') : []);
+          const warns = Array.isArray(row.warns) ? row.warns : [];
           for (const w of warns) {
             flat.push({
               id: `${row.id}-${w.timestamp || Math.random()}`,
               guild_id: String(row.guild_id),
-              user_id: String(row.user_id),
+              user_id: row.user_id,
               moderator_id: w.moderator_id ? String(w.moderator_id) : w.moderator || '—',
               reason: w.reason || null,
               severity: w.severity || 'low',
@@ -654,50 +609,8 @@ app.post('/api/query', async (req, res) => {
       }
 
       case 'deleteWarn': {
-        // id format is "{rowId}-{timestamp}" — remove just that entry from the JSONB array
-        const dashIdx = String(params.id).indexOf('-');
-        if (dashIdx > -1) {
-          const rowId = String(params.id).slice(0, dashIdx);
-          const timestamp = String(params.id).slice(dashIdx + 1);
-          await sql(
-            `UPDATE warns_data
-             SET warns = COALESCE(
-               (SELECT jsonb_agg(w) FROM jsonb_array_elements(warns) w
-                WHERE (w->>'timestamp') IS DISTINCT FROM $2),
-               '[]'::jsonb
-             )
-             WHERE id::text = $1`,
-            [rowId, timestamp]
-          ).catch(() => {});
-        } else {
-          await sql(`DELETE FROM warns_data WHERE id::text = $1`, [String(params.id)]).catch(() => {});
-        }
+        await sql(`DELETE FROM warns_data WHERE id=$1`, [params.id]);
         return ok(res, { success: true });
-      }
-
-      case 'getMemberStats': {
-        // Per-user warn count + blacklist violation count for the Members page
-        const warnRows = await sql(
-          `SELECT user_id::text AS user_id, COALESCE(jsonb_array_length(warns), 0) AS warn_count
-           FROM warns_data WHERE guild_id::text = $1`,
-          [params.guildId]
-        ).catch(() => []);
-        const blRows = await sql(
-          `SELECT violations FROM blacklist_data WHERE guild_id::text = $1`,
-          [params.guildId]
-        ).catch(() => []);
-        const rawViol = blRows[0]?.violations ?? '{}';
-        const violations = typeof rawViol === 'string' ? JSON.parse(rawViol || '{}') : (rawViol || {});
-        const map = {};
-        for (const row of warnRows) {
-          map[String(row.user_id)] = { warns: Number(row.warn_count) || 0, violations: 0 };
-        }
-        for (const [userId, count] of Object.entries(violations)) {
-          const uid = String(userId);
-          if (!map[uid]) map[uid] = { warns: 0, violations: 0 };
-          map[uid].violations = Number(count) || 0;
-        }
-        return ok(res, map);
       }
 
       // ── Votes ──
@@ -1017,15 +930,7 @@ app.post('/api/query', async (req, res) => {
         return err(res, `Unknown action: ${action}`);
     }
   } catch (e) {
-    console.error('[Unhandled switch]', e?.stack || e);
-    return err(res, e.message, 500);
-  }
-  } catch (outerE) {
-    // Outer safety net — this guarantees JSON even if Express would otherwise send HTML
-    console.error('[Outer catch]', outerE?.stack || outerE);
-    if (!res.headersSent) {
-      res.status(500).json({ success: false, error: outerE?.message || String(outerE) });
-    }
+    console.error('[Unhandled]', e?.stack || e); return err(res, e.message, 500);
   }
 });
 
