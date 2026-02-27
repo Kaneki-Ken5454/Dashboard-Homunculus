@@ -61,14 +61,7 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
         : guilds.length === 0
           ? <div style={{ color:'var(--text-muted)', fontSize:13, maxWidth:380 }}>
               No guild IDs found in any table. Enter one manually using the selector in the sidebar.
-              {discoverErr && (
-                <div style={{ color:'var(--danger)', marginTop:8, fontSize:12, fontFamily:'JetBrains Mono, monospace', wordBreak:'break-all' }}>
-                  ⚠ Scan error: {discoverErr}
-                  <div style={{ marginTop:6, fontFamily:'Lexend, sans-serif', color:'var(--text-muted)' }}>
-                    Check <code style={{ background:'var(--elevated)', padding:'1px 4px', borderRadius:3 }}>/api/debug</code> in your browser to inspect DB tables.
-                  </div>
-                </div>
-              )}
+              {discoverErr && <div style={{ color:'var(--danger)', marginTop:8, fontSize:12 }}>{discoverErr}</div>}
             </div>
           : <div style={{ color:'var(--text-muted)', fontSize:13 }}>Select a guild from the sidebar to continue</div>
       }

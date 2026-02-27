@@ -21,8 +21,11 @@ export default function Members({ guildId }: Props) {
     if (!guildId) return;
     setLoading(true); setError('');
     try {
-      const [members, stats] = await Promise.all([getMembers(guildId), getMemberStats(guildId)]);
-      setMembers(members); 
+      const [members, stats] = await Promise.all([
+        getMembers(guildId),
+        getMemberStats(guildId).catch(() => ({} as Record<string, { warns: number; violations: number }>)),
+      ]);
+      setMembers(members);
       setFiltered(members);
       setMemberStats(stats);
     } catch (e) {
@@ -48,7 +51,7 @@ export default function Members({ guildId }: Props) {
     setSaving(true); setError('');
     try {
       await updateMemberXP(editing.id, Number(editXp), Number(editLevel));
-      setEditing(null); 
+      setEditing(null);
       await load();
     } catch (e) {
       setError((e as Error).message);
@@ -57,7 +60,8 @@ export default function Members({ guildId }: Props) {
     }
   }
 
-  const rankColor = (i: number) => i === 0 ? '#f1c40f' : i === 1 ? '#bdc3c7' : i === 2 ? '#cd7f32' : 'var(--text-faint)';
+  const rankColor = (i: number) =>
+    i === 0 ? '#f1c40f' : i === 1 ? '#bdc3c7' : i === 2 ? '#cd7f32' : 'var(--text-faint)';
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
@@ -86,76 +90,70 @@ export default function Members({ guildId }: Props) {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['#', 'User', 'Level', 'XP', 'Messages', 'Warns', 'Violations', 'Last Active', ''].map(h => (
-                <th key={h} style={{ padding: '11px 16px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{h}</th>
+              {['#', 'User', 'Level', 'XP', 'Messages', 'Warns', 'BL Violations', 'Last Active', ''].map(h => (
+                <th key={h} style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-          {filtered.length === 0 ? (
-            <tr>
-              <td colSpan={9} style={{ padding: '40px 16px', textAlign: 'center' }}>
-                {search ? (
-                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>No members found for "{search}"</div>
-                ) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>No members in this server</div>
-                )}
-              </td>
-            </tr>
-          ) : filtered.map((m, i) => {
-            const stats = memberStats[m.user_id] ?? { warns: 0, violations: 0 };
-            return (
-              <tr key={m.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '12px 16px' }}>
-                  <Trophy size={13} style={{ color: rankColor(i) }} />
-                </td>
-                <td style={{ padding: '12px 16px' }}>
-                  <div style={{ fontSize: 14, fontWeight: 500 }}>{m.username}</div>
-                  <div className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.user_id}</div>
-                </td>
-                <td style={{ padding: '12px 16px' }}>
-                  <span style={{ background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 8, padding: '3px 10px', fontSize: 13, fontWeight: 600 }}>
-                    Lv {m.level}
-                  </span>
-                </td>
-                <td style={{ padding: '12px 16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ flex: 1, maxWidth: 80, height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${Math.min(100, (m.xp % 1000) / 10)}%`, background: 'var(--primary)', borderRadius: 2 }} />
-                    </div>
-                    <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{m.xp.toLocaleString()}</span>
+            {filtered.length === 0 ? (
+              <tr>
+                <td colSpan={9} style={{ padding: '40px 16px', textAlign: 'center' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+                    {search ? `No members found for "${search}"` : 'No members in this server'}
                   </div>
                 </td>
-                <td style={{ padding: '12px 16px' }}>
-                  <span className="mono" style={{ fontSize: 13 }}>{m.message_count.toLocaleString()}</span>
-                </td>
-                <td style={{ padding: '12px 16px' }}>
-                  {stats.warns > 0 ? (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#ed424522', color: '#ed4245', borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}>
-                      <AlertTriangle size={11} /> {stats.warns}
-                    </span>
-                  ) : (
-                    <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>—</span>
-                  )}
-                </td>
-                <td style={{ padding: '12px 16px' }}>
-                  {stats.violations > 0 ? (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#ff6b3522', color: '#ff6b35', borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}>
-                      <ShieldBan size={11} /> {stats.violations}
-                    </span>
-                  ) : (
-                    <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>—</span>
-                  )}
-                </td>
-                <td style={{ padding: '12px 16px', fontSize: 12, color: 'var(--text-muted)' }}>
-                  {new Date(m.last_active).toLocaleDateString()}
-                </td>
-                <td style={{ padding: '12px 16px' }}>
-                  <button className="btn btn-ghost btn-sm" onClick={() => openEdit(m)}>Edit XP</button>
-                </td>
               </tr>
-            );
-          })}
+            ) : filtered.map((m, i) => {
+              const stats = memberStats[m.user_id] ?? { warns: 0, violations: 0 };
+              return (
+                <tr key={m.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '12px 14px' }}>
+                    <Trophy size={13} style={{ color: rankColor(i) }} />
+                  </td>
+                  <td style={{ padding: '12px 14px' }}>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>{m.username}</div>
+                    <div className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.user_id}</div>
+                  </td>
+                  <td style={{ padding: '12px 14px' }}>
+                    <span style={{ background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 8, padding: '3px 10px', fontSize: 13, fontWeight: 600 }}>
+                      Lv {m.level}
+                    </span>
+                  </td>
+                  <td style={{ padding: '12px 14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ flex: 1, maxWidth: 80, height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.min(100, (m.xp % 1000) / 10)}%`, background: 'var(--primary)', borderRadius: 2 }} />
+                      </div>
+                      <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{m.xp.toLocaleString()}</span>
+                    </div>
+                  </td>
+                  <td style={{ padding: '12px 14px' }}>
+                    <span className="mono" style={{ fontSize: 13 }}>{m.message_count.toLocaleString()}</span>
+                  </td>
+                  <td style={{ padding: '12px 14px' }}>
+                    {stats.warns > 0 ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#ed424522', color: '#ed4245', borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}>
+                        <AlertTriangle size={11} /> {stats.warns}
+                      </span>
+                    ) : <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>—</span>}
+                  </td>
+                  <td style={{ padding: '12px 14px' }}>
+                    {stats.violations > 0 ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#ff6b3522', color: '#ff6b35', borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}>
+                        <ShieldBan size={11} /> {stats.violations}
+                      </span>
+                    ) : <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>—</span>}
+                  </td>
+                  <td style={{ padding: '12px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
+                    {new Date(m.last_active).toLocaleDateString()}
+                  </td>
+                  <td style={{ padding: '12px 14px' }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => openEdit(m)}>Edit XP</button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
