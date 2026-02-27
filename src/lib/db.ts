@@ -49,7 +49,7 @@ export interface Ticket { id: string; guild_id: string; panel_id: string; channe
 export interface AuditLog { id: string; guild_id: string; action_type: string; user_id?: string; moderator_id?: string; bot_action: boolean; reason?: string; metadata?: unknown; created_at: string; }
 export interface WarnEntry { id: string; guild_id: string; user_id: string; moderator_id: string; reason?: string; severity: string; created_at: string; }
 export interface Vote { id: number; vote_id?: string; guild_id?: string; question?: string; options: unknown; end_time?: string; start_time?: string; results_posted: boolean; created_at: string; channel_id?: string; anonymous?: boolean; }
-export interface InfoTopic { id: number; guild_id: string; section: string; subcategory?: string; topic_id: string; name: string; embed_title?: string; embed_description?: string; emoji?: string; embed_color?: string; image?: string; thumbnail?: string; footer?: string; category_emoji_id?: string; views: number; created_at: string; updated_at: string; }
+export interface InfoTopic { id: number; guild_id: string; section: string; subcategory?: string; subcategory_emoji?: string; topic_id: string; name: string; embed_title?: string; embed_description?: string; emoji?: string; embed_color?: string; image?: string; thumbnail?: string; footer?: string; category_emoji_id?: string; views: number; created_at: string; updated_at: string; }
 export interface ReactionRole { id: string; guild_id: string; message_id: string; channel_id: string; emoji: string; role_id: string; role_name?: string; is_reaction: boolean; created_at: string; }
 export interface ButtonRole { id: string; guild_id: string; message_id: string; channel_id: string; button_id: string; role_id: string; button_style: string; button_label?: string; button_emoji?: string; created_at: string; }
 export interface DiscoveredGuild { guild_id: string; source: string; count: number; }
@@ -255,6 +255,9 @@ export async function updateInfoSection(guildId: string, oldSection: string, new
 }
 export async function updateInfoSubcategory(guildId: string, section: string, oldSub: string, newSub: string) {
   return apiCall('updateInfoSubcategory', { guildId, section, oldSub, newSub });
+}
+export async function setSubcategoryEmoji(guildId: string, section: string, subcategory: string, emoji: string) {
+  return apiCall('setSubcategoryEmoji', { guildId, section, subcategory, emoji });
 }
 
 // ── Role sync helpers ─────────────────────────────────────────────────────────

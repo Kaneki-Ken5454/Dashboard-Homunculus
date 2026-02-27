@@ -740,6 +740,17 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { success: true });
       }
 
+      case 'setSubcategoryEmoji': {
+        // Set (or clear) the subcategory_emoji for every topic in a given section+subcategory
+        const { guildId, section, subcategory, emoji } = params;
+        await sql(
+          `UPDATE info_topics SET subcategory_emoji=$1, updated_at=now()
+           WHERE guild_id::text=$2 AND section=$3 AND subcategory=$4`,
+          [emoji || null, guildId, section, subcategory]
+        );
+        return ok(res, { success: true });
+      }
+
       // ── Reaction Roles ──
       case 'getReactionRoles': {
         const rows = await sql(

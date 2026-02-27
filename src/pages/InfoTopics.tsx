@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo } from 'react';
-import { BookOpen, Trash2, ChevronDown, ChevronRight, Plus, Pencil, FolderEdit, Tag } from 'lucide-react';
+import { BookOpen, Trash2, ChevronDown, ChevronRight, Plus, Pencil, FolderEdit, Tag, Smile } from 'lucide-react';
 import {
   getInfoTopics, createInfoTopic, updateInfoTopic, deleteInfoTopic,
-  updateInfoSection, updateInfoSubcategory, type InfoTopic,
+  updateInfoSection, updateInfoSubcategory, setSubcategoryEmoji, type InfoTopic,
 } from '../lib/db';
 import Modal from '../components/Modal';
 import Badge from '../components/Badge';
@@ -24,7 +24,16 @@ const EMPTY: Partial<InfoTopic> = {
   image: '', thumbnail: '', category_emoji_id: '',
 };
 
-type ModalType = 'create' | 'edit' | 'section' | 'subcategory' | null;
+type ModalType = 'create' | 'edit' | 'section' | 'subcategory' | 'subcategory_emoji' | null;
+
+// Common emoji suggestions for subcategories
+const EMOJI_SUGGESTIONS = [
+  '📁','📂','📋','📌','📍','🔖','🏷️','📎','🗂️','📑',
+  '🎯','⚡','🔥','✨','💫','🌟','⭐','🎖️','🏆','🎗️',
+  '🔧','⚙️','🛠️','🔨','🪛','💡','🔍','🔎','📡','🖥️',
+  '👥','👤','🤝','🎮','🎲','📊','📈','📉','💰','🎁',
+  '🔒','🔓','🛡️','⚠️','❓','❕','ℹ️','🚨','🎵','🎨',
+];
 
 export default function InfoTopicsPage({ guildId }: Props) {
   const [topics, setTopics]       = useState<InfoTopic[]>([]);
@@ -36,6 +45,9 @@ export default function InfoTopicsPage({ guildId }: Props) {
   const [error, setError]         = useState('');
   const [renameTarget, setRenameTarget] = useState<{ section?: string; oldName: string }>({ oldName: '' });
   const [renameTo, setRenameTo]         = useState('');
+  // subcategory emoji state
+  const [emojiTarget, setEmojiTarget] = useState<{ section: string; subcategory: string; current: string }>({ section: '', subcategory: '', current: '' });
+  const [emojiValue, setEmojiValue]   = useState('');
 
   const load = () => {
     if (!guildId) return;
@@ -48,6 +60,12 @@ export default function InfoTopicsPage({ guildId }: Props) {
   function openEdit(t: InfoTopic) { setForm({ ...t }); setModal('edit'); setError(''); }
   function openRenameSection(section: string) { setRenameTarget({ oldName: section }); setRenameTo(section); setModal('section'); setError(''); }
   function openRenameSubcategory(section: string, sub: string) { setRenameTarget({ section, oldName: sub }); setRenameTo(sub); setModal('subcategory'); setError(''); }
+  function openSubcategoryEmoji(section: string, sub: string, current: string) {
+    setEmojiTarget({ section, subcategory: sub, current });
+    setEmojiValue(current || '');
+    setModal('subcategory_emoji');
+    setError('');
+  }
 
   async function submitTopic() {
     if (!form.name?.trim()) { setError('Name is required.'); return; }
@@ -77,6 +95,14 @@ export default function InfoTopicsPage({ guildId }: Props) {
     } catch (e) { setError((e as Error).message); } finally { setSaving(false); }
   }
 
+  async function submitSubcategoryEmoji() {
+    setSaving(true); setError('');
+    try {
+      await setSubcategoryEmoji(guildId, emojiTarget.section, emojiTarget.subcategory, emojiValue.trim());
+      setModal(null); load();
+    } catch (e) { setError((e as Error).message); } finally { setSaving(false); }
+  }
+
   async function del(id: number) {
     if (!confirm('Delete this topic?')) return;
     try { await deleteInfoTopic(id); setTopics(p => p.filter(t => t.id !== id)); }
@@ -92,6 +118,16 @@ export default function InfoTopicsPage({ guildId }: Props) {
     acc[t.section].push(t);
     return acc;
   }, {}), [topics]);
+
+  // Build a map of section+subcategory → emoji (first topic's value wins, they're all the same)
+  const subcatEmojis = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of topics) {
+      const key = `${t.section}::${t.subcategory}`;
+      if (!map.has(key)) map.set(key, t.subcategory_emoji || '');
+    }
+    return map;
+  }, [topics]);
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
@@ -119,7 +155,7 @@ export default function InfoTopicsPage({ guildId }: Props) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {Object.entries(grouped).map(([section, items]) => {
             const open = !collapsed.has(section);
-            const subcats = [...new Set(items.map(i => i.subcategory).filter(Boolean))];
+            const subcats = [...new Set(items.map(i => i.subcategory).filter(Boolean))] as string[];
             return (
               <div key={section} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
                 <div style={{ display: 'flex', alignItems: 'center', padding: '13px 18px', borderBottom: open ? '1px solid var(--border)' : 'none', gap: 8 }}>
@@ -129,14 +165,34 @@ export default function InfoTopicsPage({ guildId }: Props) {
                     <span style={{ background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 10, padding: '1px 8px', fontSize: 11, fontWeight: 600 }}>{items.length}</span>
                   </button>
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', flex: 1 }}>
-                    {subcats.map(sub => (
-                      <span key={sub} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '2px 6px 2px 8px', fontSize: 11, color: 'var(--text-muted)' }}>
-                        <Tag size={9} />{sub}
-                        <button onClick={(e) => { e.stopPropagation(); openRenameSubcategory(section, sub!); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 1px', color: 'var(--text-faint)', display: 'flex', alignItems: 'center' }} title={`Rename "${sub}"`}>
-                          <Pencil size={9} />
-                        </button>
-                      </span>
-                    ))}
+                    {subcats.map(sub => {
+                      const emoji = subcatEmojis.get(`${section}::${sub}`);
+                      return (
+                        <span key={sub} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '2px 6px 2px 8px', fontSize: 11, color: 'var(--text-muted)' }}>
+                          {emoji
+                            ? <span style={{ fontSize: 13, lineHeight: 1 }}>{emoji}</span>
+                            : <Tag size={9} />
+                          }
+                          {sub}
+                          {/* Rename subcategory */}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); openRenameSubcategory(section, sub); }}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 1px', color: 'var(--text-faint)', display: 'flex', alignItems: 'center' }}
+                            title={`Rename "${sub}"`}
+                          >
+                            <Pencil size={9} />
+                          </button>
+                          {/* Set subcategory emoji */}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); openSubcategoryEmoji(section, sub, emoji || ''); }}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 1px', color: emoji ? '#818cf8' : 'var(--text-faint)', display: 'flex', alignItems: 'center' }}
+                            title={emoji ? `Change emoji for "${sub}"` : `Add emoji to "${sub}"`}
+                          >
+                            <Smile size={9} />
+                          </button>
+                        </span>
+                      );
+                    })}
                   </div>
                   <button onClick={() => openRenameSection(section)} className="btn btn-ghost btn-sm" title="Rename section">
                     <FolderEdit size={13} /> Rename
@@ -160,7 +216,12 @@ export default function InfoTopicsPage({ guildId }: Props) {
                             {t.embed_description && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.embed_description}</div>}
                           </td>
                           <td style={{ padding: '10px 14px' }}><span className="mono" style={{ fontSize: 12, color: '#818cf8' }}>{t.topic_id}</span></td>
-                          <td style={{ padding: '10px 14px' }}><Badge label={t.subcategory || 'General'} variant="muted" /></td>
+                          <td style={{ padding: '10px 14px' }}>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              {t.subcategory_emoji && <span style={{ fontSize: 14 }}>{t.subcategory_emoji}</span>}
+                              <Badge label={t.subcategory || 'General'} variant="muted" />
+                            </div>
+                          </td>
                           <td style={{ padding: '10px 14px', maxWidth: 200 }}><span style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.embed_title || '—'}</span></td>
                           <td style={{ padding: '10px 14px' }}>
                             <div style={{ display: 'flex', gap: 5 }}>
@@ -243,6 +304,70 @@ export default function InfoTopicsPage({ guildId }: Props) {
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
             <button className="btn btn-ghost" onClick={() => setModal(null)}>Cancel</button>
             <button className="btn btn-primary" onClick={submitRenameSubcategory} disabled={saving || !renameTo.trim()}>{saving ? 'Saving…' : 'Rename Subcategory'}</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Subcategory Emoji Modal ── */}
+      {modal === 'subcategory_emoji' && (
+        <Modal title="Set Subcategory Emoji" onClose={() => setModal(null)} width="440px">
+          <div style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
+            Choose an emoji for the <strong style={{ color: 'var(--text)' }}>{emojiTarget.subcategory}</strong> subcategory in <strong style={{ color: 'var(--text)' }}>{emojiTarget.section}</strong>. This emoji will appear next to the subcategory name in the bot's info menu.
+          </div>
+
+          {/* Preview + input */}
+          <F label="Emoji">
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <div style={{ width: 44, height: 44, background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>
+                {emojiValue || <Smile size={20} style={{ color: 'var(--text-faint)' }} />}
+              </div>
+              <input
+                className="inp"
+                autoFocus
+                placeholder="Paste or type an emoji  e.g. 📁"
+                value={emojiValue}
+                onChange={e => setEmojiValue(e.target.value)}
+                style={{ fontSize: 18, flex: 1 }}
+                onKeyDown={e => { if (e.key === 'Enter') submitSubcategoryEmoji(); }}
+              />
+            </div>
+          </F>
+
+          {/* Quick-pick grid */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 8 }}>Quick pick</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+              {EMOJI_SUGGESTIONS.map(e => (
+                <button
+                  key={e}
+                  onClick={() => setEmojiValue(e)}
+                  style={{
+                    width: 34, height: 34, background: emojiValue === e ? 'var(--primary-subtle)' : 'var(--elevated)',
+                    border: `1px solid ${emojiValue === e ? '#818cf8' : 'var(--border)'}`,
+                    borderRadius: 7, cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.1s',
+                  }}
+                  title={e}
+                >
+                  {e}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {emojiValue && (
+            <button
+              onClick={() => setEmojiValue('')}
+              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer', padding: 0, marginBottom: 14, display: 'flex', alignItems: 'center', gap: 4 }}
+            >
+              ✕ Clear emoji (remove from subcategory)
+            </button>
+          )}
+
+          {error && <div style={{ color: 'var(--danger)', background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 8, padding: '10px 14px', fontSize: 13, marginBottom: 8 }}>{error}</div>}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn btn-ghost" onClick={() => setModal(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitSubcategoryEmoji} disabled={saving}>{saving ? 'Saving…' : 'Save Emoji'}</button>
           </div>
         </Modal>
       )}
