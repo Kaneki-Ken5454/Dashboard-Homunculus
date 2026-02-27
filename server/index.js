@@ -721,21 +721,23 @@ app.post('/api/query', async (req, res) => {
 
 
       case 'updateInfoSection': {
-        // Rename a top-level section across all its topics
-        const { guildId, oldSection, newSection } = params;
+        // Rename a top-level section and optionally set its category_emoji_id
+        const { guildId, oldSection, newSection, categoryEmojiId } = params;
         await sql(
-          `UPDATE info_topics SET section=$1 WHERE guild_id::text=$2 AND section=$3`,
-          [newSection, guildId, oldSection]
+          `UPDATE info_topics SET section=$1, category_emoji_id=$2, updated_at=now()
+           WHERE guild_id::text=$3 AND section=$4`,
+          [newSection, categoryEmojiId ?? null, guildId, oldSection]
         );
         return ok(res, { success: true });
       }
 
       case 'updateInfoSubcategory': {
-        // Rename a subcategory across all its topics within a section
-        const { guildId, section, oldSub, newSub } = params;
+        // Rename a subcategory and optionally set its emoji
+        const { guildId, section, oldSub, newSub, subcategoryEmoji } = params;
         await sql(
-          `UPDATE info_topics SET subcategory=$1 WHERE guild_id::text=$2 AND section=$3 AND subcategory=$4`,
-          [newSub, guildId, section, oldSub]
+          `UPDATE info_topics SET subcategory=$1, subcategory_emoji=$2, updated_at=now()
+           WHERE guild_id::text=$3 AND section=$4 AND subcategory=$5`,
+          [newSub, subcategoryEmoji ?? null, guildId, section, oldSub]
         );
         return ok(res, { success: true });
       }
@@ -747,6 +749,17 @@ app.post('/api/query', async (req, res) => {
           `UPDATE info_topics SET subcategory_emoji=$1, updated_at=now()
            WHERE guild_id::text=$2 AND section=$3 AND subcategory=$4`,
           [emoji || null, guildId, section, subcategory]
+        );
+        return ok(res, { success: true });
+      }
+
+      case 'setCategoryEmojiId': {
+        // Set (or clear) category_emoji_id for every topic in a section
+        const { guildId, section, categoryEmojiId } = params;
+        await sql(
+          `UPDATE info_topics SET category_emoji_id=$1, updated_at=now()
+           WHERE guild_id::text=$2 AND section=$3`,
+          [categoryEmojiId || null, guildId, section]
         );
         return ok(res, { success: true });
       }

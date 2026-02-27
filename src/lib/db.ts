@@ -250,14 +250,17 @@ export async function clearAllViolations(guildId: string) {
 }
 
 // ── Info section / subcategory rename ────────────────────────────────────────
-export async function updateInfoSection(guildId: string, oldSection: string, newSection: string) {
-  return apiCall('updateInfoSection', { guildId, oldSection, newSection });
+export async function updateInfoSection(guildId: string, oldSection: string, newSection: string, categoryEmojiId?: string) {
+  return apiCall('updateInfoSection', { guildId, oldSection, newSection, categoryEmojiId: categoryEmojiId ?? null });
 }
-export async function updateInfoSubcategory(guildId: string, section: string, oldSub: string, newSub: string) {
-  return apiCall('updateInfoSubcategory', { guildId, section, oldSub, newSub });
+export async function updateInfoSubcategory(guildId: string, section: string, oldSub: string, newSub: string, subcategoryEmoji?: string) {
+  return apiCall('updateInfoSubcategory', { guildId, section, oldSub, newSub, subcategoryEmoji: subcategoryEmoji ?? null });
 }
 export async function setSubcategoryEmoji(guildId: string, section: string, subcategory: string, emoji: string) {
   return apiCall('setSubcategoryEmoji', { guildId, section, subcategory, emoji });
+}
+export async function setCategoryEmojiId(guildId: string, section: string, categoryEmojiId: string) {
+  return apiCall('setCategoryEmojiId', { guildId, section, categoryEmojiId });
 }
 
 // ── Role sync helpers ─────────────────────────────────────────────────────────
