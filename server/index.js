@@ -579,37 +579,91 @@ app.post('/api/query', async (req, res) => {
       }
 
       case 'deleteAuditLog': {
-        await sql(`DELETE FROM audit_logs WHERE id=$1`, [params.id]);
+        // Try audit_logs first (UUID text id), then mod_actions (bigint id)
+        const deleted = await sql(`DELETE FROM audit_logs WHERE id=$1 RETURNING id`, [params.id]).catch(() => []);
+        if (!deleted.length) {
+          await sql(`DELETE FROM mod_actions WHERE id=$1::bigint`, [params.id]).catch(() => {});
+        }
         return ok(res, { success: true });
       }
 
       // ── Warns ──
       case 'getWarns': {
+        // Also query warn_data (bot's native per-row table) for completeness
+        const nativeRows = await sql(
+          `SELECT id, guild_id, user_id, moderator_id, reason, severity, created_at FROM warn_data WHERE guild_id = $1 ORDER BY created_at DESC`,
+          [params.guildId]
+        ).catch(() => []);
+
         const rawRows = await sql(
           `SELECT * FROM warns_data WHERE guild_id::text = $1`,
           [params.guildId]
         ).catch(() => []);
+
         const flat = [];
+
+        // Native warn_data rows — id is the real row UUID, prefix "wn::" so deleteWarn knows the table
+        for (const r of nativeRows) {
+          flat.push({
+            id: `wn::${r.id}`,
+            guild_id: String(r.guild_id),
+            user_id: String(r.user_id),
+            moderator_id: r.moderator_id ? String(r.moderator_id) : '—',
+            reason: r.reason || null,
+            severity: r.severity || 'medium',
+            created_at: r.created_at || new Date().toISOString(),
+          });
+        }
+
+        // warns_data JSONB rows — compound ID "wd::ROWID::TIMESTAMP" so deleteWarn can strip the entry
+        const seenNative = new Set(nativeRows.map(r => String(r.user_id)));
         for (const row of rawRows) {
           const warns = Array.isArray(row.warns) ? row.warns : [];
           for (const w of warns) {
+            const ts = w.timestamp || '';
             flat.push({
-              id: `${row.id}-${w.timestamp || Math.random()}`,
+              id: `wd::${row.id}::${ts}`,
               guild_id: String(row.guild_id),
-              user_id: row.user_id,
-              moderator_id: w.moderator_id ? String(w.moderator_id) : w.moderator || '—',
+              user_id: String(row.user_id),
+              moderator_id: w.moderator_id ? String(w.moderator_id) : '—',
               reason: w.reason || null,
-              severity: w.severity || 'low',
-              created_at: w.timestamp || row.created_at || new Date().toISOString(),
+              severity: w.severity || 'medium',
+              created_at: ts || row.created_at || new Date().toISOString(),
             });
           }
         }
+
         flat.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
         return ok(res, flat);
       }
 
       case 'deleteWarn': {
-        await sql(`DELETE FROM warns_data WHERE id=$1`, [params.id]);
+        const id = String(params.id);
+        if (id.startsWith('wn::')) {
+          // warn_data native row — simple delete by UUID
+          const rowId = id.slice(4);
+          await sql(`DELETE FROM warn_data WHERE id=$1`, [rowId]);
+        } else if (id.startsWith('wd::')) {
+          // warns_data JSONB row — remove the specific entry by timestamp
+          const parts = id.split('::');   // ['wd', rowId, timestamp]
+          const rowId = parts[1];
+          const ts    = parts[2] || '';
+          // Remove the warn entry whose timestamp matches; update or delete the row if empty
+          const rows = await sql(`SELECT id, warns FROM warns_data WHERE id=$1`, [rowId]).catch(() => []);
+          if (rows.length) {
+            let warns = Array.isArray(rows[0].warns) ? rows[0].warns : [];
+            warns = warns.filter(w => (w.timestamp || '') !== ts);
+            if (warns.length === 0) {
+              await sql(`DELETE FROM warns_data WHERE id=$1`, [rowId]);
+            } else {
+              await sql(`UPDATE warns_data SET warns=$1::jsonb, updated_at=now() WHERE id=$2`, [JSON.stringify(warns), rowId]);
+            }
+          }
+        } else {
+          // Fallback: try both tables
+          await sql(`DELETE FROM warn_data WHERE id=$1`, [id]).catch(() => {});
+          await sql(`DELETE FROM warns_data WHERE id=$1`, [id]).catch(() => {});
+        }
         return ok(res, { success: true });
       }
 
@@ -935,7 +989,7 @@ app.post('/api/query', async (req, res) => {
           const warns = Array.isArray(row.warns) ? row.warns : [];
           for (const w of warns) {
             dashWarns.push({
-              id: `warndata-${row.id}-${w.timestamp || Math.random()}`,
+              id: `wd::${row.id}::${w.timestamp || ""}`,   // parsed by deleteWarn
               guild_id: String(row.guild_id),
               user_id: row.user_id,
               moderator_id: w.moderator_id ? String(w.moderator_id) : '—',
