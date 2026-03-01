@@ -168,6 +168,31 @@ async function ensureTables() {
     // Fix unique constraint: include subcategory so the same topic_id can exist in different subcategories
     `ALTER TABLE info_topics DROP CONSTRAINT IF EXISTS info_topics_guild_id_section_topic_id_key`,
     `ALTER TABLE info_topics ADD CONSTRAINT info_topics_guild_section_sub_topic_key UNIQUE (guild_id, section, subcategory, topic_id) NOT DEFERRABLE INITIALLY IMMEDIATE`,
+    // Draft mode: topics with is_published=false are hidden from the bot
+    `ALTER TABLE info_topics ADD COLUMN IF NOT EXISTS is_published BOOLEAN DEFAULT true`,
+    // Version history for topics
+    `CREATE TABLE IF NOT EXISTS info_topic_history (
+       id          BIGSERIAL PRIMARY KEY,
+       topic_db_id BIGINT NOT NULL,
+       guild_id    TEXT NOT NULL,
+       topic_id    TEXT NOT NULL,
+       changed_by  TEXT DEFAULT 'dashboard',
+       snapshot    JSONB NOT NULL,
+       created_at  TIMESTAMPTZ DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_info_topic_history ON info_topic_history(topic_db_id, created_at DESC)`,
+    // Audit log for info system edits
+    `CREATE TABLE IF NOT EXISTS info_audit_log (
+       id         BIGSERIAL PRIMARY KEY,
+       guild_id   TEXT NOT NULL,
+       action     TEXT NOT NULL,
+       topic_id   TEXT,
+       topic_name TEXT,
+       changed_by TEXT DEFAULT 'dashboard',
+       details    JSONB DEFAULT '{}',
+       created_at TIMESTAMPTZ DEFAULT NOW()
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_info_audit_log ON info_audit_log(guild_id, created_at DESC)`,
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS response_type TEXT DEFAULT 'text'`,
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS cooldown_seconds INTEGER DEFAULT 0`,
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS permission_level TEXT DEFAULT 'everyone'`,
@@ -738,47 +763,126 @@ app.post('/api/query', async (req, res) => {
       case 'createInfoTopic': {
         const d = params.data;
         const topicId = d.topic_id || (d.name || '').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,80);
-        await sql(
+        const isPublished = d.is_published !== false;
+        const rows = await sql(
           `INSERT INTO info_topics
             (guild_id, section, subcategory, topic_id, name, embed_title, embed_description,
-             embed_color, emoji, category_emoji_id, image, thumbnail)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+             embed_color, emoji, category_emoji_id, image, thumbnail, is_published)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
            ON CONFLICT (guild_id, section, subcategory, topic_id) DO UPDATE SET
              name=$5, embed_title=$6, embed_description=$7,
              embed_color=$8, emoji=$9, category_emoji_id=$10,
-             image=$11, thumbnail=$12, updated_at=now()`,
-          [params.guildId,
-           d.section  || 'general',  d.subcategory || 'General',
-           topicId,
-           d.name,
-           d.embed_title       || null,  d.embed_description  || null,
-           d.embed_color       || '#5865F2', d.emoji          || '📄',
-           d.category_emoji_id || null,  d.image              || null,
-           d.thumbnail         || null]
+             image=$11, thumbnail=$12, is_published=$13, updated_at=now()
+           RETURNING id, topic_id, name`,
+          [params.guildId, d.section||'general', d.subcategory||'General', topicId, d.name,
+           d.embed_title||null, d.embed_description||null, d.embed_color||'#5865F2', d.emoji||'📄',
+           d.category_emoji_id||null, d.image||null, d.thumbnail||null, isPublished]
         );
-        return ok(res, { success: true });
+        if (rows.length) {
+          await sql(
+            `INSERT INTO info_audit_log (guild_id, action, topic_id, topic_name, changed_by, details) VALUES ($1,'create',$2,$3,'dashboard',$4::jsonb)`,
+            [params.guildId, rows[0].topic_id, rows[0].name, JSON.stringify({ section: d.section, subcategory: d.subcategory, draft: !isPublished })]
+          ).catch(() => {});
+        }
+        return ok(res, { success: true, id: rows[0]?.id });
       }
 
       case 'updateInfoTopic': {
         const d = params.data;
+        const existing = await sql(`SELECT * FROM info_topics WHERE id=$1::bigint`, [params.id]).catch(() => []);
+        if (existing.length) {
+          await sql(
+            `INSERT INTO info_topic_history (topic_db_id, guild_id, topic_id, changed_by, snapshot) VALUES ($1,$2,$3,'dashboard',$4::jsonb)`,
+            [existing[0].id, existing[0].guild_id, existing[0].topic_id, JSON.stringify(existing[0])]
+          ).catch(() => {});
+          await sql(
+            `INSERT INTO info_audit_log (guild_id, action, topic_id, topic_name, changed_by, details) VALUES ($1,'edit',$2,$3,'dashboard',$4::jsonb)`,
+            [existing[0].guild_id, existing[0].topic_id, d.name||existing[0].name, JSON.stringify({ fields: Object.keys(d) })]
+          ).catch(() => {});
+        }
         await sql(
-          `UPDATE info_topics SET
-             section=$1, subcategory=$2, name=$3, embed_title=$4,
-             embed_description=$5, embed_color=$6, emoji=$7,
-             category_emoji_id=$8, image=$9, thumbnail=$10, updated_at=now()
-           WHERE id=$11::bigint`,
-          [d.section || 'general', d.subcategory || 'General', d.name,
-           d.embed_title || null, d.embed_description || null,
-           d.embed_color || '#5865F2', d.emoji || '📄',
-           d.category_emoji_id || null, d.image || null, d.thumbnail || null,
-           params.id]
+          `UPDATE info_topics SET section=$1, subcategory=$2, name=$3, embed_title=$4, embed_description=$5, embed_color=$6, emoji=$7, category_emoji_id=$8, image=$9, thumbnail=$10, updated_at=now() WHERE id=$11::bigint`,
+          [d.section||'general', d.subcategory||'General', d.name,
+           d.embed_title||null, d.embed_description||null, d.embed_color||'#5865F2', d.emoji||'📄',
+           d.category_emoji_id||null, d.image||null, d.thumbnail||null, params.id]
         );
         return ok(res, { success: true });
       }
 
       case 'deleteInfoTopic': {
+        const row = await sql(`SELECT guild_id, topic_id, name FROM info_topics WHERE id=$1::bigint`, [params.id]).catch(() => []);
         await sql(`DELETE FROM info_topics WHERE id=$1::bigint`, [params.id]);
+        if (row.length) {
+          await sql(`INSERT INTO info_audit_log (guild_id, action, topic_id, topic_name, changed_by) VALUES ($1,'delete',$2,$3,'dashboard')`,
+            [row[0].guild_id, row[0].topic_id, row[0].name]).catch(() => {});
+        }
         return ok(res, { success: true });
+      }
+
+      case 'setTopicPublished': {
+        const row = await sql(`UPDATE info_topics SET is_published=$1, updated_at=now() WHERE id=$2::bigint RETURNING guild_id, topic_id, name`, [params.is_published, params.id]).catch(() => []);
+        if (row.length) {
+          await sql(`INSERT INTO info_audit_log (guild_id, action, topic_id, topic_name, changed_by) VALUES ($1,$2,$3,$4,'dashboard')`,
+            [row[0].guild_id, params.is_published ? 'publish' : 'unpublish', row[0].topic_id, row[0].name]).catch(() => {});
+        }
+        return ok(res, { success: true });
+      }
+
+      case 'getTopicHistory': {
+        const rows = await sql(
+          `SELECT id, changed_by, snapshot, created_at FROM info_topic_history WHERE topic_db_id=$1::bigint ORDER BY created_at DESC LIMIT 20`,
+          [params.topicId]
+        ).catch(() => []);
+        return ok(res, rows);
+      }
+
+      case 'restoreTopicVersion': {
+        const rows = await sql(`SELECT snapshot FROM info_topic_history WHERE id=$1::bigint`, [params.historyId]).catch(() => []);
+        if (!rows.length) return ok(res, { success: false, error: 'Version not found' });
+        const snap = rows[0].snapshot;
+        const cur = await sql(`SELECT * FROM info_topics WHERE id=$1::bigint`, [params.topicDbId]).catch(() => []);
+        if (cur.length) {
+          await sql(`INSERT INTO info_topic_history (topic_db_id, guild_id, topic_id, changed_by, snapshot) VALUES ($1,$2,$3,'dashboard-restore',$4::jsonb)`,
+            [cur[0].id, cur[0].guild_id, cur[0].topic_id, JSON.stringify(cur[0])]).catch(() => {});
+        }
+        await sql(
+          `UPDATE info_topics SET name=$1, embed_title=$2, embed_description=$3, embed_color=$4, emoji=$5, image=$6, thumbnail=$7, footer=$8, section=$9, subcategory=$10, updated_at=now() WHERE id=$11::bigint`,
+          [snap.name, snap.embed_title, snap.embed_description, snap.embed_color, snap.emoji, snap.image, snap.thumbnail, snap.footer, snap.section, snap.subcategory, params.topicDbId]
+        );
+        return ok(res, { success: true });
+      }
+
+      case 'getInfoAuditLog': {
+        const rows = await sql(`SELECT * FROM info_audit_log WHERE guild_id=$1 ORDER BY created_at DESC LIMIT 100`, [params.guildId]).catch(() => []);
+        return ok(res, rows);
+      }
+
+      case 'exportInfoTopics': {
+        const rows = await sql(
+          `SELECT section, subcategory, subcategory_emoji, topic_id, name, embed_title, embed_description, embed_color, emoji, category_emoji_id, image, thumbnail, footer, is_published FROM info_topics WHERE guild_id::text=$1 ORDER BY section, subcategory, name`,
+          [params.guildId]
+        ).catch(() => []);
+        return ok(res, { topics: rows, exported_at: new Date().toISOString(), guild_id: params.guildId });
+      }
+
+      case 'importInfoTopics': {
+        const { topics, mode } = params;
+        if (mode === 'replace') await sql(`DELETE FROM info_topics WHERE guild_id::text=$1`, [params.guildId]).catch(() => {});
+        let imported = 0, skipped = 0;
+        for (const t of (topics || [])) {
+          try {
+            await sql(
+              `INSERT INTO info_topics (guild_id, section, subcategory, subcategory_emoji, topic_id, name, embed_title, embed_description, embed_color, emoji, category_emoji_id, image, thumbnail, footer, is_published)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+               ON CONFLICT (guild_id, section, subcategory, topic_id) DO UPDATE SET name=EXCLUDED.name, embed_title=EXCLUDED.embed_title, embed_description=EXCLUDED.embed_description, embed_color=EXCLUDED.embed_color, emoji=EXCLUDED.emoji, image=EXCLUDED.image, thumbnail=EXCLUDED.thumbnail, footer=EXCLUDED.footer, is_published=EXCLUDED.is_published, updated_at=now()`,
+              [params.guildId, t.section||'general', t.subcategory||'General', t.subcategory_emoji||null, t.topic_id, t.name, t.embed_title||null, t.embed_description||null, t.embed_color||'#5865F2', t.emoji||'📄', t.category_emoji_id||null, t.image||null, t.thumbnail||null, t.footer||null, t.is_published !== false]
+            );
+            imported++;
+          } catch { skipped++; }
+        }
+        await sql(`INSERT INTO info_audit_log (guild_id, action, changed_by, details) VALUES ($1,'import','dashboard',$2::jsonb)`,
+          [params.guildId, JSON.stringify({ imported, skipped, mode })]).catch(() => {});
+        return ok(res, { success: true, imported, skipped });
       }
 
 
