@@ -165,6 +165,9 @@ async function ensureTables() {
     `ALTER TABLE auto_responders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`,
     `UPDATE auto_responders SET updated_at = created_at WHERE updated_at IS NULL`,
     `ALTER TABLE info_topics ADD COLUMN IF NOT EXISTS subcategory_emoji TEXT`,
+    // Fix unique constraint: include subcategory so the same topic_id can exist in different subcategories
+    `ALTER TABLE info_topics DROP CONSTRAINT IF EXISTS info_topics_guild_id_section_topic_id_key`,
+    `ALTER TABLE info_topics ADD CONSTRAINT info_topics_guild_section_sub_topic_key UNIQUE (guild_id, section, subcategory, topic_id) NOT DEFERRABLE INITIALLY IMMEDIATE`,
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS response_type TEXT DEFAULT 'text'`,
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS cooldown_seconds INTEGER DEFAULT 0`,
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS permission_level TEXT DEFAULT 'everyone'`,
@@ -734,14 +737,19 @@ app.post('/api/query', async (req, res) => {
 
       case 'createInfoTopic': {
         const d = params.data;
+        const topicId = d.topic_id || (d.name || '').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,80);
         await sql(
           `INSERT INTO info_topics
             (guild_id, section, subcategory, topic_id, name, embed_title, embed_description,
              embed_color, emoji, category_emoji_id, image, thumbnail)
-           VALUES ($1::bigint,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           ON CONFLICT (guild_id, section, subcategory, topic_id) DO UPDATE SET
+             name=$5, embed_title=$6, embed_description=$7,
+             embed_color=$8, emoji=$9, category_emoji_id=$10,
+             image=$11, thumbnail=$12, updated_at=now()`,
           [params.guildId,
            d.section  || 'general',  d.subcategory || 'General',
-           d.topic_id || (d.name || '').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,80),
+           topicId,
            d.name,
            d.embed_title       || null,  d.embed_description  || null,
            d.embed_color       || '#5865F2', d.emoji          || '📄',
