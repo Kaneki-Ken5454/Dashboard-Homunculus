@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Settings, Zap,
   Ticket, Shield, Tag, BarChart2, BookOpen,
   RefreshCw, Server, Search, ChevronDown,
-  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle,
+  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle, Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { discoverAllGuildIds, isConfigured, setDatabaseUrl, type DiscoveredGuild } from './lib/db';
@@ -20,11 +20,13 @@ import InfoTopics   from './pages/InfoTopics';
 import ActivityPage from './pages/Activity';
 import BlacklistPage from './pages/Blacklist';
 import HelpPage     from './pages/Help';
+import MembersPage  from './pages/Members';
 
-type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'help';
+type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help';
 
 const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',      icon: LayoutDashboard },
+  { id: 'members',    label: 'Members',       icon: Users           },
   { id: 'settings',   label: 'Guild Settings', icon: Settings        },
   { id: 'triggers',   label: 'Triggers',       icon: Zap             },
   { id: 'tickets',    label: 'Tickets',        icon: Ticket          },
@@ -68,6 +70,7 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
   );
 
   if (page === 'overview')    return <Overview     guildId={guildId} />;
+  if (page === 'members')     return <MembersPage  guildId={guildId} />;
   if (page === 'settings')    return <SettingsPage guildId={guildId} />;
   if (page === 'triggers')    return <Triggers     guildId={guildId} />;
   if (page === 'tickets')     return <Tickets      guildId={guildId} />;

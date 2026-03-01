@@ -1,74 +1,67 @@
 import { useEffect, useState } from 'react';
-import { Trophy, Search, AlertTriangle, ShieldBan } from 'lucide-react';
-import { getMembers, updateMemberXP, getMemberStats, type GuildMember } from '../lib/db';
-import Modal from '../components/Modal';
+import { Users, TrendingUp, MessageSquare, Clock, Search } from 'lucide-react';
+import { getMembers, getMemberStats, updateMemberXP, type GuildMember, type ActivityStats } from '../lib/db';
 
 interface Props { guildId: string; }
 
+function timeAgo(d: string) {
+  if (!d) return '—';
+  const diff = Date.now() - new Date(d).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 export default function Members({ guildId }: Props) {
-  const [members, setMembers] = useState<GuildMember[]>([]);
-  const [filtered, setFiltered] = useState<GuildMember[]>([]);
-  const [memberStats, setMemberStats] = useState<Record<string, { warns: number; violations: number }>>({});
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [editing, setEditing] = useState<GuildMember | null>(null);
-  const [editXp, setEditXp] = useState('');
-  const [editLevel, setEditLevel] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [members, setMembers]   = useState<GuildMember[]>([]);
+  const [stats, setStats]       = useState<ActivityStats | null>(null);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [search, setSearch]     = useState('');
+  const [editing, setEditing]   = useState<string | null>(null);
+  const [editXP, setEditXP]     = useState(0);
+  const [editLevel, setEditLevel] = useState(0);
+  const [saving, setSaving]     = useState(false);
 
   const load = async () => {
     if (!guildId) return;
     setLoading(true); setError('');
     try {
-      const [members, stats] = await Promise.all([
-        getMembers(guildId),
-        getMemberStats(guildId).catch(() => ({} as Record<string, { warns: number; violations: number }>)),
-      ]);
-      setMembers(members);
-      setFiltered(members);
-      setMemberStats(stats);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
+      const [m, s] = await Promise.all([getMembers(guildId), getMemberStats(guildId)]);
+      setMembers(m);
+      setStats(s);
+    } catch (e) { setError((e as Error).message); }
+    finally { setLoading(false); }
   };
 
   useEffect(() => { load(); }, [guildId]);
 
-  useEffect(() => {
-    const q = search.toLowerCase();
-    setFiltered(q ? members.filter(m => m.username.toLowerCase().includes(q) || m.user_id.includes(q)) : members);
-  }, [search, members]);
+  const filtered = members.filter(m =>
+    !search || m.username?.toLowerCase().includes(search.toLowerCase()) || m.user_id.includes(search)
+  );
 
-  function openEdit(m: GuildMember) {
-    setEditing(m); setEditXp(String(m.xp)); setEditLevel(String(m.level));
+  function startEdit(m: GuildMember) {
+    setEditing(m.id);
+    setEditXP(m.xp);
+    setEditLevel(m.level);
   }
 
-  async function saveEdit() {
-    if (!editing) return;
-    setSaving(true); setError('');
+  async function saveXP(m: GuildMember) {
+    setSaving(true);
     try {
-      await updateMemberXP(editing.id, Number(editXp), Number(editLevel));
+      await updateMemberXP(m.id, editXP, editLevel);
+      setMembers(prev => prev.map(x => x.id === m.id ? { ...x, xp: editXP, level: editLevel } : x));
       setEditing(null);
-      await load();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
+    } catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
   }
-
-  const rankColor = (i: number) =>
-    i === 0 ? '#f1c40f' : i === 1 ? '#bdc3c7' : i === 2 ? '#cd7f32' : 'var(--text-faint)';
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-        <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading members...</div>
-      </div>
+      <div style={{ width: 32, height: 32, border: '2px solid var(--border)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
     </div>
   );
 
@@ -76,108 +69,106 @@ export default function Members({ guildId }: Props) {
     <div className="animate-fade">
       {error && <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '12px 16px', color: 'var(--danger)', fontSize: 13, marginBottom: 14 }}>{error}</div>}
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
-        <div style={{ position: 'relative', flex: 1 }}>
-          <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-faint)' }} />
-          <input className="inp" style={{ paddingLeft: 32 }} placeholder="Search members…" value={search} onChange={e => setSearch(e.target.value)} />
+      {/* Stats row */}
+      {stats && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
+          {[
+            { label: 'Total Members',    value: members.length,    icon: Users,         color: '#5865f2' },
+            { label: 'Active (all time)',value: stats.activeAll,   icon: TrendingUp,    color: '#3ba55d' },
+            { label: 'Active (7 days)',  value: stats.active7d,    icon: Clock,         color: '#faa81a' },
+            { label: 'Total Messages',   value: stats.totalMsgs,   icon: MessageSquare, color: '#9b59b6' },
+          ].map(({ label, value, icon: Icon, color }) => (
+            <div key={label} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 18px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <div style={{ width: 30, height: 30, borderRadius: 8, background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Icon size={14} style={{ color }} />
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>{label}</span>
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text)' }}>{value.toLocaleString()}</div>
+            </div>
+          ))}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 13 }}>
-          <Trophy size={14} /> {members.length} members
-        </div>
-      </div>
+      )}
 
+      {/* Search + table */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ position: 'relative', flex: 1, maxWidth: 300 }}>
+            <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-faint)' }} />
+            <input
+              className="inp"
+              style={{ paddingLeft: 30, fontSize: 13 }}
+              placeholder="Search by username or ID…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+          </div>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{filtered.length} members</span>
+        </div>
+
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['#', 'User', 'Level', 'XP', 'Messages', 'Warns', 'BL Violations', 'Last Active', ''].map(h => (
-                <th key={h} style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{h}</th>
+            <tr style={{ background: 'var(--elevated)', borderBottom: '1px solid var(--border)' }}>
+              {['User', 'User ID', 'Level', 'XP', 'Messages', 'Last Active', ''].map(h => (
+                <th key={h} style={{ padding: '9px 14px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={9} style={{ padding: '40px 16px', textAlign: 'center' }}>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-                    {search ? `No members found for "${search}"` : 'No members in this server'}
-                  </div>
+                <td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+                  {search ? 'No members match your search' : 'No members tracked yet'}
                 </td>
               </tr>
-            ) : filtered.map((m, i) => {
-              const stats = memberStats[m.user_id] ?? { warns: 0, violations: 0 };
-              return (
-                <tr key={m.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <td style={{ padding: '12px 14px' }}>
-                    <Trophy size={13} style={{ color: rankColor(i) }} />
-                  </td>
-                  <td style={{ padding: '12px 14px' }}>
-                    <div style={{ fontSize: 14, fontWeight: 500 }}>{m.username}</div>
-                    <div className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.user_id}</div>
-                  </td>
-                  <td style={{ padding: '12px 14px' }}>
-                    <span style={{ background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 8, padding: '3px 10px', fontSize: 13, fontWeight: 600 }}>
-                      Lv {m.level}
-                    </span>
-                  </td>
-                  <td style={{ padding: '12px 14px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <div style={{ flex: 1, maxWidth: 80, height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
-                        <div style={{ height: '100%', width: `${Math.min(100, (m.xp % 1000) / 10)}%`, background: 'var(--primary)', borderRadius: 2 }} />
-                      </div>
-                      <span className="mono" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{m.xp.toLocaleString()}</span>
+            ) : filtered.map(m => (
+              <tr key={m.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '10px 14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {m.avatar_url
+                      ? <img src={m.avatar_url} alt="" style={{ width: 28, height: 28, borderRadius: '50%', flexShrink: 0 }} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                      : <div style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>{(m.username || '?')[0].toUpperCase()}</div>
+                    }
+                    <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{m.username || '—'}</span>
+                  </div>
+                </td>
+                <td style={{ padding: '10px 14px' }}>
+                  <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{m.user_id}</span>
+                </td>
+                <td style={{ padding: '10px 14px' }}>
+                  {editing === m.id
+                    ? <input type="number" className="inp" style={{ width: 60, padding: '3px 6px', fontSize: 13 }} value={editLevel} onChange={e => setEditLevel(Number(e.target.value))} />
+                    : <span style={{ fontSize: 13, fontWeight: 600, color: '#818cf8' }}>{m.level}</span>
+                  }
+                </td>
+                <td style={{ padding: '10px 14px' }}>
+                  {editing === m.id
+                    ? <input type="number" className="inp" style={{ width: 80, padding: '3px 6px', fontSize: 13 }} value={editXP} onChange={e => setEditXP(Number(e.target.value))} />
+                    : <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{m.xp.toLocaleString()}</span>
+                  }
+                </td>
+                <td style={{ padding: '10px 14px', fontSize: 13, color: 'var(--text-muted)' }}>
+                  {m.message_count.toLocaleString()}
+                </td>
+                <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                  {timeAgo(m.last_active)}
+                </td>
+                <td style={{ padding: '10px 14px' }}>
+                  {editing === m.id ? (
+                    <div style={{ display: 'flex', gap: 5 }}>
+                      <button className="btn btn-primary btn-sm" onClick={() => saveXP(m)} disabled={saving}>{saving ? '…' : 'Save'}</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setEditing(null)}>Cancel</button>
                     </div>
-                  </td>
-                  <td style={{ padding: '12px 14px' }}>
-                    <span className="mono" style={{ fontSize: 13 }}>{m.message_count.toLocaleString()}</span>
-                  </td>
-                  <td style={{ padding: '12px 14px' }}>
-                    {stats.warns > 0 ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#ed424522', color: '#ed4245', borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}>
-                        <AlertTriangle size={11} /> {stats.warns}
-                      </span>
-                    ) : <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>—</span>}
-                  </td>
-                  <td style={{ padding: '12px 14px' }}>
-                    {stats.violations > 0 ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#ff6b3522', color: '#ff6b35', borderRadius: 8, padding: '3px 9px', fontSize: 12, fontWeight: 600 }}>
-                        <ShieldBan size={11} /> {stats.violations}
-                      </span>
-                    ) : <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>—</span>}
-                  </td>
-                  <td style={{ padding: '12px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-                    {new Date(m.last_active).toLocaleDateString()}
-                  </td>
-                  <td style={{ padding: '12px 14px' }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => openEdit(m)}>Edit XP</button>
-                  </td>
-                </tr>
-              );
-            })}
+                  ) : (
+                    <button className="btn btn-ghost btn-sm" onClick={() => startEdit(m)} style={{ fontSize: 11 }}>Edit XP</button>
+                  )}
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
-
-      {editing && (
-        <Modal title={`Edit XP — ${editing.username}`} onClose={() => setEditing(null)}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>XP</label>
-              <input type="number" className="inp" value={editXp} onChange={e => setEditXp(e.target.value)} />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Level</label>
-              <input type="number" className="inp" value={editLevel} onChange={e => setEditLevel(e.target.value)} />
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button className="btn btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={saveEdit} disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }

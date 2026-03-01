@@ -79,6 +79,9 @@ export async function upsertGuildSetting(guildId: string, data: Partial<GuildSet
 export async function getMembers(guildId: string): Promise<GuildMember[]> {
   return apiCall<GuildMember[]>('getMembers', { guildId });
 }
+export async function getMemberStats(guildId: string): Promise<ActivityStats> {
+  return apiCall<ActivityStats>('getActivityStats', { guildId });
+}
 export async function updateMemberXP(id: string, xp: number, level: number) {
   return apiCall('updateMemberXP', { id, xp, level });
 }
