@@ -4,10 +4,10 @@ interface Props {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  success: { background: 'var(--success-subtle)', color: '#3ba55d' },
+  success: { background: 'var(--success-subtle)', color: 'var(--success)' },
   danger:  { background: 'var(--danger-subtle)',  color: 'var(--danger)' },
   warning: { background: 'var(--warning-subtle)', color: 'var(--warning)' },
-  primary: { background: 'var(--primary-subtle)', color: '#818cf8' },
+  primary: { background: 'var(--primary-subtle)', color: 'hsl(239,84%,75%)' },
   muted:   { background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' },
 };
 

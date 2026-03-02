@@ -102,7 +102,7 @@ export default function Commands({ guildId }: Props) {
             ) : filtered.map(c => (
               <tr key={c.id} className="data-row" style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '11px 14px' }}>
-                  <span className="mono" style={{ fontSize: 13, color: '#818cf8' }}>!{c.trigger}</span>
+                  <span className="mono" style={{ fontSize: 13, color: 'hsl(239,84%,75%)' }}>!{c.trigger}</span>
                 </td>
                 <td style={{ padding: '11px 14px', fontSize: 13, color: 'var(--text-muted)' }}>{c.name || '—'}</td>
                 <td style={{ padding: '11px 14px', maxWidth: 240 }}>

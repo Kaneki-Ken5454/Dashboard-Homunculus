@@ -12,7 +12,7 @@ function Bar({ count, max }: { count: number; max: number }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div style={{ width: BAR_W, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
-        <div style={{ width: `${pct}%`, height: '100%', background: 'linear-gradient(90deg,#5865f2,#7983f5)', borderRadius: 3, transition: 'width 0.4s ease' }} />
+        <div style={{ width: `${pct}%`, height: '100%', background: 'linear-gradient(90deg,var(--primary),hsl(239,84%,70%))', borderRadius: 3, transition: 'width 0.4s ease' }} />
       </div>
       <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 42 }}>{count.toLocaleString()}</span>
     </div>
@@ -75,7 +75,7 @@ export default function Activity({ guildId }: Props) {
       {/* Stats row */}
       {stats && (
         <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
-          <StatCard label="Total Messages" value={stats.totalMsgs} icon={MessageSquare} color="#5865f2" />
+          <StatCard label="Total Messages" value={stats.totalMsgs} icon={MessageSquare} color="var(--primary)" />
           <StatCard label="Active Members" value={stats.activeAll} icon={Users} color="#22c55e" />
           <StatCard label="Active (7 days)" value={stats.active7d} icon={TrendingUp} color="#f59e0b" />
           <StatCard label="Active (24h)" value={stats.active24h} icon={Clock} color="#ec4899" />

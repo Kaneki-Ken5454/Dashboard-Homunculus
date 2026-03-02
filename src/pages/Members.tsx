@@ -73,7 +73,7 @@ export default function Members({ guildId }: Props) {
       {stats && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
           {[
-            { label: 'Total Members',    value: members.length,    icon: Users,         color: '#5865f2' },
+            { label: 'Total Members',    value: members.length,    icon: Users,         color: 'var(--primary)' },
             { label: 'Active (all time)',value: stats.activeAll,   icon: TrendingUp,    color: '#3ba55d' },
             { label: 'Active (7 days)',  value: stats.active7d,    icon: Clock,         color: '#faa81a' },
             { label: 'Total Messages',   value: stats.totalMsgs,   icon: MessageSquare, color: '#9b59b6' },
@@ -139,7 +139,7 @@ export default function Members({ guildId }: Props) {
                 <td style={{ padding: '10px 14px' }}>
                   {editing === m.id
                     ? <input type="number" className="inp" style={{ width: 60, padding: '3px 6px', fontSize: 13 }} value={editLevel} onChange={e => setEditLevel(Number(e.target.value))} />
-                    : <span style={{ fontSize: 13, fontWeight: 600, color: '#818cf8' }}>{m.level}</span>
+                    : <span style={{ fontSize: 13, fontWeight: 600, color: 'hsl(239,84%,75%)' }}>{m.level}</span>
                   }
                 </td>
                 <td style={{ padding: '10px 14px' }}>

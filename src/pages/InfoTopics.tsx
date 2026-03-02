@@ -59,7 +59,7 @@ function EmojiPicker({ value, onChange }: { value: string; onChange: (v: string)
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
         {EMOJI_PICKS.map(e => (
-          <button key={e} onClick={() => onChange(e)} style={{ width: 30, height: 30, background: value === e ? 'var(--primary-subtle)' : 'var(--elevated)', border: `1px solid ${value === e ? '#818cf8' : 'var(--border)'}`, borderRadius: 5, cursor: 'pointer', fontSize: 14 }}>{e}</button>
+          <button key={e} onClick={() => onChange(e)} style={{ width: 30, height: 30, background: value === e ? 'var(--primary-subtle)' : 'var(--elevated)', border: `1px solid ${value === e ? 'hsl(239,84%,75%)' : 'var(--border)'}`, borderRadius: 5, cursor: 'pointer', fontSize: 14 }}>{e}</button>
         ))}
       </div>
     </div>
@@ -246,7 +246,7 @@ export default function InfoTopicsPage({ guildId }: Props) {
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexWrap:'wrap',gap:8}}>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
           {(['topics','audit'] as Tab[]).map(t=>(
-            <button key={t} onClick={()=>setTab(t)} style={{padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,background:tab===t?'var(--primary-subtle)':'var(--elevated)',color:tab===t?'#818cf8':'var(--text-muted)',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5}}>
+            <button key={t} onClick={()=>setTab(t)} style={{padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,background:tab===t?'var(--primary-subtle)':'var(--elevated)',color:tab===t?'hsl(239,84%,75%)':'var(--text-muted)',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5}}>
               {t==='topics'?<><BookOpen size={12}/> Topics</>:<><ClipboardList size={12}/> Audit Log</>}
             </button>
           ))}
@@ -276,7 +276,7 @@ export default function InfoTopicsPage({ guildId }: Props) {
             </tr></thead>
             <tbody>{audit.map(a=>(
               <tr key={a.id} style={{borderBottom:'1px solid var(--border)'}}>
-                <td style={{padding:'8px 14px'}}><span style={{fontSize:11,fontWeight:600,padding:'2px 8px',borderRadius:6,background:a.action==='create'?'rgba(59,165,93,0.15)':a.action==='delete'?'rgba(237,66,69,0.15)':a.action==='publish'?'rgba(88,101,242,0.15)':'rgba(255,255,255,0.07)',color:a.action==='create'?'#3ba55d':a.action==='delete'?'#ed4245':a.action==='publish'?'#818cf8':'var(--text-muted)'}}>{a.action}</span></td>
+                <td style={{padding:'8px 14px'}}><span style={{fontSize:11,fontWeight:600,padding:'2px 8px',borderRadius:6,background:a.action==='create'?'rgba(59,165,93,0.15)':a.action==='delete'?'rgba(237,66,69,0.15)':a.action==='publish'?'rgba(88,101,242,0.15)':'rgba(255,255,255,0.07)',color:a.action==='create'?'#3ba55d':a.action==='delete'?'#ed4245':a.action==='publish'?'hsl(239,84%,75%)':'var(--text-muted)'}}>{a.action}</span></td>
                 <td style={{padding:'8px 14px',fontSize:13,color:'var(--text)'}}>{a.topic_name||'—'} {a.topic_id&&<span className="mono" style={{fontSize:11,color:'var(--text-faint)'}}>({a.topic_id})</span>}</td>
                 <td style={{padding:'8px 14px',fontSize:12,color:'var(--text-muted)'}}>{a.changed_by}</td>
                 <td style={{padding:'8px 14px',fontSize:12,color:'var(--text-faint)'}}>{ago(a.created_at)}</td>
@@ -309,7 +309,7 @@ export default function InfoTopicsPage({ guildId }: Props) {
                       {open?<ChevronDown size={13} style={{color:'var(--text-muted)'}}/>:<ChevronRight size={13} style={{color:'var(--text-muted)'}}/>}
                       {catEmoji&&<span style={{fontSize:15}}>{catEmoji}</span>}
                       <span style={{textTransform:'capitalize'}}>{section}</span>
-                      <span style={{background:'var(--primary-subtle)',color:'#818cf8',borderRadius:10,padding:'1px 7px',fontSize:10,fontWeight:600}}>{total}</span>
+                      <span style={{background:'var(--primary-subtle)',color:'hsl(239,84%,75%)',borderRadius:10,padding:'1px 7px',fontSize:10,fontWeight:600}}>{total}</span>
                     </button>
                     <div style={{display:'flex',gap:3,flexWrap:'wrap',flex:1}}>
                       {Object.keys(subcats).map(sub=>{
@@ -525,7 +525,7 @@ export default function InfoTopicsPage({ guildId }: Props) {
           <F label="Import Mode">
             <div style={{display:'flex',gap:8}}>
               {(['merge','replace'] as const).map(m=>(
-                <button key={m} onClick={()=>setImportMode(m)} style={{flex:1,padding:'8px 10px',borderRadius:8,border:`1px solid ${importMode===m?'#818cf8':'var(--border)'}`,background:importMode===m?'var(--primary-subtle)':'var(--elevated)',color:importMode===m?'#818cf8':'var(--text-muted)',cursor:'pointer',fontSize:12,fontFamily:'inherit',fontWeight:600}}>
+                <button key={m} onClick={()=>setImportMode(m)} style={{flex:1,padding:'8px 10px',borderRadius:8,border:`1px solid ${importMode===m?'hsl(239,84%,75%)':'var(--border)'}`,background:importMode===m?'var(--primary-subtle)':'var(--elevated)',color:importMode===m?'hsl(239,84%,75%)':'var(--text-muted)',cursor:'pointer',fontSize:12,fontFamily:'inherit',fontWeight:600}}>
                   {m==='merge'?'🔀 Merge':'♻️ Replace all'}
                 </button>
               ))}

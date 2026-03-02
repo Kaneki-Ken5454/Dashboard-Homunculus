@@ -179,7 +179,7 @@ const CATEGORIES: Category[] = [
 ];
 
 const TYPE_BADGE: Record<string, { bg: string; color: string; label: string }> = {
-  slash:  { bg: '#5865f218', color: '#818cf8', label: '/' },
+  slash:  { bg: 'var(--primary)18', color: 'hsl(239,84%,75%)', label: '/' },
   prefix: { bg: '#22c55e18', color: '#22c55e', label: '~' },
   both:   { bg: '#f59e0b18', color: '#f59e0b', label: '/~' },
 };
@@ -223,14 +223,14 @@ export default function HelpPage({ guildId: _guildId }: Props) {
       {/* Header */}
       <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '18px 22px', marginBottom: 18, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 12, background: 'linear-gradient(135deg,#5865f2,#7983f5)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <div style={{ width: 42, height: 42, borderRadius: 12, background: 'linear-gradient(135deg,var(--primary),hsl(239,84%,70%))', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             <Terminal size={20} color="white" />
           </div>
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>Homunculus — Command Reference</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               {totalCmds} commands across {CATEGORIES.length} categories &nbsp;·&nbsp;
-              <span style={{ color: '#818cf8' }}>Run <code style={{ fontSize: 11 }}>/help</code> in Discord for the interactive menu</span>
+              <span style={{ color: 'hsl(239,84%,75%)' }}>Run <code style={{ fontSize: 11 }}>/help</code> in Discord for the interactive menu</span>
             </div>
           </div>
         </div>
@@ -261,7 +261,7 @@ export default function HelpPage({ guildId: _guildId }: Props) {
       {!search && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 18 }}>
           <button onClick={() => setActiveCategory(null)}
-            style={{ padding: '5px 13px', borderRadius: 20, border: '1px solid var(--border)', background: !activeCategory ? 'var(--primary-subtle)' : 'var(--surface)', color: !activeCategory ? '#818cf8' : 'var(--text-muted)', cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif', fontWeight: 500 }}>
+            style={{ padding: '5px 13px', borderRadius: 20, border: '1px solid var(--border)', background: !activeCategory ? 'var(--primary-subtle)' : 'var(--surface)', color: !activeCategory ? 'hsl(239,84%,75%)' : 'var(--text-muted)', cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif', fontWeight: 500 }}>
             All
           </button>
           {CATEGORIES.map(cat => (

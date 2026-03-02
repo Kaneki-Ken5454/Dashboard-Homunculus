@@ -42,7 +42,7 @@ export default function Setup({ onConnect }: Props) {
       <div style={{ height:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)' }}>
         <div style={{ textAlign:'center', color:'var(--text-muted)', fontSize:13 }}>
           <div style={{ marginBottom:12 }}>Connecting to database…</div>
-          <div style={{ width:24, height:24, border:'2px solid var(--border)', borderTopColor:'#5865f2', borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto' }} />
+          <div style={{ width:24, height:24, border:'2px solid var(--border)', borderTopColor:'var(--primary)', borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto' }} />
         </div>
       </div>
     );
@@ -52,7 +52,7 @@ export default function Setup({ onConnect }: Props) {
     <div style={{ height:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--bg)', padding:24 }}>
       <div style={{ width:'100%', maxWidth:480, background:'var(--surface)', border:'1px solid var(--border)', borderRadius:16, padding:'36px 32px' }}>
 
-        <div style={{ width:52, height:52, borderRadius:14, background:'linear-gradient(135deg,#5865f2,#7983f5)', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:20 }}>
+        <div style={{ width:52, height:52, borderRadius:14, background:'linear-gradient(135deg,var(--primary),hsl(239,84%,70%))', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:20 }}>
           <Database size={24} color="white" />
         </div>
 
@@ -65,10 +65,10 @@ export default function Setup({ onConnect }: Props) {
 
         <div style={{ background:'var(--elevated)', border:'1px solid var(--border)', borderRadius:10, padding:'14px 16px', marginBottom:20, fontSize:12, color:'var(--text-muted)', lineHeight:1.8 }}>
           <strong style={{ color:'var(--text)' }}>Make sure the server is running:</strong><br />
-          <code style={{ color:'#818cf8' }}>node server/index.js</code>
+          <code style={{ color:'hsl(239,84%,75%)' }}>node server/index.js</code>
           <br /><br />
           <strong style={{ color:'var(--text)' }}>And your <code style={{ fontSize:12 }}>.env</code> contains:</strong><br />
-          <code style={{ color:'#818cf8' }}>NEON_DATABASE_URL=postgresql://...</code>
+          <code style={{ color:'hsl(239,84%,75%)' }}>NEON_DATABASE_URL=postgresql://...</code>
         </div>
 
         {error && (

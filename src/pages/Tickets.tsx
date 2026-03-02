@@ -149,7 +149,7 @@ export default function Tickets({ guildId }: Props) {
                     {p.notificationRoles.length === 0
                       ? <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>No additional roles configured</span>
                       : p.notificationRoles.map((r, i) => (
-                        <code key={i} style={{ fontSize: 11, background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 4, padding: '2px 7px' }}>{r}</code>
+                        <code key={i} style={{ fontSize: 11, background: 'var(--primary-subtle)', color: 'hsl(239,84%,75%)', borderRadius: 4, padding: '2px 7px' }}>{r}</code>
                       ))
                     }
                   </div>
@@ -183,7 +183,7 @@ export default function Tickets({ guildId }: Props) {
             padding: '6px 14px', borderRadius: 8, border: '1px solid',
             borderColor: filter === s ? 'var(--primary)' : 'var(--border)',
             background: filter === s ? 'var(--primary-subtle)' : 'transparent',
-            color: filter === s ? '#818cf8' : 'var(--text-muted)',
+            color: filter === s ? 'hsl(239,84%,75%)' : 'var(--text-muted)',
             fontSize: 13, fontFamily: 'Lexend', cursor: 'pointer',
             display: 'flex', alignItems: 'center', gap: 6,
           }}>
@@ -261,10 +261,10 @@ export default function Tickets({ guildId }: Props) {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12, minHeight: 32 }}>
               {pingModal.roles.map((r, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'var(--primary-subtle)', border: '1px solid #4f46e5', borderRadius: 6, padding: '3px 8px' }}>
-                  <code style={{ fontSize: 11, color: '#818cf8' }}>{r}</code>
+                  <code style={{ fontSize: 11, color: 'hsl(239,84%,75%)' }}>{r}</code>
                   <button
                     onClick={() => setPingModal(p => p ? { ...p, roles: p.roles.filter((_, j) => j !== i) } : null)}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#818cf8', padding: 0, lineHeight: 1, display: 'flex' }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'hsl(239,84%,75%)', padding: 0, lineHeight: 1, display: 'flex' }}
                   >
                     <X size={11} />
                   </button>

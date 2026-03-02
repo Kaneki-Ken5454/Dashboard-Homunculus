@@ -157,7 +157,7 @@ export default function Triggers({ guildId }: Props) {
               </button>
 
               <div style={{ flex: '0 0 180px', minWidth: 0 }}>
-                <span className="mono" style={{ fontSize: 13, color: '#818cf8', fontWeight: 600 }}>{t.trigger_text}</span>
+                <span className="mono" style={{ fontSize: 13, color: 'hsl(239,84%,75%)', fontWeight: 600 }}>{t.trigger_text}</span>
               </div>
 
               <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>

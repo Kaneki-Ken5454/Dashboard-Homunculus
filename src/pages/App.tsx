@@ -139,12 +139,12 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
 
       {/* ── Sidebar ── */}
-      <aside style={{ width:224, flexShrink:0, background:'#090a14', borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <aside style={{ width:224, flexShrink:0, background:'var(--sidebar-bg)', borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
         {/* Logo */}
         <div style={{ padding:'18px 16px 14px', borderBottom:'1px solid var(--border)' }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{ width:36, height:36, borderRadius:10, background:'linear-gradient(135deg,#5865f2,#7983f5)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+            <div style={{ width:36, height:36, borderRadius:10, background:'linear-gradient(135deg,var(--primary),hsl(239,84%,70%))', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
               <Server size={17} color="white" />
             </div>
             <div>
@@ -195,13 +195,13 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
                 <div style={{ overflowY:'auto', flex:1 }}>
                   {filteredGuilds.length===0 && pickerSearch && (
                     <button onClick={() => { setGuildId(pickerSearch.trim()); setPickerSearch(''); setPickerOpen(false); }}
-                      style={{ width:'100%', padding:'9px 10px', borderRadius:7, border:'none', background:'var(--primary-subtle)', color:'#818cf8', cursor:'pointer', fontSize:12, fontFamily:'Lexend, sans-serif', textAlign:'left' }}>
+                      style={{ width:'100%', padding:'9px 10px', borderRadius:7, border:'none', background:'var(--primary-subtle)', color:'hsl(239,84%,75%)', cursor:'pointer', fontSize:12, fontFamily:'Lexend, sans-serif', textAlign:'left' }}>
                       Use "{pickerSearch}" →
                     </button>
                   )}
                   {filteredGuilds.map(g => (
                     <button key={g.guild_id} onClick={() => { setGuildId(g.guild_id); setPickerSearch(''); setPickerOpen(false); }}
-                      style={{ width:'100%', padding:'8px 10px', borderRadius:7, border:'none', background: g.guild_id===guildId ? 'var(--primary-subtle)' : 'transparent', color: g.guild_id===guildId ? '#818cf8' : 'var(--text)', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
+                      style={{ width:'100%', padding:'8px 10px', borderRadius:7, border:'none', background: g.guild_id===guildId ? 'var(--primary-subtle)' : 'transparent', color: g.guild_id===guildId ? 'hsl(239,84%,75%)' : 'var(--text)', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
                       <div style={{ fontFamily:'JetBrains Mono, monospace', fontSize:11, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{g.guild_id}</div>
                       <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'Lexend, sans-serif' }}>{g.source} · {g.count} rows</div>
                     </button>

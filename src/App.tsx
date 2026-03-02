@@ -135,35 +135,56 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
 
   // PageComp is now a proper component defined outside Dashboard (see bottom of file)
 
+  // Sidebar nav button styles
+  const navBtnBase: React.CSSProperties = {
+    width: '100%', display: 'flex', alignItems: 'center', gap: 9,
+    padding: '8px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+    background: 'none', fontSize: 13, fontFamily: 'Lexend, sans-serif',
+    fontWeight: 500, marginBottom: 2, textAlign: 'left',
+    transition: 'background 0.15s, color 0.15s, box-shadow 0.15s',
+  };
+
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
 
       {/* ── Sidebar ── */}
-      <aside style={{ width:224, flexShrink:0, background:'#090a14', borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <aside style={{
+        width: 224, flexShrink: 0,
+        background: 'var(--sidebar-bg)',
+        borderRight: '1px solid var(--border)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
 
         {/* Logo */}
-        <div style={{ padding:'18px 16px 14px', borderBottom:'1px solid var(--border)' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{ width:36, height:36, borderRadius:10, background:'linear-gradient(135deg,#5865f2,#7983f5)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+        <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div className="glow-sm" style={{
+              width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+              background: 'linear-gradient(135deg, hsl(239,84%,67%), hsl(270,80%,70%))',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
               <Server size={17} color="white" />
             </div>
             <div>
-              <div style={{ fontSize:13, fontWeight:700, color:'var(--text)' }}>Bot Dashboard</div>
-              <div style={{ fontSize:10, color:'var(--text-muted)' }}>Management Console</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Homunculus</div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Bot Dashboard</div>
             </div>
           </div>
         </div>
 
         {/* Nav */}
-        <nav style={{ flex:1, overflowY:'auto', padding:'8px' }}>
+        <nav style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
           {NAV.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setPage(id)}
               className={page === id ? 'nav-active' : ''}
-              style={{ width:'100%', display:'flex', alignItems:'center', gap:9, padding:'9px 10px', borderRadius:8, border:'none', cursor:'pointer', background:'none', color: page===id ? undefined : 'var(--text-muted)', fontSize:13, fontFamily:'Lexend, sans-serif', fontWeight:500, marginBottom:1, textAlign:'left', transition:'background 0.1s, color 0.1s' }}
-              onMouseEnter={e => { if (page!==id) (e.currentTarget as HTMLElement).style.background='rgba(255,255,255,0.04)'; }}
-              onMouseLeave={e => { if (page!==id) (e.currentTarget as HTMLElement).style.background='none'; }}
+              style={{
+                ...navBtnBase,
+                color: page === id ? undefined : 'var(--text-muted)',
+              }}
+              onMouseEnter={e => { if (page !== id) { (e.currentTarget as HTMLElement).style.background = 'hsla(239,84%,67%,0.06)'; (e.currentTarget as HTMLElement).style.color = 'var(--text)'; }}}
+              onMouseLeave={e => { if (page !== id) { (e.currentTarget as HTMLElement).style.background = 'none'; (e.currentTarget as HTMLElement).style.color = 'var(--text-muted)'; }}}
             >
               <Icon size={14} />{label}
             </button>
@@ -171,48 +192,66 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
         </nav>
 
         {/* Guild Picker */}
-        <div style={{ padding:'10px 10px 14px', borderTop:'1px solid var(--border)' }}>
-          <div style={{ fontSize:10, fontWeight:600, color:'var(--text-faint)', letterSpacing:'0.08em', textTransform:'uppercase', marginBottom:6, paddingLeft:2 }}>Active Guild</div>
-          <div ref={pickerRef} style={{ position:'relative' }}>
-            <button onClick={() => setPickerOpen(o => !o)} style={{ width:'100%', display:'flex', alignItems:'center', gap:6, padding:'8px 10px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text)', cursor:'pointer', fontSize:12, fontFamily:'Lexend, sans-serif' }}>
-              <Database size={11} style={{ color:'var(--text-muted)', flexShrink:0 }} />
-              <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1, textAlign:'left', fontFamily:'JetBrains Mono, monospace', fontSize:11 }}>
+        <div style={{ padding: '10px 10px 14px', borderTop: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-faint)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6, paddingLeft: 2 }}>
+            Active Guild
+          </div>
+          <div ref={pickerRef} style={{ position: 'relative' }}>
+            <button onClick={() => setPickerOpen(o => !o)} style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 6,
+              padding: '8px 10px', borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'var(--card)', color: 'var(--text)',
+              cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif',
+              transition: 'border-color 0.15s',
+            }}>
+              {guildId
+                ? <div className="glow-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', flexShrink: 0 }} />
+                : <Database size={11} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+              }
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, textAlign: 'left', fontFamily: 'JetBrains Mono, monospace', fontSize: 11 }}>
                 {discovering ? 'Scanning…' : guildId || 'Select guild…'}
               </span>
               {discovering
-                ? <Loader2 size={11} style={{ color:'var(--text-faint)', flexShrink:0, animation:'spin 1s linear infinite' }} />
-                : <ChevronDown size={11} style={{ color:'var(--text-muted)', flexShrink:0 }} />
+                ? <Loader2 size={11} style={{ color: 'var(--text-faint)', flexShrink: 0, animation: 'spin 1s linear infinite' }} />
+                : <ChevronDown size={11} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
               }
             </button>
 
             {pickerOpen && (
-              <div style={{ position:'absolute', bottom:'calc(100% + 6px)', left:0, right:0, zIndex:50, background:'var(--elevated)', border:'1px solid var(--border)', borderRadius:10, padding:6, maxHeight:260, display:'flex', flexDirection:'column', boxShadow:'0 8px 32px rgba(0,0,0,0.7)' }}>
-                <div style={{ position:'relative', marginBottom:6 }}>
-                  <Search size={12} style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', color:'var(--text-faint)' }} />
-                  <input className="inp" autoFocus style={{ paddingLeft:26, fontSize:12, borderRadius:7 }} placeholder="Search or type guild ID…" value={pickerSearch} onChange={e => setPickerSearch(e.target.value)}
-                    onKeyDown={e => { if (e.key==='Enter' && pickerSearch.trim()) { setGuildId(pickerSearch.trim()); setPickerSearch(''); setPickerOpen(false); } }} />
+              <div style={{
+                position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, right: 0, zIndex: 50,
+                background: 'var(--elevated)', border: '1px solid var(--border)',
+                borderRadius: 10, padding: 6, maxHeight: 260,
+                display: 'flex', flexDirection: 'column',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.75)',
+              }}>
+                <div style={{ position: 'relative', marginBottom: 6 }}>
+                  <Search size={12} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-faint)' }} />
+                  <input className="inp" autoFocus style={{ paddingLeft: 26, fontSize: 12, borderRadius: 7 }} placeholder="Search or type guild ID…" value={pickerSearch} onChange={e => setPickerSearch(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && pickerSearch.trim()) { setGuildId(pickerSearch.trim()); setPickerSearch(''); setPickerOpen(false); } }} />
                 </div>
-                <div style={{ overflowY:'auto', flex:1 }}>
-                  {filteredGuilds.length===0 && pickerSearch && (
+                <div style={{ overflowY: 'auto', flex: 1 }}>
+                  {filteredGuilds.length === 0 && pickerSearch && (
                     <button onClick={() => { setGuildId(pickerSearch.trim()); setPickerSearch(''); setPickerOpen(false); }}
-                      style={{ width:'100%', padding:'9px 10px', borderRadius:7, border:'none', background:'var(--primary-subtle)', color:'#818cf8', cursor:'pointer', fontSize:12, fontFamily:'Lexend, sans-serif', textAlign:'left' }}>
+                      style={{ width: '100%', padding: '9px 10px', borderRadius: 7, border: 'none', background: 'var(--primary-subtle)', color: 'hsl(239,84%,75%)', cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif', textAlign: 'left' }}>
                       Use "{pickerSearch}" →
                     </button>
                   )}
                   {filteredGuilds.map(g => (
                     <button key={g.guild_id} onClick={() => { setGuildId(g.guild_id); setPickerSearch(''); setPickerOpen(false); }}
-                      style={{ width:'100%', padding:'8px 10px', borderRadius:7, border:'none', background: g.guild_id===guildId ? 'var(--primary-subtle)' : 'transparent', color: g.guild_id===guildId ? '#818cf8' : 'var(--text)', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
-                      <div style={{ fontFamily:'JetBrains Mono, monospace', fontSize:11, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{g.guild_id}</div>
-                      <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'Lexend, sans-serif' }}>{g.source} · {g.count} rows</div>
+                      style={{ width: '100%', padding: '8px 10px', borderRadius: 7, border: 'none', background: g.guild_id === guildId ? 'var(--primary-subtle)' : 'transparent', color: g.guild_id === guildId ? 'hsl(239,84%,75%)' : 'var(--text)', cursor: 'pointer', textAlign: 'left', marginBottom: 2 }}>
+                      <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.guild_id}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'Lexend, sans-serif' }}>{g.source} · {g.count} rows</div>
                     </button>
                   ))}
-                  {filteredGuilds.length===0 && !pickerSearch && (
-                    <div style={{ padding:'12px 10px', color:'var(--text-muted)', fontSize:12, textAlign:'center' }}>No guilds found in DB</div>
+                  {filteredGuilds.length === 0 && !pickerSearch && (
+                    <div style={{ padding: '12px 10px', color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' }}>No guilds found in DB</div>
                   )}
                 </div>
-                <div style={{ borderTop:'1px solid var(--border)', paddingTop:6, marginTop:4 }}>
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 4 }}>
                   <button onClick={() => { discover(); setPickerOpen(false); }}
-                    style={{ width:'100%', padding:'7px 10px', borderRadius:7, border:'none', background:'none', color:'var(--text-muted)', cursor:'pointer', fontSize:12, fontFamily:'Lexend, sans-serif', display:'flex', alignItems:'center', gap:6, justifyContent:'center' }}>
+                    style={{ width: '100%', padding: '7px 10px', borderRadius: 7, border: 'none', background: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, fontFamily: 'Lexend, sans-serif', display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
                     <RefreshCw size={11} /> Re-scan all tables
                   </button>
                 </div>
@@ -220,34 +259,54 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
             )}
           </div>
 
-          {discoverErr && <div style={{ fontSize:10, color:'var(--danger)', marginTop:5, paddingLeft:2 }}>{discoverErr}</div>}
-          {guilds.length > 0 && <div style={{ fontSize:10, color:'var(--text-faint)', marginTop:5, paddingLeft:2 }}>{guilds.length} guild{guilds.length!==1?'s':''} found</div>}
+          {discoverErr && <div style={{ fontSize: 10, color: 'var(--danger)', marginTop: 5, paddingLeft: 2 }}>{discoverErr}</div>}
+          {guilds.length > 0 && <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 4, paddingLeft: 2 }}>Connected to NeonDB · {guilds.length} guild{guilds.length !== 1 ? 's' : ''}</div>}
 
           {/* Disconnect */}
-          <button onClick={onDisconnect} style={{ width:'100%', marginTop:10, display:'flex', alignItems:'center', gap:6, padding:'7px 10px', borderRadius:8, border:'1px solid var(--border)', background:'transparent', color:'var(--text-muted)', cursor:'pointer', fontSize:11, fontFamily:'Lexend, sans-serif' }}>
+          <button onClick={onDisconnect} style={{
+            width: '100%', marginTop: 10, display: 'flex', alignItems: 'center', gap: 6,
+            padding: '7px 10px', borderRadius: 8,
+            border: '1px solid var(--border)',
+            background: 'transparent', color: 'var(--text-muted)',
+            cursor: 'pointer', fontSize: 11, fontFamily: 'Lexend, sans-serif',
+            transition: 'background 0.15s, color 0.15s',
+          }}>
             <LogOut size={11} /> Change database
           </button>
         </div>
       </aside>
 
       {/* ── Main ── */}
-      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
-        <header style={{ height:56, flexShrink:0, borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 24px', background:'var(--bg)' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            {(() => { const Icon = currentNav.icon; return <Icon size={16} style={{ color:'var(--text-muted)' }} />; })()}
-            <div style={{ fontSize:14, fontWeight:700, color:'var(--text)' }}>{currentNav.label}</div>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+        {/* Header */}
+        <header style={{
+          height: 56, flexShrink: 0,
+          borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '0 24px',
+          background: 'var(--bg)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {(() => { const Icon = currentNav.icon; return <Icon size={16} style={{ color: 'var(--text-muted)' }} />; })()}
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{currentNav.label}</div>
           </div>
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {guildId && (
-              <div style={{ fontFamily:'JetBrains Mono, monospace', fontSize:11, color:'var(--text-faint)', background:'var(--elevated)', padding:'4px 10px', borderRadius:6, border:'1px solid var(--border)' }}>{guildId}</div>
+              <div style={{
+                fontFamily: 'JetBrains Mono, monospace', fontSize: 11,
+                color: 'var(--text-faint)', background: 'var(--elevated)',
+                padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)',
+              }}>{guildId}</div>
             )}
-            <div style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color:'var(--success)' }}>
-              <div style={{ width:7, height:7, borderRadius:'50%', background:'var(--success)', boxShadow:'0 0 6px var(--success)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--success)', background: 'hsla(160,84%,39%,0.1)', padding: '4px 10px', borderRadius: 20, border: '1px solid hsla(160,84%,39%,0.2)' }}>
+              <div className="glow-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--success)' }} />
               NeonDB
             </div>
           </div>
         </header>
-        <main style={{ flex:1, overflowY:'auto', padding:'22px 24px' }}>
+
+        <main style={{ flex: 1, overflowY: 'auto', padding: '22px 24px' }}>
           <PageContent page={page} guildId={guildId} discovering={discovering} guilds={guilds} discoverErr={discoverErr} onRescan={discover} />
         </main>
       </div>

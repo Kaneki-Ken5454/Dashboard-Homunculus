@@ -158,7 +158,7 @@ export default function Roles({ guildId }: Props) {
               fontSize: 13, fontFamily: 'Lexend', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 7,
             }}>
               <Icon size={13} /> {label}
-              <span style={{ background: 'var(--primary-subtle)', color: '#818cf8', borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 600 }}>{count}</span>
+              <span style={{ background: 'var(--primary-subtle)', color: 'hsl(239,84%,75%)', borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 600 }}>{count}</span>
             </button>
           ))}
         </div>

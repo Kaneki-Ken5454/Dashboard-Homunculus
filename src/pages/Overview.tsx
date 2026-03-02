@@ -46,14 +46,14 @@ export default function Overview({ guildId }: Props) {
   }, [guildId]);
 
   const statCards = stats ? [
-    { label: 'Members',          value: fmt(stats.memberCount),     icon: Users,         color: '#5865f2' },
-    { label: 'Triggers',         value: fmt(stats.triggerCount),    icon: Zap,           color: '#e91e63' },
-    { label: 'Tickets',          value: fmt(stats.ticketCount),     icon: Ticket,        color: '#faa81a' },
-    { label: 'Audit Logs',       value: fmt(stats.auditCount),      icon: Shield,        color: '#9b59b6' },
-    { label: 'Warns',            value: fmt(stats.warnCount),       icon: AlertTriangle, color: '#ed4245' },
-    { label: 'BL Violations',    value: fmt(stats.violationCount),  icon: Ban,           color: '#ff6b35' },
-    { label: 'Auto Responses',   value: fmt(stats.autoRespCount),   icon: MessageSquare, color: '#1abc9c' },
-    { label: 'Votes',            value: fmt(stats.voteCount),       icon: BarChart2,     color: '#f39c12' },
+    { label: 'Members',          value: fmt(stats.memberCount),     icon: Users,         color: 'hsl(239,84%,67%)' },
+    { label: 'Triggers',         value: fmt(stats.triggerCount),    icon: Zap,           color: 'hsl(38,92%,50%)' },
+    { label: 'Tickets',          value: fmt(stats.ticketCount),     icon: Ticket,        color: 'hsl(199,89%,48%)' },
+    { label: 'Audit Logs',       value: fmt(stats.auditCount),      icon: Shield,        color: 'hsl(270,70%,65%)' },
+    { label: 'Warns',            value: fmt(stats.warnCount),       icon: AlertTriangle, color: 'hsl(0,84%,60%)' },
+    { label: 'BL Violations',    value: fmt(stats.violationCount),  icon: Ban,           color: 'hsl(15,90%,55%)' },
+    { label: 'Auto Responses',   value: fmt(stats.autoRespCount),   icon: MessageSquare, color: 'hsl(160,84%,39%)' },
+    { label: 'Votes',            value: fmt(stats.voteCount),       icon: BarChart2,     color: 'hsl(38,92%,50%)' },
   ] : [];
 
   function actionVariant(type: string): 'danger' | 'warning' | 'success' | 'primary' | 'muted' {
@@ -80,14 +80,17 @@ export default function Overview({ guildId }: Props) {
       {/* Stats grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14, marginBottom: 28 }}>
         {statCards.map(({ label, value, icon: Icon, color }) => (
-          <div key={label} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px' }}>
+          <div key={label} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '18px 20px', transition: 'border-color 0.15s', boxShadow: '0 2px 8px rgba(0,0,0,0.18)' }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-light)'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)'}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-              <div style={{ width: 34, height: 34, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', background: `${color}22` }}>
+              <div style={{ width: 34, height: 34, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', background: `${color}1a`, border: `1px solid ${color}33` }}>
                 <Icon size={16} style={{ color }} />
               </div>
               <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 500 }}>{label}</span>
             </div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text)' }}>{value}</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.02em' }}>{value}</div>
           </div>
         ))}
       </div>
