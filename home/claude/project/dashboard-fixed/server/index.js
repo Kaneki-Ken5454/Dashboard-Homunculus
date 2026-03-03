@@ -1134,6 +1134,69 @@ app.get('*', (_req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// BossInfo DB routes
+app.get("/api/bossinfo/db/popular", async (req, res) => {
+  const { guild_id } = req.query;
+  if (!guild_id) return res.status(400).json({ error: "guild_id required" });
+  try {
+    const rows = await sql`SELECT pokemon_key, COUNT(*) AS cnt FROM bossinfo_log WHERE guild_id = ${guild_id} GROUP BY pokemon_key ORDER BY cnt DESC LIMIT 10`;
+    res.json({ popular: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/bossinfo/db/sets", async (req, res) => {
+  const { guild_id, pokemon_key } = req.query;
+  if (!guild_id) return res.status(400).json({ error: "guild_id required" });
+  try {
+    const rows = pokemon_key
+      ? await sql`SELECT * FROM bossinfo_sets WHERE guild_id=${guild_id} AND pokemon_key=${pokemon_key.toLowerCase()} ORDER BY label`
+      : await sql`SELECT * FROM bossinfo_sets WHERE guild_id=${guild_id} ORDER BY pokemon_key, label`;
+    res.json({ sets: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/bossinfo/db/sets", async (req, res) => {
+  const { guild_id, pokemon_key, label, evs, nature } = req.body;
+  if (!guild_id || !pokemon_key || !label) return res.status(400).json({ error: "guild_id, pokemon_key, label required" });
+  try {
+    const ev = JSON.stringify(evs || {}); const nat = nature || "Neutral";
+    await sql`INSERT INTO bossinfo_sets(guild_id,pokemon_key,label,evs,nature,created_by,updated_at) VALUES(${guild_id},${pokemon_key.toLowerCase()},${label},${ev}::jsonb,${nat},'dashboard',NOW()) ON CONFLICT(guild_id,pokemon_key,label) DO UPDATE SET evs=${ev}::jsonb,nature=${nat},updated_at=NOW()`;
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/api/bossinfo/db/sets/:id", async (req, res) => {
+  const { guild_id } = req.query; const id = parseInt(req.params.id);
+  if (!guild_id || !id) return res.status(400).json({ error: "guild_id and id required" });
+  try {
+    await sql`DELETE FROM bossinfo_sets WHERE id=${id} AND guild_id=${guild_id}`;
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/bossinfo/db/calcs", async (req, res) => {
+  const { guild_id, calc_type } = req.query;
+  if (!guild_id) return res.status(400).json({ error: "guild_id required" });
+  try {
+    const rows = calc_type
+      ? await sql`SELECT * FROM bossinfo_saved_calcs WHERE guild_id=${guild_id} AND calc_type=${calc_type} ORDER BY created_at DESC LIMIT 50`
+      : await sql`SELECT * FROM bossinfo_saved_calcs WHERE guild_id=${guild_id} ORDER BY created_at DESC LIMIT 50`;
+    res.json({ calcs: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/bossinfo/db/calcs", async (req, res) => {
+  const { guild_id, calc_type, label, data } = req.body;
+  if (!guild_id || !calc_type || !data) return res.status(400).json({ error: "guild_id, calc_type, data required" });
+  try {
+    await sql`INSERT INTO bossinfo_saved_calcs(guild_id,calc_type,label,data,created_by) VALUES(${guild_id},${calc_type},${label||null},${JSON.stringify(data)}::jsonb,'dashboard')`;
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/api/bossinfo/db/calcs/:id", async (req, res) => {
+  const { guild_id } = req.query; const id = parseInt(req.params.id);
+  if (!guild_id || !id) return res.status(400).json({ error: "guild_id and id required" });
+  try {
+    await sql`DELETE FROM bossinfo_saved_calcs WHERE id=${id} AND guild_id=${guild_id}`;
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // BOSSINFO — Competitive Pokemon analysis endpoints
 // Data fetched from Showdown CDN and cached in bot process via HTTP
 // ═══════════════════════════════════════════════════════════════════
