@@ -176,6 +176,17 @@ const CATEGORIES: Category[] = [
       { syntax: '/help [command]',    type: 'both',   perms: 'Everyone', description: 'Open the interactive paginated help menu in Discord. Optionally get detail on one command.' },
     ],
   },
+  {
+    label: 'BossInfo — Competitive Analysis', emoji: '⚔️', accent: '#8b5cf6',
+    description: 'Competitive Pokémon analysis powered by Showdown data. Analyze any Pokémon, run damage calculations, and find optimal counters.',
+    commands: [
+      { syntax: '/analyze <pokemon> [tera_type]',            type: 'slash', perms: 'Everyone', description: 'Full competitive analysis — stats, type matchups, tier, role, top moves and learnset. Optionally simulate a Tera type.' },
+      { syntax: '/damage <attacker> <defender> <move>',      type: 'slash', perms: 'Everyone', description: 'Calculate damage range between two Pokémon with a specific move. Shows min/max %, KO assessment, and effectiveness.' },
+      { syntax: '/damage … zmove:True',                      type: 'slash', perms: 'Everyone', description: 'Run the same calc with the Z-Move power boost applied.' },
+      { syntax: '/counter <attacker> <defender>',            type: 'slash', perms: 'Everyone', description: 'Check a specific 1v1 matchup. Returns a verdict: Strong Counter / Soft Check / Speed Check / Bad Matchup.' },
+      { syntax: '/bestcounters <pokemon>',                   type: 'slash', perms: 'Everyone', description: 'Auto-scan the OU/UU meta pool and return the top 3 counters with full matchup breakdowns. Takes 5–10s.' },
+    ],
+  },
 ];
 
 const TYPE_BADGE: Record<string, { bg: string; color: string; label: string }> = {

@@ -1134,76 +1134,414 @@ app.get('*', (_req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// BOSSINFO — Competitive Pokemon analysis endpoints
-// Data fetched from Showdown CDN and cached in bot process via HTTP
-// ═══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+// BOSSINFO — Competitive Pokémon analysis (self-contained, DB-backed)
+// All computation happens server-side from data cached in bossinfo_showdown_cache
+// No bot process needed. Data auto-refreshes from Showdown CDN if cache is stale.
+// ══════════════════════════════════════════════════════════════════════════════
 
-// The bot exposes a tiny local API on port 5001 to serve Showdown data.
-// The dashboard proxies requests through this server to avoid CORS.
-// If the bot isn't running, endpoints return a helpful error.
+// ── In-memory Showdown cache ──────────────────────────────────────────────────
+let _sdReady = false;
+let _sdLoading = false;
+const _sd = {};   // pokedex, moves, typechart, formats_data
+const _CDN = 'https://play.pokemonshowdown.com/data';
+const _CDN_URLS = {
+  pokedex:      `${_CDN}/pokedex.json`,
+  moves:        `${_CDN}/moves.json`,
+  typechart:    `${_CDN}/typechart.json`,
+  formats_data: `${_CDN}/formats-data.json`,
+};
+// learnsets is ~12 MB — fetched only when needed
+let _learnsets = null;
+let _learnsetsFetched = false;
 
-const BOSSINFO_BOT_URL = process.env.BOSSINFO_BOT_URL || 'http://localhost:5001';
-
-async function fetchBotApi(path, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-  try {
-    const res = await fetch(`${BOSSINFO_BOT_URL}${path}`, {
-      ...options,
-      signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    });
-    clearTimeout(timeout);
-    const data = await res.json();
-    return { ok: res.ok, data };
-  } catch (err) {
-    clearTimeout(timeout);
-    return { ok: false, data: { error: err.name === 'AbortError' ? 'Bot API timeout' : `Bot API unavailable: ${err.message}` } };
+async function _sdLoad() {
+  if (_sdReady || _sdLoading) return;
+  _sdLoading = true;
+  const needed = [];
+  for (const key of Object.keys(_CDN_URLS)) {
+    try {
+      const rows = await sql`SELECT data, fetched_at FROM bossinfo_showdown_cache WHERE cache_key=${key}`;
+      if (rows.length && rows[0].data) {
+        const ageHours = (Date.now() - new Date(rows[0].fetched_at).getTime()) / 3600000;
+        if (ageHours < 24) { _sd[key] = rows[0].data; continue; }
+      }
+    } catch (_) {}
+    needed.push(key);
   }
+  if (needed.length) {
+    console.log(`BossInfo: fetching ${needed.length} file(s) from Showdown CDN…`);
+    for (const key of needed) {
+      try {
+        const res = await fetch(_CDN_URLS[key]);
+        const data = await res.json();
+        _sd[key] = data;
+        await sql`INSERT INTO bossinfo_showdown_cache(cache_key,data,fetched_at) VALUES(${key},${JSON.stringify(data)}::jsonb,NOW()) ON CONFLICT(cache_key) DO UPDATE SET data=${JSON.stringify(data)}::jsonb,fetched_at=NOW()`;
+        console.log(`  ok ${key}: ${Object.keys(data).length} entries`);
+      } catch (e) { console.error(`  failed ${key}:`, e.message); }
+    }
+  }
+  _sdReady = Object.keys(_CDN_URLS).every(k => k in _sd);
+  _sdLoading = false;
+  if (_sdReady) console.log('BossInfo: Showdown data ready.');
 }
 
-// GET /api/bossinfo/analyze?pokemon=Garchomp[&tera=Fire]
+async function _getLearnsets() {
+  if (_learnsets) return _learnsets;
+  try {
+    const rows = await sql`SELECT data, fetched_at FROM bossinfo_showdown_cache WHERE cache_key='learnsets'`;
+    if (rows.length && rows[0].data) {
+      const ageHours = (Date.now() - new Date(rows[0].fetched_at).getTime()) / 3600000;
+      if (ageHours < 24) { _learnsets = rows[0].data; return _learnsets; }
+    }
+  } catch (_) {}
+  try {
+    const res = await fetch(`${_CDN}/learnsets.json`);
+    _learnsets = await res.json();
+    await sql`INSERT INTO bossinfo_showdown_cache(cache_key,data,fetched_at) VALUES('learnsets',${JSON.stringify(_learnsets)}::jsonb,NOW()) ON CONFLICT(cache_key) DO UPDATE SET data=${JSON.stringify(_learnsets)}::jsonb,fetched_at=NOW()`;
+    console.log('BossInfo: learnsets cached to DB.');
+  } catch (e) { console.error('BossInfo: learnsets fetch failed:', e.message); }
+  return _learnsets;
+}
+
+// Kick off data load on server start
+_sdLoad().catch(() => {});
+
+// ── Analysis helpers (pure JS, mirrors showdown_data.py) ─────────────────────
+function _key(n) { return (n||'').toLowerCase().replace(/[\s\-'.]/g,''); }
+
+const _DMG_CODE = {0:1,1:2,2:0.5,3:0};
+const _Z_TABLE  = [[55,100],[65,120],[75,140],[85,160],[95,175],[100,180],[110,185],[125,190]];
+function _zPower(bp) {
+  for (const [t,p] of _Z_TABLE) if (bp <= t) return p;
+  return 195;
+}
+
+function _calcStat(base, ev=0, iv=31, isHp=false, nature=1) {
+  if (isHp) return Math.floor((2*base+iv+Math.floor(ev/4))*100/100)+110;
+  return Math.floor((Math.floor((2*base+iv+Math.floor(ev/4))*100/100)+5)*nature);
+}
+
+function _typeEff(atkType, defTypes) {
+  const tc = _sd.typechart || {};
+  let m = 1;
+  for (const dt of defTypes) {
+    const code = (tc[dt]?.damageTaken || {})[atkType] ?? 0;
+    m *= _DMG_CODE[code] ?? 1;
+  }
+  return m;
+}
+
+function _weaknessChart(defTypes, ability='') {
+  const tc = _sd.typechart || {};
+  const out = {quad:[],double:[],half:[],quarter:[],immune:[]};
+  const levitate = (ability||'').toLowerCase().includes('levitate');
+  for (const atk of Object.keys(tc)) {
+    if (levitate && atk === 'Ground') { out.immune.push(atk); continue; }
+    const m = _typeEff(atk, defTypes);
+    if (m === 0) out.immune.push(atk);
+    else if (m === 0.25) out.quarter.push(atk);
+    else if (m === 0.5) out.half.push(atk);
+    else if (m === 2) out.double.push(atk);
+    else if (m === 4) out.quad.push(atk);
+  }
+  return out;
+}
+
+function _detectRole(stats) {
+  const {hp=0,atk=0,def=0,spa=0,spd=0,spe=0} = stats;
+  const bulk = hp+def+spd;
+  if (bulk>=340 && atk<90 && spa<90) return 'Defensive Wall';
+  if (spe>=100 && atk>=110 && atk>=spa) return 'Physical Sweeper';
+  if (spe>=100 && spa>=110 && spa>atk)  return 'Special Sweeper';
+  if (Math.abs(atk-spa)<=20 && Math.max(atk,spa)>=100) return 'Mixed Attacker';
+  if (spe>=100 && bulk>=270) return 'Offensive Pivot';
+  if (bulk>=300) return 'Bulky Attacker';
+  return 'All-Rounder';
+}
+
+function _rankMoves(poke, topN=5) {
+  const mv = _sd.moves || {};
+  const ls = poke._learnset || {};
+  const types = poke.types || [];
+  const stats = poke.baseStats || {};
+  const preferSp = (stats.spa||0) >= (stats.atk||0);
+  const atkVal = _calcStat(stats.atk||70, 252);
+  const spaVal = _calcStat(stats.spa||70, 252);
+  const scored = [];
+  for (const [mk, sources] of Object.entries(ls)) {
+    if (!sources.some(s => s.startsWith('9') || s.startsWith('8'))) continue;
+    const m = mv[mk];
+    if (!m) continue;
+    const cat = m.category;
+    if (cat === 'Status') continue;
+    const bp = m.basePower || 0;
+    if (!bp) continue;
+    const acc = m.accuracy;
+    if (acc !== true && typeof acc === 'number' && acc < 70) continue;
+    const mt = m.type || 'Normal';
+    const stab = types.includes(mt) ? 1.5 : 1;
+    const sv   = cat === 'Special' ? spaVal : atkVal;
+    const bias = ((preferSp && cat==='Special')||(!preferSp && cat==='Physical')) ? 1.1 : 1;
+    scored.push({
+      name: m.name || mk, type: mt, category: cat, base_power: bp,
+      accuracy: acc === true ? 'always' : acc,
+      stab: stab>1, score: bp*stab*sv*bias, z_power: _zPower(bp),
+    });
+  }
+  scored.sort((a,b) => b.score-a.score);
+  return scored.slice(0,topN);
+}
+
+async function _fullAnalysis(pokemonName) {
+  if (!_sdReady) await _sdLoad();
+  const pd = _sd.pokedex || {};
+  const poke = pd[_key(pokemonName)];
+  if (!poke) return null;
+  const types    = poke.types || [];
+  const stats    = poke.baseStats || {};
+  const abilities= Object.values(poke.abilities || {});
+  const fmt      = (_sd.formats_data||{})[_key(pokemonName)] || {};
+  // Attach learnset for move ranking
+  const ls = await _getLearnsets();
+  const learnset = ls ? (ls[_key(pokemonName)]?.learnset || {}) : {};
+  poke._learnset = learnset;
+  const topMoves = _rankMoves(poke);
+  // Level-up moves
+  const mvdb = _sd.moves || {};
+  const levelMoves = [];
+  for (const [mk, sources] of Object.entries(learnset)) {
+    let level = null;
+    for (let gen=9; gen>=1; gen--) {
+      for (const s of sources) {
+        if (s.startsWith(`${gen}L`)) { try { level=parseInt(s.slice(2)); break; } catch(_){} }
+      }
+      if (level !== null) break;
+    }
+    if (level === null) continue;
+    const m = mvdb[mk];
+    if (!m) continue;
+    levelMoves.push({level, name:m.name||mk, type:m.type||'Normal', category:m.category||'Status',
+      base_power:m.basePower||0, accuracy: m.accuracy===true?'always':m.accuracy});
+  }
+  levelMoves.sort((a,b) => a.level-b.level);
+  return {
+    name: poke.name || pokemonName,
+    types, stats,
+    bst: Object.values(stats).reduce((s,v)=>s+v,0),
+    abilities,
+    tier: fmt.tier || 'Untiered',
+    role: _detectRole(stats),
+    weaknesses: _weaknessChart(types, abilities[0]||''),
+    level_moves: levelMoves.slice(0,30),
+    top_moves: topMoves,
+    atk_stat: _calcStat(stats.atk||0, 252),
+    spa_stat: _calcStat(stats.spa||0, 252),
+    hp_stat:  _calcStat(stats.hp||0, 0, 31, true),
+    spe_stat: _calcStat(stats.spe||0),
+  };
+}
+
+function _calcDamage(atkName, defName, moveName, zmove=false) {
+  const pd = _sd.pokedex||{}, mv = _sd.moves||{};
+  const atk = pd[_key(atkName)]; if (!atk) return {error:`Unknown: ${atkName}`};
+  const def = pd[_key(defName)]; if (!def) return {error:`Unknown: ${defName}`};
+  const move = mv[_key(moveName)]; if (!move) return {error:`Unknown move: ${moveName}`};
+  let bp = move.basePower||0;
+  if (!bp) return {error:`${move.name||moveName} is a status move`};
+  if (zmove) bp = _zPower(bp);
+  const cat  = move.category||'Physical';
+  const mtyp = move.type||'Normal';
+  const as   = atk.baseStats||{}, ds = def.baseStats||{};
+  const atkV = cat==='Physical' ? _calcStat(as.atk||70,252) : _calcStat(as.spa||70,252);
+  const defV = cat==='Physical' ? _calcStat(ds.def||70)     : _calcStat(ds.spd||70);
+  const base = Math.floor(Math.floor(Math.floor(2*100/5+2)*bp*atkV/defV)/50)+2;
+  const stab = (atk.types||[]).includes(mtyp) ? 1.5 : 1;
+  const eff  = _typeEff(mtyp, def.types||[]);
+  if (eff===0) return {error:null,immune:true,min_pct:0,max_pct:0,min_dmg:0,max_dmg:0,effectiveness:0,stab:stab>1,ohko:false,two_hko:false,hits_to_ko:[0,0],category:cat,move_type:mtyp,attacker_speed:_calcStat(as.spe||50),defender_speed:_calcStat(ds.spe||50),is_z:zmove};
+  const afterStab = stab>1 ? Math.floor(base*3/2) : base;
+  const after     = Math.floor(afterStab*eff);
+  const minD = Math.floor(after*85/100), maxD = after;
+  const defHp = _calcStat(ds.hp||70,0,31,true);
+  const minP  = defHp ? +((minD/defHp*100).toFixed(1)) : 0;
+  const maxP  = defHp ? +((maxD/defHp*100).toFixed(1)) : 0;
+  return {error:null,immune:false,min_pct:minP,max_pct:maxP,min_dmg:minD,max_dmg:maxD,defender_hp:defHp,effectiveness:eff,stab:stab>1,ohko:minP>=100,two_hko:minP>=50,hits_to_ko:[maxD?Math.ceil(defHp/maxD):99,minD?Math.ceil(defHp/minD):99],category:cat,move_type:mtyp,is_z:zmove,attacker_speed:_calcStat(as.spe||50),defender_speed:_calcStat(ds.spe||50)};
+}
+
+function _bestMoveForPoke(pokeName) {
+  const pd = _sd.pokedex||{}, mv = _sd.moves||{};
+  const poke = pd[_key(pokeName)]; if (!poke) return null;
+  const ls = poke._learnset || {};
+  const types = poke.types||[], stats = poke.baseStats||{};
+  const preferSp = (stats.spa||0) >= (stats.atk||0);
+  const atkVal = _calcStat(stats.atk||70,252), spaVal = _calcStat(stats.spa||70,252);
+  let best = null, bestScore = -1;
+  for (const [mk, sources] of Object.entries(ls)) {
+    if (!sources.some(s=>s.startsWith('9')||s.startsWith('8'))) continue;
+    const m = mv[mk]; if (!m) continue;
+    const cat = m.category; if (cat==='Status') continue;
+    const bp = m.basePower||0; if (!bp) continue;
+    const mt = m.type||'Normal';
+    const stab = types.includes(mt)?1.5:1;
+    const sv = cat==='Special'?spaVal:atkVal;
+    const score = bp*stab*sv;
+    if (score > bestScore) { bestScore=score; best={key:mk,...m}; }
+  }
+  return best;
+}
+
+async function _counterVerdict(atkName, defName) {
+  if (!_sdReady) await _sdLoad();
+  const pd = _sd.pokedex||{};
+  const atkPoke = pd[_key(atkName)]; if (!atkPoke) return {error:`Unknown: ${atkName}`};
+  const defPoke = pd[_key(defName)]; if (!defPoke) return {error:`Unknown: ${defName}`};
+  const ls = await _getLearnsets();
+  atkPoke._learnset = ls?.[_key(atkName)]?.learnset||{};
+  defPoke._learnset = ls?.[_key(defName)]?.learnset||{};
+  const atkBest = _bestMoveForPoke(atkName);
+  const defBest = _bestMoveForPoke(defName);
+  if (!atkBest) return {error:`No usable moves for ${atkName}`};
+  if (!defBest) return {error:`No usable moves for ${defName}`};
+  const atkR = _calcDamage(atkName, defName, atkBest.name||atkBest.key);
+  const defR = _calcDamage(defName, atkName, defBest.name||defBest.key);
+  if (atkR.error||defR.error) return {error:atkR.error||defR.error};
+  const as = atkPoke.baseStats||{}, ds = defPoke.baseStats||{};
+  const atkSpe = _calcStat(as.spe||50), defSpe = _calcStat(ds.spe||50);
+  const faster = atkSpe>defSpe?'attacker':defSpe>atkSpe?'defender':'tie';
+  const s1 = atkR.max_pct<100, s2 = atkR.max_pct<50, dd = defR.max_pct;
+  let verdict, desc;
+  if (s2 && dd>=60 && (faster==='defender'||s1)) { verdict='Strong Counter'; desc=`${defName} survives 2 hits and deals ${dd.toFixed(1)}% back.`; }
+  else if (s1 && dd>=40)  { verdict='Soft Check';  desc=`${defName} survives 1 hit and deals ${dd.toFixed(1)}% back.`; }
+  else if (!s1 && dd>=80) { verdict='Speed Check'; desc=`${defName} gets OHKO'd but deals ${dd.toFixed(1)}% if faster.`; }
+  else                    { verdict='Bad Matchup'; desc=`${defName} takes ${atkR.max_pct.toFixed(1)}% and deals only ${dd.toFixed(1)}% back.`; }
+  return {error:null,verdict,verdict_desc:desc,faster,attacker_speed:atkSpe,defender_speed:defSpe,atk_move:atkBest.name||atkBest.key,atk_min_pct:atkR.min_pct,atk_max_pct:atkR.max_pct,def_move:defBest.name||defBest.key,def_min_pct:defR.min_pct,def_max_pct:defR.max_pct,def_survives_1:s1,def_survives_2:s2,attacker:atkName,defender:defName};
+}
+
+// ── BossInfo API routes ───────────────────────────────────────────────────────
+
+// GET /api/bossinfo/search?q=garc
+app.get('/api/bossinfo/search', async (req, res) => {
+  try {
+    if (!_sdReady) await _sdLoad();
+    const q = (req.query.q||'').toLowerCase().replace(/[\s\-.]/g,'');
+    const pd = _sd.pokedex||{};
+    const results = [];
+    for (const [k,v] of Object.entries(pd)) {
+      if (!q || k.includes(q) || _key(v.name||'').includes(q)) {
+        results.push(v.name||k);
+        if (results.length >= 25) break;
+      }
+    }
+    res.json({results});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// GET /api/bossinfo/analyze?pokemon=X[&tera=Y]
 app.get('/api/bossinfo/analyze', async (req, res) => {
-  const { pokemon, tera } = req.query;
-  if (!pokemon) return res.status(400).json({ error: 'pokemon param required' });
-  const q = new URLSearchParams({ pokemon });
-  if (tera) q.set('tera', tera);
-  const { ok, data } = await fetchBotApi(`/bossinfo/analyze?${q}`);
-  res.status(ok ? 200 : 502).json(data);
+  const {pokemon, tera} = req.query;
+  if (!pokemon) return res.status(400).json({error:'pokemon required'});
+  try {
+    const data = await _fullAnalysis(pokemon);
+    if (!data) return res.status(404).json({error:`${pokemon} not found in Showdown data`});
+    if (tera) {
+      const valid = ['Normal','Fire','Water','Grass','Electric','Ice','Fighting','Poison','Ground','Flying','Psychic','Bug','Rock','Ghost','Dragon','Dark','Steel','Fairy'];
+      const tt = valid.find(t=>t.toLowerCase()===tera.toLowerCase());
+      if (tt) { data.tera_weaknesses = _weaknessChart([tt],''); data.tera_type = tt; }
+    }
+    res.json(data);
+  } catch(e) { res.status(500).json({error:e.message}); }
 });
 
 // GET /api/bossinfo/damage?attacker=X&defender=Y&move=Z[&zmove=true]
 app.get('/api/bossinfo/damage', async (req, res) => {
-  const { attacker, defender, move, zmove } = req.query;
-  if (!attacker || !defender || !move) return res.status(400).json({ error: 'attacker, defender, move required' });
-  const q = new URLSearchParams({ attacker, defender, move });
-  if (zmove) q.set('zmove', zmove);
-  const { ok, data } = await fetchBotApi(`/bossinfo/damage?${q}`);
-  res.status(ok ? 200 : 502).json(data);
+  const {attacker,defender,move,zmove} = req.query;
+  if (!attacker||!defender||!move) return res.status(400).json({error:'attacker, defender, move required'});
+  try {
+    if (!_sdReady) await _sdLoad();
+    const result = _calcDamage(attacker, defender, move, zmove==='true');
+    // Save to DB
+    if (!result.error && req.query.guild_id) {
+      sql`INSERT INTO bossinfo_saved_calcs(guild_id,calc_type,label,data,created_by) VALUES(${req.query.guild_id},'damage',${`${attacker} vs ${defender} | ${move}`},${JSON.stringify({attacker,defender,move,zmove:zmove==='true',result})}::jsonb,'dashboard')`.catch(()=>{});
+    }
+    res.json(result);
+  } catch(e) { res.status(500).json({error:e.message}); }
 });
 
 // GET /api/bossinfo/counter?attacker=X&defender=Y
 app.get('/api/bossinfo/counter', async (req, res) => {
-  const { attacker, defender } = req.query;
-  if (!attacker || !defender) return res.status(400).json({ error: 'attacker and defender required' });
-  const q = new URLSearchParams({ attacker, defender });
-  const { ok, data } = await fetchBotApi(`/bossinfo/counter?${q}`);
-  res.status(ok ? 200 : 502).json(data);
+  const {attacker,defender} = req.query;
+  if (!attacker||!defender) return res.status(400).json({error:'attacker and defender required'});
+  try {
+    const result = await _counterVerdict(attacker, defender);
+    if (!result.error && req.query.guild_id) {
+      sql`INSERT INTO bossinfo_saved_calcs(guild_id,calc_type,label,data,created_by) VALUES(${req.query.guild_id},'counter',${`${attacker} vs ${defender}`},${JSON.stringify(result)}::jsonb,'dashboard')`.catch(()=>{});
+    }
+    res.json(result);
+  } catch(e) { res.status(500).json({error:e.message}); }
 });
 
 // GET /api/bossinfo/bestcounters?pokemon=X
 app.get('/api/bossinfo/bestcounters', async (req, res) => {
-  const { pokemon } = req.query;
-  if (!pokemon) return res.status(400).json({ error: 'pokemon param required' });
-  const { ok, data } = await fetchBotApi(`/bossinfo/bestcounters?pokemon=${encodeURIComponent(pokemon)}`);
-  res.status(ok ? 200 : 502).json(data);
+  const {pokemon} = req.query;
+  if (!pokemon) return res.status(400).json({error:'pokemon required'});
+  try {
+    if (!_sdReady) await _sdLoad();
+    const pd = _sd.pokedex||{}, fd = _sd.formats_data||{};
+    const META = new Set(['OU','UU','RU','(OU)','(UU)']);
+    const ls = await _getLearnsets();
+    const pool = Object.keys(pd).filter(k => META.has((fd[k]||{}).tier||''));
+    const results = [];
+    for (const ckey of pool) {
+      const cname = pd[ckey].name||ckey;
+      if (_key(cname)===_key(pokemon)) continue;
+      pd[ckey]._learnset = ls?.[ckey]?.learnset||{};
+      const poke = pd[_key(pokemon)]; if (poke && ls) poke._learnset = ls[_key(pokemon)]?.learnset||{};
+      try {
+        const r = await _counterVerdict(pokemon, cname);
+        if (r.error) continue;
+        if (['Strong Counter','Soft Check','Speed Check'].includes(r.verdict)) {
+          const score = r.def_max_pct*0.4+(50-r.atk_max_pct)*0.6+(r.verdict==='Strong Counter'?10:0);
+          results.push({...r,score,candidate:cname});
+        }
+      } catch(_){}
+    }
+    results.sort((a,b)=>b.score-a.score);
+    res.json({pokemon,counters:results.slice(0,3)});
+  } catch(e) { res.status(500).json({error:e.message}); }
 });
 
-// GET /api/bossinfo/search?q=garc  — autocomplete pokemon names
-app.get('/api/bossinfo/search', async (req, res) => {
-  const q = req.query.q || '';
-  const { ok, data } = await fetchBotApi(`/bossinfo/search?q=${encodeURIComponent(q)}`);
-  res.status(ok ? 200 : 502).json(data);
+// BossInfo DB endpoints (saved calcs, popular, EV sets)
+app.get('/api/bossinfo/db/popular', async (req,res) => {
+  const {guild_id}=req.query;
+  if (!guild_id) return res.status(400).json({error:'guild_id required'});
+  try {
+    const rows = await sql`SELECT pokemon_key, COUNT(*)::int AS cnt FROM bossinfo_log WHERE guild_id=${guild_id} GROUP BY pokemon_key ORDER BY cnt DESC LIMIT 10`;
+    res.json({popular:rows});
+  } catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/bossinfo/db/calcs', async (req,res) => {
+  const {guild_id,calc_type}=req.query;
+  if (!guild_id) return res.status(400).json({error:'guild_id required'});
+  try {
+    const rows = calc_type
+      ? await sql`SELECT id,guild_id,calc_type,label,data,created_by,created_at FROM bossinfo_saved_calcs WHERE guild_id=${guild_id} AND calc_type=${calc_type} ORDER BY created_at DESC LIMIT 50`
+      : await sql`SELECT id,guild_id,calc_type,label,data,created_by,created_at FROM bossinfo_saved_calcs WHERE guild_id=${guild_id} ORDER BY created_at DESC LIMIT 50`;
+    res.json({calcs:rows});
+  } catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/bossinfo/db/calcs', async (req,res) => {
+  const {guild_id,calc_type,label,data}=req.body;
+  if (!guild_id||!calc_type||!data) return res.status(400).json({error:'guild_id, calc_type, data required'});
+  try {
+    await sql`INSERT INTO bossinfo_saved_calcs(guild_id,calc_type,label,data,created_by) VALUES(${guild_id},${calc_type},${label||null},${JSON.stringify(data)}::jsonb,'dashboard')`;
+    res.json({ok:true});
+  } catch(e){res.status(500).json({error:e.message});}
+});
+app.delete('/api/bossinfo/db/calcs/:id', async (req,res) => {
+  const {guild_id}=req.query; const id=parseInt(req.params.id);
+  if (!guild_id||!id) return res.status(400).json({error:'guild_id and id required'});
+  try { await sql`DELETE FROM bossinfo_saved_calcs WHERE id=${id} AND guild_id=${guild_id}`; res.json({ok:true}); }
+  catch(e){res.status(500).json({error:e.message});}
 });
 
 

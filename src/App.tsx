@@ -23,7 +23,7 @@ import HelpPage     from './pages/Help';
 import MembersPage  from './pages/Members';
 import BossInfoPage from './pages/BossInfo';
 
-type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help'|'bossinfo'|'bossinfo';
+type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help'|'bossinfo';
 
 const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',      icon: LayoutDashboard },
@@ -38,6 +38,7 @@ const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'activity',   label: 'Activity',       icon: Activity        },
   { id: 'blacklist',  label: 'Blacklist',      icon: ShieldBan       },
   { id: 'help',       label: 'Help',           icon: HelpCircle      },
+  { id: 'bossinfo',   label: 'BossInfo',       icon: Swords          },
 ];
 
 

@@ -74,6 +74,7 @@ const EMPTY: Partial<InfoTopic> = {
 
 type Tab = 'topics' | 'audit';
 type ModalType = 'create' | 'edit' | 'section' | 'subcategory' | 'history' | 'import' | null;
+type SearchFilter = 'all' | 'published' | 'draft';
 
 function EmbedPreview({ topic }: { topic: Partial<InfoTopic> }) {
   const hex = (topic.embed_color || '#5865F2');
@@ -110,6 +111,8 @@ export default function InfoTopicsPage({ guildId }: Props) {
   const [form, setForm]           = useState<Partial<InfoTopic>>(EMPTY);
   const [saving, setSaving]       = useState(false);
   const [error, setError]         = useState('');
+  const [search, setSearch]       = useState('');
+  const [statusFilter, setStatusFilter] = useState<SearchFilter>('all');
   const [sectionTarget, setSectionTarget] = useState('');
   const [sectionName, setSectionName]     = useState('');
   const [sectionEmoji, setSectionEmoji]   = useState('');
@@ -240,22 +243,53 @@ export default function InfoTopicsPage({ guildId }: Props) {
   const draftCount=topics.filter(t=>!t.is_published).length;
   const pubCount=topics.filter(t=>t.is_published).length;
 
+  const filteredTopics = useMemo(() => {
+    let list = topics;
+    if (statusFilter === 'published') list = list.filter(t => t.is_published);
+    if (statusFilter === 'draft') list = list.filter(t => !t.is_published);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(t => t.name.toLowerCase().includes(q) || t.topic_id?.toLowerCase().includes(q) || t.embed_description?.toLowerCase().includes(q));
+    }
+    return list;
+  }, [topics, statusFilter, search]);
+
+  const groupedFiltered = useMemo(() => filteredTopics.reduce<Record<string,Record<string,InfoTopic[]>>>((acc,t) => {
+    const sec=t.section||'general', sub=t.subcategory||'General';
+    if (!acc[sec]) acc[sec]={};
+    if (!acc[sec][sub]) acc[sec][sub]=[];
+    acc[sec][sub].push(t); return acc;
+  }, {}), [filteredTopics]);
+
   return (
     <div className="animate-fade">
       {/* Toolbar */}
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexWrap:'wrap',gap:8}}>
-        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14,flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:4}}>
           {(['topics','audit'] as Tab[]).map(t=>(
-            <button key={t} onClick={()=>setTab(t)} style={{padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,background:tab===t?'var(--primary-subtle)':'var(--elevated)',color:tab===t?'#818cf8':'var(--text-muted)',fontFamily:'inherit',display:'flex',alignItems:'center',gap:5}}>
-              {t==='topics'?<><BookOpen size={12}/> Topics</>:<><ClipboardList size={12}/> Audit Log</>}
+            <button key={t} onClick={()=>setTab(t)} style={{padding:'5px 12px',borderRadius:7,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,background:tab===t?'var(--primary-subtle)':'var(--elevated)',color:tab===t?'#818cf8':'var(--text-muted)',fontFamily:'inherit',display:'flex',alignItems:'center',gap:4}}>
+              {t==='topics'?<><BookOpen size={11}/> Topics</>:<><ClipboardList size={11}/> Audit</>}
             </button>
           ))}
-          <span style={{fontSize:11,color:'var(--text-faint)',marginLeft:6}}>{pubCount} live{draftCount>0&&<span style={{color:'#faa81a'}}> · {draftCount} draft{draftCount!==1?'s':''}</span>}</span>
         </div>
-        <div style={{display:'flex',gap:6}}>
-          <button className="btn btn-ghost btn-sm" onClick={doExport}><Download size={12}/> Export</button>
-          <button className="btn btn-ghost btn-sm" onClick={()=>{setImportJson('');setImportResult(null);setModal('import');}}><Upload size={12}/> Import</button>
-          <button className="btn btn-primary" onClick={openCreate}><Plus size={13}/> New Topic</button>
+        {tab==='topics'&&<>
+          <div style={{position:'relative',flex:'1 1 160px',minWidth:130}}>
+            <Search size={12} style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',color:'var(--text-faint)',pointerEvents:'none'}}/>
+            <input className="inp" style={{paddingLeft:26,fontSize:12,height:30}} placeholder="Search topics…" value={search} onChange={e=>setSearch(e.target.value)}/>
+          </div>
+          <div style={{display:'flex',gap:3}}>
+            {([['all','All'],['published','Live'],['draft','Draft']] as [SearchFilter,string][]).map(([v,l])=>(
+              <button key={v} onClick={()=>setStatusFilter(v)} style={{padding:'4px 10px',borderRadius:6,border:`1px solid ${statusFilter===v?'#818cf8':'var(--border)'}`,background:statusFilter===v?'var(--primary-subtle)':'var(--elevated)',color:statusFilter===v?'#818cf8':'var(--text-muted)',cursor:'pointer',fontSize:11,fontWeight:statusFilter===v?700:400}}>{l}</button>
+            ))}
+          </div>
+          <span style={{fontSize:11,color:'var(--text-faint)',whiteSpace:'nowrap'}}>{pubCount} live{draftCount>0&&<span style={{color:'#faa81a'}}> · {draftCount} draft</span>}</span>
+        </>}
+        <div style={{display:'flex',gap:5,marginLeft:'auto'}}>
+          {tab==='topics'&&<>
+            <button className="btn btn-ghost btn-sm" onClick={doExport} title="Export as JSON"><Download size={12}/></button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>{setImportJson('');setImportResult(null);setModal('import');}} title="Import from JSON"><Upload size={12}/></button>
+          </>}
+          <button className="btn btn-primary" style={{fontSize:12,padding:'5px 12px'}} onClick={openCreate}><Plus size={12}/> New Topic</button>
         </div>
       </div>
 
@@ -287,54 +321,57 @@ export default function InfoTopicsPage({ guildId }: Props) {
       )}
 
       {/* Topics tab */}
-      {tab==='topics' && (topics.length===0?(
+      {tab==='topics' && (filteredTopics.length===0?(
+        search||statusFilter!=='all'
+          ? <div style={{padding:'40px 20px',textAlign:'center',color:'var(--text-muted)',fontSize:13}}>No topics match your filter.</div>
+          : <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:'60px 20px',textAlign:'center'}}>
+              <BookOpen size={32} style={{color:'var(--text-faint)',display:'block',margin:'0 auto 12px'}}/><div style={{color:'var(--text-muted)',fontSize:14,marginBottom:16}}>No info topics yet.</div>
+              <button className="btn btn-primary" onClick={openCreate}><Plus size={14}/> Create First Topic</button>
+            </div>
+      ):(
         <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:'60px 20px',textAlign:'center'}}>
           <BookOpen size={32} style={{color:'var(--text-faint)',display:'block',margin:'0 auto 12px'}}/>
           <div style={{color:'var(--text-muted)',fontSize:14,marginBottom:16}}>No info topics yet.</div>
           <button className="btn btn-primary" onClick={openCreate}><Plus size={14}/> Create First Topic</button>
         </div>
       ):(
-        <div style={{display:'grid',gridTemplateColumns:selected?'1fr 360px':'1fr',gap:12,alignItems:'start'}}>
+        <div style={{display:'grid',gridTemplateColumns:selected?'1fr 320px':'1fr',gap:12,alignItems:'start'}}>
           {/* Left: tree */}
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
-            {Object.entries(grouped).map(([section,subcats])=>{
+            {Object.entries(groupedFiltered).map(([section,subcats])=>{
               const open=!collapsed.has(section);
               const catEmoji=emojiMap.get(section);
               const total=Object.values(subcats).flat().length;
               return (
                 <div key={section} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,overflow:'hidden'}}>
                   {/* Section header */}
-                  <div style={{display:'flex',alignItems:'center',padding:'10px 14px',borderBottom:open?'1px solid var(--border)':'none',gap:6,background:'var(--elevated)'}}>
-                    <button onClick={()=>setCollapsed(p=>{const n=new Set(p);n.has(section)?n.delete(section):n.add(section);return n;})} style={{background:'none',border:'none',color:'var(--text)',cursor:'pointer',display:'flex',alignItems:'center',gap:6,fontFamily:'Lexend,sans-serif',fontSize:13,fontWeight:700,padding:0}}>
-                      {open?<ChevronDown size={13} style={{color:'var(--text-muted)'}}/>:<ChevronRight size={13} style={{color:'var(--text-muted)'}}/>}
-                      {catEmoji&&<span style={{fontSize:15}}>{catEmoji}</span>}
+                  <div style={{display:'flex',alignItems:'center',padding:'7px 12px',borderBottom:open?'1px solid var(--border)':'none',background:'var(--elevated)'}}>
+                    <button onClick={()=>setCollapsed(p=>{const n=new Set(p);n.has(section)?n.delete(section):n.add(section);return n;})} style={{background:'none',border:'none',color:'var(--text)',cursor:'pointer',display:'flex',alignItems:'center',gap:5,fontFamily:'Lexend,sans-serif',fontSize:12,fontWeight:700,padding:0,flex:1}}>
+                      {open?<ChevronDown size={12} style={{color:'var(--text-muted)'}}/>:<ChevronRight size={12} style={{color:'var(--text-muted)'}}/>}
+                      {catEmoji&&<span style={{fontSize:13}}>{catEmoji}</span>}
                       <span style={{textTransform:'capitalize'}}>{section}</span>
-                      <span style={{background:'var(--primary-subtle)',color:'#818cf8',borderRadius:10,padding:'1px 7px',fontSize:10,fontWeight:600}}>{total}</span>
+                      <span style={{background:'var(--primary-subtle)',color:'#818cf8',borderRadius:8,padding:'0 5px',fontSize:10,fontWeight:600}}>{total}</span>
                     </button>
-                    <div style={{display:'flex',gap:3,flexWrap:'wrap',flex:1}}>
-                      {Object.keys(subcats).map(sub=>{
-                        const e=emojiMap.get(`${section}::${sub}`);
-                        return <button key={sub} onClick={()=>openEditSub(section,sub)} style={{display:'inline-flex',alignItems:'center',gap:3,background:'var(--surface)',border:'1px solid var(--border)',borderRadius:6,padding:'1px 7px',fontSize:10,color:'var(--text-muted)',cursor:'pointer',fontFamily:'inherit'}} title={`Edit "${sub}"`}>
-                          {e?<span style={{fontSize:11}}>{e}</span>:<Tag size={8}/>}{sub}<Pencil size={7} style={{opacity:0.4}}/>
-                        </button>;
-                      })}
-                    </div>
-                    <button className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={()=>openEditSection(section)}><FolderEdit size={11}/> Edit</button>
+                    
+                    <button className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={()=>openEditSection(section)}><FolderEdit size={10}/> Edit</button>
                   </div>
                   {open&&Object.entries(subcats).map(([sub,items])=>(
                     <div key={sub}>
-                      <div style={{display:'flex',alignItems:'center',padding:'4px 14px 4px 30px',background:'rgba(255,255,255,0.02)',borderBottom:'1px solid var(--border)'}}>
-                        <span style={{fontSize:10,fontWeight:600,color:'var(--text-faint)',textTransform:'uppercase',letterSpacing:'0.07em'}}>
-                          {emojiMap.get(`${section}::${sub}`)&&<span style={{marginRight:4,fontSize:12}}>{emojiMap.get(`${section}::${sub}`)}</span>}{sub}
-                        </span>
-                        <span style={{marginLeft:5,fontSize:10,color:'var(--text-faint)'}}>{items.length}</span>
+                      <div style={{display:'flex',alignItems:'center',padding:'3px 12px 3px 26px',background:'rgba(255,255,255,0.015)',borderBottom:'1px solid var(--border)'}}>
+                        <button onClick={()=>openEditSub(section,sub)} style={{background:'none',border:'none',cursor:'pointer',display:'flex',alignItems:'center',gap:4,padding:0}} title="Edit subcategory">
+                          <span style={{fontSize:10,fontWeight:600,color:'var(--text-faint)',textTransform:'uppercase',letterSpacing:'0.06em'}}>
+                            {emojiMap.get(`${section}::${sub}`)&&<span style={{marginRight:3,fontSize:11}}>{emojiMap.get(`${section}::${sub}`)}</span>}{sub}
+                          </span>
+                          <span style={{fontSize:10,color:'var(--text-faint)',marginLeft:3}}>{items.length}</span>
+                          <Pencil size={7} style={{color:'var(--text-faint)',opacity:0.4,marginLeft:2}}/>
+                        </button>
                       </div>
                       {items.map(t=>(
                         <div key={t.id} onClick={()=>setSelected(s=>s?.id===t.id?null:t)}
-                          style={{display:'flex',alignItems:'center',padding:'9px 14px 9px 38px',borderBottom:'1px solid var(--border)',cursor:'pointer',background:selected?.id===t.id?'var(--primary-subtle)':'transparent',transition:'background 0.1s'}}
+                          style={{display:'flex',alignItems:'center',padding:'6px 12px 6px 32px',borderBottom:'1px solid var(--border)',cursor:'pointer',background:selected?.id===t.id?'var(--primary-subtle)':'transparent',transition:'background 0.1s'}}
                           onMouseEnter={e=>{if(selected?.id!==t.id)(e.currentTarget as HTMLElement).style.background='rgba(255,255,255,0.03)';}}
                           onMouseLeave={e=>{if(selected?.id!==t.id)(e.currentTarget as HTMLElement).style.background='transparent';}}>
-                          <span style={{fontSize:16,marginRight:8,flexShrink:0}}>{t.emoji||'📄'}</span>
+                          <span style={{fontSize:13,marginRight:6,flexShrink:0}}>{t.emoji||'📄'}</span>
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{display:'flex',alignItems:'center',gap:5}}>
                               <span style={{fontSize:13,fontWeight:500,color:'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.name}</span>
