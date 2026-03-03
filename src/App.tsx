@@ -22,8 +22,9 @@ import BlacklistPage from './pages/Blacklist';
 import HelpPage     from './pages/Help';
 import MembersPage  from './pages/Members';
 import BossInfoPage from './pages/BossInfo';
+import RaidBossesPage from './pages/RaidBosses';
 
-type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help'|'bossinfo';
+type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help'|'bossinfo'|'raidbosses';
 
 const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',      icon: LayoutDashboard },
@@ -39,6 +40,7 @@ const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'blacklist',  label: 'Blacklist',      icon: ShieldBan       },
   { id: 'help',       label: 'Help',           icon: HelpCircle      },
   { id: 'bossinfo',   label: 'BossInfo',       icon: Swords          },
+  { id: 'raidbosses', label: 'Raid Bosses',    icon: Shield          },
 ];
 
 
@@ -84,6 +86,7 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
   if (page === 'blacklist')   return <BlacklistPage guildId={guildId} />;
   if (page === 'help')        return <HelpPage      guildId={guildId} />;
   if (page === 'bossinfo')   return <BossInfoPage  guildId={guildId} />;
+  if (page === 'raidbosses') return <RaidBossesPage guildId={guildId} />;
   return null;
 }
 export default function App() {
