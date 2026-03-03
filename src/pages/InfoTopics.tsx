@@ -3,7 +3,7 @@ import {
   BookOpen, Plus, Pencil, Trash2, ChevronDown, ChevronRight,
   Eye, EyeOff, Download, Upload, History, ClipboardList,
   FolderEdit, Tag, AlertCircle, CheckCircle, RotateCcw,
-  Link, FileText,
+  Link, FileText, Search,
 } from 'lucide-react';
 import {
   getInfoTopics, createInfoTopic, updateInfoTopic, deleteInfoTopic,
@@ -328,12 +328,6 @@ export default function InfoTopicsPage({ guildId }: Props) {
               <BookOpen size={32} style={{color:'var(--text-faint)',display:'block',margin:'0 auto 12px'}}/><div style={{color:'var(--text-muted)',fontSize:14,marginBottom:16}}>No info topics yet.</div>
               <button className="btn btn-primary" onClick={openCreate}><Plus size={14}/> Create First Topic</button>
             </div>
-      ):(
-        <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:12,padding:'60px 20px',textAlign:'center'}}>
-          <BookOpen size={32} style={{color:'var(--text-faint)',display:'block',margin:'0 auto 12px'}}/>
-          <div style={{color:'var(--text-muted)',fontSize:14,marginBottom:16}}>No info topics yet.</div>
-          <button className="btn btn-primary" onClick={openCreate}><Plus size={14}/> Create First Topic</button>
-        </div>
       ):(
         <div style={{display:'grid',gridTemplateColumns:selected?'1fr 320px':'1fr',gap:12,alignItems:'start'}}>
           {/* Left: tree */}
