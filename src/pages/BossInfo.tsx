@@ -34,9 +34,10 @@ const Prog=({p}:{p:number})=>{const c=p>=100?'#ED4245':p>=50?'#FAA81A':'#5865F2'
 const Chip=({v,color}:{v:string;color:string})=><span style={{background:color,color:'#fff',borderRadius:4,padding:'2px 8px',fontWeight:700,fontSize:12}}>{v}</span>;
 const VC:Record<string,string>={'Strong Counter':'#3BA55D','Soft Check':'#FAA81A','Speed Check':'#5865F2','Bad Matchup':'#ED4245'};
 
-function AutoInput({label,value,onChange,placeholder}:{label:string;value:string;onChange:(v:string)=>void;placeholder?:string}){
+function AutoInput({label,value,onChange,placeholder,searchUrl}:{label:string;value:string;onChange:(v:string)=>void;placeholder?:string;searchUrl?:string}){
   const [s,setS]=useState<string[]>([]);const [show,setShow]=useState(false);const t=useRef<any>(null);
-  const h=(v:string)=>{onChange(v);if(t.current)clearTimeout(t.current);if(v.length<2){setS([]);return;}t.current=setTimeout(async()=>{const d=await api(`/bossinfo/search?q=${encodeURIComponent(v)}`);setS(d.results||[]);setShow(true);},250);};
+  const endpoint=searchUrl||'/bossinfo/search';
+  const h=(v:string)=>{onChange(v);if(t.current)clearTimeout(t.current);if(v.length<2){setS([]);return;}t.current=setTimeout(async()=>{const d=await api(`${endpoint}?q=${encodeURIComponent(v)}`);setS(d.results||[]);setShow(true);},250);};
   return <div style={{position:'relative',flex:1,minWidth:140}}>
     <label style={{display:'block',fontSize:11,color:'var(--text-muted)',marginBottom:4,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.05em'}}>{label}</label>
     <input className="inp" value={value} onChange={e=>h(e.target.value)} onBlur={()=>setTimeout(()=>setShow(false),150)} onFocus={()=>s.length>0&&setShow(true)} placeholder={placeholder}/>
@@ -123,8 +124,8 @@ function AnalyzeSection({guildId}:{guildId:string}){
     const d=await api(q);setLoading(false);
     if(d.error)setErr(d.error);
     else{setData(d);setTab('Stats');
-      if(guildId)api(`/bossinfo/db/popular`).catch(()=>{}); // touch popular endpoint so DB logs
-      fetch(`/api/bossinfo/db/popular?guild_id=${guildId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pokemon_key:poke.toLowerCase()})}).catch(()=>{});
+      // Log pokemon lookup to server DB
+      if(guildId) api(`/bossinfo/db/popular?guild_id=${guildId}&pokemon_key=${encodeURIComponent(poke.toLowerCase())}`).catch(()=>{});
     }};
   return <div>
     <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:16,alignItems:'flex-end'}}>
@@ -167,7 +168,7 @@ function DamageSection({guildId}:{guildId:string}){
     <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:16,alignItems:'flex-end'}}>
       <AutoInput label="Attacker" value={atk} onChange={setAtk} placeholder="e.g. Garchomp"/>
       <AutoInput label="Defender" value={def} onChange={setDef} placeholder="e.g. Blissey"/>
-      <AutoInput label="Move" value={mv} onChange={setMv} placeholder="e.g. Earthquake"/>
+      <AutoInput label="Move" value={mv} onChange={setMv} placeholder="e.g. Earthquake" searchUrl="/bossinfo/movesearch"/>
       <label style={{display:'flex',alignItems:'center',gap:5,fontSize:12,color:'var(--text-muted)',cursor:'pointer',paddingTop:16}}><input type="checkbox" checked={z} onChange={e=>setZ(e.target.checked)}/>Z-Move</label>
       <button className="btn btn-primary" onClick={run} disabled={loading} style={{alignSelf:'flex-end',height:38}}>{loading?'…':'Calculate'}</button>
     </div>

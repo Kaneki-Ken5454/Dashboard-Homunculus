@@ -1359,12 +1359,17 @@ function _calcDamage(atkName, defName, moveName, zmove=false) {
   const stab = (atk.types||[]).includes(mtyp) ? 1.5 : 1;
   const eff  = _typeEff(mtyp, def.types||[]);
   if (eff===0) return {error:null,immune:true,min_pct:0,max_pct:0,min_dmg:0,max_dmg:0,effectiveness:0,stab:stab>1,ohko:false,two_hko:false,hits_to_ko:[0,0],category:cat,move_type:mtyp,attacker_speed:_calcStat(as.spe||50),defender_speed:_calcStat(ds.spe||50),is_z:zmove};
-  const afterStab = stab>1 ? Math.floor(base*3/2) : base;
-  const after     = Math.floor(afterStab*eff);
-  const minD = Math.floor(after*85/100), maxD = after;
+  // Showdown-accurate: apply random roll FIRST, then STAB, then type effectiveness
+  const applyMods = (d) => {
+    if (stab > 1) d = Math.floor(d * 3/2);
+    d = Math.floor(d * eff);
+    return d;
+  };
+  const minD = applyMods(Math.floor(base * 85/100));
+  const maxD = applyMods(base);
   const defHp = _calcStat(ds.hp||70,0,31,true);
-  const minP  = defHp ? +((minD/defHp*100).toFixed(1)) : 0;
-  const maxP  = defHp ? +((maxD/defHp*100).toFixed(1)) : 0;
+  const minP  = defHp ? Math.floor(minD/defHp*1000)/10 : 0;
+  const maxP  = defHp ? Math.floor(maxD/defHp*1000)/10 : 0;
   return {error:null,immune:false,min_pct:minP,max_pct:maxP,min_dmg:minD,max_dmg:maxD,defender_hp:defHp,effectiveness:eff,stab:stab>1,ohko:minP>=100,two_hko:minP>=50,hits_to_ko:[maxD?Math.ceil(defHp/maxD):99,minD?Math.ceil(defHp/minD):99],category:cat,move_type:mtyp,is_z:zmove,attacker_speed:_calcStat(as.spe||50),defender_speed:_calcStat(ds.spe||50)};
 }
 
@@ -1430,6 +1435,22 @@ app.get('/api/bossinfo/search', async (req, res) => {
       if (!q || k.includes(q) || _key(v.name||'').includes(q)) {
         results.push(v.name||k);
         if (results.length >= 25) break;
+      }
+    }
+    res.json({results});
+  } catch(e) { res.status(500).json({error:e.message}); }
+});
+
+// GET /api/bossinfo/movesearch?q=earthquake
+app.get('/api/bossinfo/movesearch', async (req, res) => {
+  try {
+    if (!_sdReady) await _sdLoad();
+    const q = (req.query.q||'').toLowerCase().replace(/[\s\-.]/g,'');
+    const mv = _sd.moves||{};
+    const results = [];
+    for (const [k,v] of Object.entries(mv)) {
+      if (!q || k.includes(q) || _key(v.name||'').includes(q)) {
+        if (v.name) { results.push(v.name); if (results.length >= 25) break; }
       }
     }
     res.json({results});
@@ -1512,9 +1533,13 @@ app.get('/api/bossinfo/bestcounters', async (req, res) => {
 
 // BossInfo DB endpoints (saved calcs, popular, EV sets)
 app.get('/api/bossinfo/db/popular', async (req,res) => {
-  const {guild_id}=req.query;
+  const {guild_id, pokemon_key}=req.query;
   if (!guild_id) return res.status(400).json({error:'guild_id required'});
   try {
+    // If pokemon_key provided, log it first
+    if (pokemon_key) {
+      await sql`INSERT INTO bossinfo_log(guild_id, pokemon_key, action, user_id) VALUES(${guild_id},${pokemon_key},'analyze','dashboard')`.catch(()=>{});
+    }
     const rows = await sql`SELECT pokemon_key, COUNT(*)::int AS cnt FROM bossinfo_log WHERE guild_id=${guild_id} GROUP BY pokemon_key ORDER BY cnt DESC LIMIT 10`;
     res.json({popular:rows});
   } catch(e){res.status(500).json({error:e.message});}
