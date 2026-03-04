@@ -214,7 +214,7 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
             </button>
 
             {pickerOpen && (
-              <div style={{ position:'absolute', bottom:'calc(100% + 6px)', left:0, right:0, zIndex:50, background:'var(--elevated)', border:'1px solid var(--border)', borderRadius:10, padding:6, maxHeight:260, display:'flex', flexDirection:'column', boxShadow:'0 8px 32px rgba(0,0,0,0.7)' }}>
+              <div style={{ position:'absolute', bottom:'calc(100% + 6px)', left:0, right:0, zIndex:9000, background:'var(--elevated)', border:'1px solid var(--border)', borderRadius:10, padding:6, maxHeight:260, display:'flex', flexDirection:'column', boxShadow:'0 8px 32px rgba(0,0,0,0.7)' }}>
                 <div style={{ position:'relative', marginBottom:6 }}>
                   <Search size={12} style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', color:'var(--text-faint)' }} />
                   <input className="inp" autoFocus style={{ paddingLeft:26, fontSize:12, borderRadius:7 }} placeholder="Search or type guild ID…" value={pickerSearch} onChange={e => setPickerSearch(e.target.value)}
@@ -285,7 +285,7 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
               <Paintbrush size={11} /> Wallpaper
             </button>
             {showWpPicker && (
-              <div style={{ position:'absolute', top:'calc(100% + 8px)', right:0, zIndex:300,
+              <div style={{ position:'absolute', top:'calc(100% + 8px)', right:0, zIndex:9001,
                 background:'var(--surface)', border:'1px solid var(--border)', borderRadius:12,
                 padding:18, width:310, boxShadow:'0 12px 40px rgba(0,0,0,0.75)' }}>
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>

@@ -305,17 +305,19 @@ async function fetchFullPoke(name:string, attempt=0): Promise<PokeData|null> {
   try {
     const r = await fetch(`/api/bossinfo/analyze?pokemon=${encodeURIComponent(name)}`);
     const d = await r.json();
-    // Server returns 404 if pokemon not found, 500 if data still loading
+    // 404 = genuinely not found, don't retry
     if (r.status === 404) return null;
-    // If server data is still loading (500 or missing stats), retry once after delay
-    if (!r.ok || d.error || !d.stats || !d.stats.hp) {
-      if (attempt < 2) {
-        await new Promise(res => setTimeout(res, 1200));
+    // 5xx or missing name = server still loading data, retry with backoff
+    if (!r.ok || !d.name || d.error) {
+      if (attempt < 3) {
+        await new Promise(res => setTimeout(res, 1000 + attempt * 800));
         return fetchFullPoke(name, attempt + 1);
       }
       return null;
     }
-    return { name:d.name, types:d.types, stats:d.stats as PokeStat, bst:d.bst, abilities:d.abilities, weaknesses:d.weaknesses };
+    // Normalise stats: server returns baseStats or stats
+    const stats = d.stats || d.baseStats || {};
+    return { name:d.name, types:d.types||[], stats:stats as PokeStat, bst:d.bst||0, abilities:d.abilities||[], weaknesses:d.weaknesses||{} };
   } catch {
     if (attempt < 1) {
       await new Promise(res => setTimeout(res, 800));

@@ -521,7 +521,13 @@ app.post('/api/query', async (req, res) => {
           `SELECT * FROM raid_bosses WHERE guild_id=$1 ORDER BY is_active DESC, display_name ASC`,
           [params.guildId]
         ).catch(() => []);
-        return ok(res, rows);
+        // Ensure JSONB fields are parsed objects (not strings) for all drivers
+        const parsed = rows.map(r => ({
+          ...r,
+          counters: typeof r.counters === 'string' ? JSON.parse(r.counters || '[]') : (r.counters || []),
+          types:    typeof r.types    === 'string' ? JSON.parse(r.types    || '[]') : (r.types    || []),
+        }));
+        return ok(res, parsed);
       }
 
       case 'upsertRaidBoss': {
@@ -1588,13 +1594,18 @@ app.get('/api/bossinfo/raidbosses', async (req, res) => {
   const { guild_id, pokemon_key } = req.query;
   if (!guild_id) return res.status(400).json({ error: 'guild_id required' });
   try {
+    const parseRow = r => ({
+      ...r,
+      counters: typeof r.counters === 'string' ? JSON.parse(r.counters || '[]') : (r.counters || []),
+      types:    typeof r.types    === 'string' ? JSON.parse(r.types    || '[]') : (r.types    || []),
+    });
     if (pokemon_key) {
       const pkey = pokemon_key.toLowerCase().replace(/[\s\-']/g, '');
       const rows = await sql`SELECT * FROM raid_bosses WHERE guild_id=${guild_id} AND pokemon_key=${pkey} AND is_active=TRUE LIMIT 1`;
-      return res.json(rows[0] || null);
+      return res.json(rows[0] ? parseRow(rows[0]) : null);
     }
     const rows = await sql`SELECT * FROM raid_bosses WHERE guild_id=${guild_id} AND is_active=TRUE ORDER BY display_name ASC`;
-    res.json({ bosses: rows });
+    res.json({ bosses: rows.map(parseRow) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

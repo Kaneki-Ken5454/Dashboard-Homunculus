@@ -144,10 +144,12 @@ function BossEditor({ boss, guildId, onSave, onClose }: {
   };
 
   return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.72)', zIndex:600,
-      overflowY:'auto', display:'flex', justifyContent:'center', padding:'40px 16px' }}>
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.8)', zIndex:9999,
+      overflowY:'auto', display:'flex', justifyContent:'center', padding:'40px 16px',
+      backdropFilter:'blur(4px)' }}>
       <div style={{ background:'var(--surface)', border:'1px solid var(--border)', borderRadius:14,
-        padding:24, width:'100%', maxWidth:740, height:'fit-content', alignSelf:'flex-start' }}>
+        padding:24, width:'100%', maxWidth:740, height:'fit-content', alignSelf:'flex-start',
+        boxShadow:'0 24px 64px rgba(0,0,0,0.8)' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <Swords size={18} style={{color:'#818cf8'}}/>
