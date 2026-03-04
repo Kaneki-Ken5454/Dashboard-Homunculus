@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
 import {
-  LayoutDashboard, Settings, Terminal, Zap,
+  LayoutDashboard, Settings, Zap,
   Ticket, Shield, Tag, BarChart2, BookOpen,
   RefreshCw, Server, Search, ChevronDown,
-  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle,
+  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle, Users, Swords, Flame,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { discoverAllGuildIds, isConfigured, setDatabaseUrl, type DiscoveredGuild } from './lib/db';
@@ -11,8 +11,6 @@ import Setup from './components/Setup';
 
 import Overview     from './pages/Overview';
 import SettingsPage from './pages/Settings';
-import HelpPage     from './pages/Help';
-import Commands     from './pages/Commands';
 import Triggers     from './pages/Triggers';
 import Tickets      from './pages/Tickets';
 import Moderation   from './pages/Moderation';
@@ -21,13 +19,17 @@ import Votes        from './pages/Votes';
 import InfoTopics   from './pages/InfoTopics';
 import ActivityPage from './pages/Activity';
 import BlacklistPage from './pages/Blacklist';
+import HelpPage     from './pages/Help';
+import MembersPage  from './pages/Members';
+import BossInfoPage from './pages/BossInfo';
+import RaidCalcPage from './pages/RaidCalc';
 
-type Page = 'overview'|'settings'|'commands'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'help';
+type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help'|'bossinfo'|'raidcalc';
 
 const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',      icon: LayoutDashboard },
+  { id: 'members',    label: 'Members',       icon: Users           },
   { id: 'settings',   label: 'Guild Settings', icon: Settings        },
-  { id: 'commands',   label: 'Commands',       icon: Terminal        },
   { id: 'triggers',   label: 'Triggers',       icon: Zap             },
   { id: 'tickets',    label: 'Tickets',        icon: Ticket          },
   { id: 'moderation', label: 'Moderation',     icon: Shield          },
@@ -36,7 +38,9 @@ const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'info',       label: 'Info Topics',    icon: BookOpen        },
   { id: 'activity',   label: 'Activity',       icon: Activity        },
   { id: 'blacklist',  label: 'Blacklist',      icon: ShieldBan       },
-  { id: 'help',       label: 'Help & Commands', icon: HelpCircle      },
+  { id: 'help',       label: 'Help',           icon: HelpCircle      },
+  { id: 'bossinfo',   label: 'BossInfo',       icon: Swords          },
+  { id: 'raidcalc',   label: 'Raid Calculator', icon: Flame           },
 ];
 
 
@@ -70,8 +74,8 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
   );
 
   if (page === 'overview')    return <Overview     guildId={guildId} />;
+  if (page === 'members')     return <MembersPage  guildId={guildId} />;
   if (page === 'settings')    return <SettingsPage guildId={guildId} />;
-  if (page === 'commands')    return <Commands     guildId={guildId} />;
   if (page === 'triggers')    return <Triggers     guildId={guildId} />;
   if (page === 'tickets')     return <Tickets      guildId={guildId} />;
   if (page === 'moderation')  return <Moderation   guildId={guildId} />;
@@ -81,6 +85,8 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
   if (page === 'activity')    return <ActivityPage guildId={guildId} />;
   if (page === 'blacklist')   return <BlacklistPage guildId={guildId} />;
   if (page === 'help')        return <HelpPage      guildId={guildId} />;
+  if (page === 'bossinfo')   return <BossInfoPage  guildId={guildId} />;
+  if (page === 'raidcalc')   return <RaidCalcPage />;
   return null;
 }
 export default function App() {
@@ -139,12 +145,12 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
     <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
 
       {/* ── Sidebar ── */}
-      <aside style={{ width:224, flexShrink:0, background:'var(--sidebar-bg)', borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <aside style={{ width:224, flexShrink:0, background:'#090a14', borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
         {/* Logo */}
         <div style={{ padding:'18px 16px 14px', borderBottom:'1px solid var(--border)' }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{ width:36, height:36, borderRadius:10, background:'linear-gradient(135deg,var(--primary),hsl(239,84%,70%))', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+            <div style={{ width:36, height:36, borderRadius:10, background:'linear-gradient(135deg,#5865f2,#7983f5)', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
               <Server size={17} color="white" />
             </div>
             <div>
@@ -195,13 +201,13 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
                 <div style={{ overflowY:'auto', flex:1 }}>
                   {filteredGuilds.length===0 && pickerSearch && (
                     <button onClick={() => { setGuildId(pickerSearch.trim()); setPickerSearch(''); setPickerOpen(false); }}
-                      style={{ width:'100%', padding:'9px 10px', borderRadius:7, border:'none', background:'var(--primary-subtle)', color:'hsl(239,84%,75%)', cursor:'pointer', fontSize:12, fontFamily:'Lexend, sans-serif', textAlign:'left' }}>
+                      style={{ width:'100%', padding:'9px 10px', borderRadius:7, border:'none', background:'var(--primary-subtle)', color:'#818cf8', cursor:'pointer', fontSize:12, fontFamily:'Lexend, sans-serif', textAlign:'left' }}>
                       Use "{pickerSearch}" →
                     </button>
                   )}
                   {filteredGuilds.map(g => (
                     <button key={g.guild_id} onClick={() => { setGuildId(g.guild_id); setPickerSearch(''); setPickerOpen(false); }}
-                      style={{ width:'100%', padding:'8px 10px', borderRadius:7, border:'none', background: g.guild_id===guildId ? 'var(--primary-subtle)' : 'transparent', color: g.guild_id===guildId ? 'hsl(239,84%,75%)' : 'var(--text)', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
+                      style={{ width:'100%', padding:'8px 10px', borderRadius:7, border:'none', background: g.guild_id===guildId ? 'var(--primary-subtle)' : 'transparent', color: g.guild_id===guildId ? '#818cf8' : 'var(--text)', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
                       <div style={{ fontFamily:'JetBrains Mono, monospace', fontSize:11, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{g.guild_id}</div>
                       <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'Lexend, sans-serif' }}>{g.source} · {g.count} rows</div>
                     </button>
