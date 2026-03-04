@@ -202,20 +202,6 @@ async function ensureTables() {
     `ALTER TABLE triggers ADD COLUMN IF NOT EXISTS embed_color TEXT DEFAULT '#5865F2'`,
     // Ensure violations column exists on blacklist_data (may be missing on older bot installs)
     `ALTER TABLE blacklist_data ADD COLUMN IF NOT EXISTS violations JSONB DEFAULT '{}'`,
-    // Raid boss entries managed from dashboard
-    `CREATE TABLE IF NOT EXISTS raid_bosses (
-      id          BIGSERIAL PRIMARY KEY,
-      guild_id    TEXT NOT NULL,
-      pokemon_key TEXT NOT NULL,
-      display_name TEXT NOT NULL DEFAULT '',
-      types       JSONB DEFAULT '[]',
-      notes       TEXT DEFAULT '',
-      counters    JSONB DEFAULT '[]',
-      is_active   BOOLEAN DEFAULT TRUE,
-      created_at  TIMESTAMPTZ DEFAULT NOW(),
-      updated_at  TIMESTAMPTZ DEFAULT NOW(),
-      UNIQUE(guild_id, pokemon_key)
-    )`,
     // Migrate guild_id BIGINT → TEXT for blacklist_data.
     // Plain ALTER with USING works if column is BIGINT; if already TEXT Postgres errors
     // and the catch below silently ignores it — so this is safe either way.
@@ -509,46 +495,6 @@ app.post('/api/query', async (req, res) => {
           sql(`SELECT COALESCE(SUM(message_count),0)::int AS tot FROM guild_members WHERE guild_id=$1`, [params.guildId]).then(r => r[0]?.tot ?? 0),
         ]);
         return ok(res, { activeAll, active7d, active24h, totalMsgs });
-      }
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RAID BOSS MANAGEMENT (dashboard → query endpoint)
-// ─────────────────────────────────────────────────────────────────────────────
-
-      case 'getRaidBosses': {
-        const rows = await sql(
-          `SELECT * FROM raid_bosses WHERE guild_id=$1 ORDER BY is_active DESC, display_name ASC`,
-          [params.guildId]
-        ).catch(() => []);
-        return ok(res, rows);
-      }
-
-      case 'upsertRaidBoss': {
-        const d = params.data;
-        const pkey = (d.pokemon_key||d.display_name||'').toLowerCase().replace(/[\s\-\']/g,'');
-        const rows = await sql(
-          `INSERT INTO raid_bosses (guild_id, pokemon_key, display_name, types, notes, counters, is_active)
-           VALUES ($1,$2,$3,$4::jsonb,$5,$6::jsonb,$7)
-           ON CONFLICT (guild_id, pokemon_key) DO UPDATE SET
-             display_name=$3, types=$4::jsonb, notes=$5, counters=$6::jsonb,
-             is_active=$7, updated_at=NOW()
-           RETURNING id`,
-          [params.guildId, pkey, d.display_name||pkey, JSON.stringify(d.types||[]),
-           d.notes||'', JSON.stringify(d.counters||[]), d.is_active!==false]
-        ).catch(() => []);
-        return ok(res, { success:true, id: rows[0]?.id });
-      }
-
-      case 'deleteRaidBoss': {
-        await sql(`DELETE FROM raid_bosses WHERE id=$1 AND guild_id=$2`, [params.id, params.guildId]).catch(()=>{});
-        return ok(res, { success:true });
-      }
-
-      case 'setRaidBossActive': {
-        await sql(`UPDATE raid_bosses SET is_active=$1, updated_at=NOW() WHERE id=$2 AND guild_id=$3`,
-          [params.active, params.id, params.guildId]).catch(()=>{});
-        return ok(res, { success:true });
       }
 
       // ── Blacklist ──
@@ -1506,6 +1452,33 @@ app.get('/api/bossinfo/analyze', async (req, res) => {
   } catch(e) { res.status(500).json({error:e.message}); }
 });
 
+// GET /api/bossinfo/weakness?pokemon=X[&tera=Y]
+app.get('/api/bossinfo/weakness', async (req, res) => {
+  const {pokemon, tera} = req.query;
+  if (!pokemon) return res.status(400).json({error:'pokemon required'});
+  try {
+    if (!_sdReady) await _sdLoad();
+    const data = await _fullAnalysis(pokemon);
+    if (!data) return res.status(404).json({error:`${pokemon} not found. Check the spelling.`});
+    const result = {
+      name: data.name,
+      types: data.types,
+      abilities: data.abilities,
+      weaknesses: data.weaknesses,
+    };
+    if (tera) {
+      const valid = ['Normal','Fire','Water','Grass','Electric','Ice','Fighting','Poison',
+        'Ground','Flying','Psychic','Bug','Rock','Ghost','Dragon','Dark','Steel','Fairy'];
+      const tt = valid.find(t => t.toLowerCase() === tera.toLowerCase());
+      if (tt) {
+        result.tera_type = tt;
+        result.weaknesses = _weaknessChart([tt], data.abilities[0]||'');
+      }
+    }
+    res.json(result);
+  } catch(e) { res.status(500).json({error: e.message}); }
+});
+
 // GET /api/bossinfo/damage?attacker=X&defender=Y&move=Z[&zmove=true]
 app.get('/api/bossinfo/damage', async (req, res) => {
   const {attacker,defender,move,zmove} = req.query;
@@ -1562,21 +1535,6 @@ app.get('/api/bossinfo/bestcounters', async (req, res) => {
     results.sort((a,b)=>b.score-a.score);
     res.json({pokemon,counters:results.slice(0,3)});
   } catch(e) { res.status(500).json({error:e.message}); }
-});
-
-// GET /api/bossinfo/raidbosses?guild_id=X — for bot to fetch raid boss list
-app.get('/api/bossinfo/raidbosses', async (req, res) => {
-  const { guild_id, pokemon_key } = req.query;
-  if (!guild_id) return res.status(400).json({ error: 'guild_id required' });
-  try {
-    if (pokemon_key) {
-      const pkey = pokemon_key.toLowerCase().replace(/[\s\-']/g, '');
-      const rows = await sql`SELECT * FROM raid_bosses WHERE guild_id=${guild_id} AND pokemon_key=${pkey} AND is_active=TRUE LIMIT 1`;
-      return res.json(rows[0] || null);
-    }
-    const rows = await sql`SELECT * FROM raid_bosses WHERE guild_id=${guild_id} AND is_active=TRUE ORDER BY display_name ASC`;
-    res.json({ bosses: rows });
-  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // BossInfo DB endpoints (saved calcs, popular, EV sets)

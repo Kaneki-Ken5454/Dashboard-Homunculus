@@ -300,15 +300,29 @@ function mkPanel(): PanelState {
   };
 }
 
-async function fetchFullPoke(name:string): Promise<PokeData|null> {
+async function fetchFullPoke(name:string, attempt=0): Promise<PokeData|null> {
   if (!name.trim()) return null;
   try {
     const r = await fetch(`/api/bossinfo/analyze?pokemon=${encodeURIComponent(name)}`);
-    if (!r.ok) return null;
     const d = await r.json();
-    if (d.error || !d.stats) return null;
+    // Server returns 404 if pokemon not found, 500 if data still loading
+    if (r.status === 404) return null;
+    // If server data is still loading (500 or missing stats), retry once after delay
+    if (!r.ok || d.error || !d.stats || !d.stats.hp) {
+      if (attempt < 2) {
+        await new Promise(res => setTimeout(res, 1200));
+        return fetchFullPoke(name, attempt + 1);
+      }
+      return null;
+    }
     return { name:d.name, types:d.types, stats:d.stats as PokeStat, bst:d.bst, abilities:d.abilities, weaknesses:d.weaknesses };
-  } catch { return null; }
+  } catch {
+    if (attempt < 1) {
+      await new Promise(res => setTimeout(res, 800));
+      return fetchFullPoke(name, attempt + 1);
+    }
+    return null;
+  }
 }
 
 async function fetchMoveData(moveName:string): Promise<{bp:number;cat:string;type:string}|null> {
@@ -363,7 +377,7 @@ function PokemonPanel({ panel, onChange, side }: {
 
       <div style={{fontSize:10,fontWeight:800,color:'#5865f2',textTransform:'uppercase',letterSpacing:'0.09em'}}>
         Pokémon {side==='left'?'1':'2'}
-        {panel.loading && <span style={{marginLeft:8,fontSize:10,color:'#6b7280'}}>loading…</span>}
+        {panel.loading && <span style={{marginLeft:8,fontSize:10,color:'#fbbf24'}}>⏳ Loading…</span>}
         {d && <span style={{marginLeft:8,fontSize:10,color:'#4ade80'}}>✓ {d.name}</span>}
       </div>
 
@@ -587,10 +601,18 @@ function WeaknessSection() {
     if (!poke.trim()) return;
     setLoad(true); setErr(''); setData(null);
     try {
-      const r  = await fetch(`/api/bossinfo/weakness?pokemon=${encodeURIComponent(poke)}${tera?`&tera=${encodeURIComponent(tera)}`:''}`);
-      const d  = await r.json();
-      if (d.error) setErr(d.error); else setData(d);
-    } catch { setErr('Network error'); }
+      const r = await fetch(
+        `/api/bossinfo/weakness?pokemon=${encodeURIComponent(poke)}${tera ? `&tera=${encodeURIComponent(tera)}` : ''}`
+      );
+      const d = await r.json();
+      if (!r.ok || d.error) {
+        setErr(d.error || `"${poke}" not found. Check the spelling.`);
+      } else {
+        setData(d);
+      }
+    } catch {
+      setErr('Cannot reach the API server. Ensure the server is running on port 3001.');
+    }
     setLoad(false);
   };
 
@@ -711,7 +733,8 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
     if (atkData) setAtkRaw(p => ({...p, data:atkData, loading:false}));
     if (defData) setDefRaw(p => ({...p, data:defData, loading:false}));
     if (!atkData || !defData) {
-      setErr(`Could not load data for "${!atkData ? atk.name : def.name}". Check the spelling.`);
+      const missing = !atkData ? atk.name : def.name;
+      setErr(`Could not load Pokémon data for "${missing}". The server may still be loading — please wait a moment and try again.`);
       setRun(false); return;
     }
 
@@ -763,10 +786,35 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
     setRun(false);
   };
 
+  const [serverReady, setServerReady] = useState<boolean|null>(null);
+  useEffect(() => {
+    // Quick server health check
+    fetch('/api/bossinfo/search?q=pikachu')
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(d => setServerReady(d.results?.length >= 0))
+      .catch(() => setServerReady(false));
+  }, []);
+
   const TABS = [{id:'calc',label:'⚔️ Damage Calculator'},{id:'weakness',label:'🛡️ Weakness Lookup'}];
 
   return (
     <div className="animate-fade" style={{maxWidth:960}}>
+      {/* Server status banner */}
+      {serverReady === false && (
+        <div style={{background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',
+          borderRadius:8,padding:'9px 14px',marginBottom:14,fontSize:12,color:'#fbbf24',
+          display:'flex',alignItems:'center',gap:8}}>
+          ⚠️ <span>API server not reachable on port 3001. Start the dashboard server to use BossInfo features.</span>
+        </div>
+      )}
+      {serverReady === true && (
+        <div style={{background:'rgba(74,222,128,0.08)',border:'1px solid rgba(74,222,128,0.2)',
+          borderRadius:8,padding:'7px 14px',marginBottom:14,fontSize:11,color:'#4ade80',
+          display:'flex',alignItems:'center',gap:8}}>
+          ✓ <span>BossInfo server connected — Showdown data ready</span>
+        </div>
+      )}
+
       {/* Tabs */}
       <div style={{display:'flex',gap:0,marginBottom:20,borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
         {TABS.map(t => (
