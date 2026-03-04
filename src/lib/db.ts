@@ -293,3 +293,13 @@ export async function markReactionRoleSynced(id: string) {
 export async function markButtonRoleSynced(id: string) {
   return apiCall('markButtonRoleSynced', { id });
 }
+
+// ── Log channel config ────────────────────────────────────────────────────────
+export type LogChannelConfig = Record<string, string>; // log_type → channel_id string
+
+export async function getLogChannels(guildId: string): Promise<LogChannelConfig> {
+  return apiCall<LogChannelConfig>('getLogChannels', { guildId });
+}
+export async function setLogChannels(guildId: string, config: LogChannelConfig) {
+  return apiCall('setLogChannels', { guildId, config });
+}

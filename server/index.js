@@ -380,6 +380,27 @@ app.post('/api/query', async (req, res) => {
         return ok(res, rows[0] ?? null);
       }
 
+      case 'getLogChannels': {
+        const rows = await sql(
+          `SELECT log_channels FROM guild_config WHERE guild_id = $1`,
+          [params.guildId]
+        ).catch(() => []);
+        const raw = rows[0]?.log_channels ?? {};
+        const parsed = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw || {});
+        return ok(res, parsed);
+      }
+
+      case 'setLogChannels': {
+        const cfg = params.config || {};
+        await sql(
+          `INSERT INTO guild_config (guild_id, log_channels)
+           VALUES ($1, $2::jsonb)
+           ON CONFLICT (guild_id) DO UPDATE SET log_channels = EXCLUDED.log_channels`,
+          [params.guildId, JSON.stringify(cfg)]
+        ).catch(() => {});
+        return ok(res, { success: true });
+      }
+
       case 'upsertGuildSetting': {
         const d = params.data;
         await sql(
