@@ -268,7 +268,14 @@ try {
 } catch {}
 
 // ── Health check ──────────────────────────────────────────────────────────────
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/api/health', (_req, res) => {
+  // Kick off Showdown data load in background (no-op if already loaded/loading)
+  if (!_sdReady && !_sdLoading) // Pre-warm Showdown data immediately so first request is fast
+_sdLoad().then(() => {
+  if (_sdReady) console.log('✅ BossInfo Showdown data pre-warmed.');
+}).catch(e => console.error('⚠️  BossInfo warm-up failed:', e.message));
+  res.json({ ok: true, sdReady: _sdReady, sdLoading: _sdLoading });
+});
 
 // ── Guild Discovery ───────────────────────────────────────────────────────────
 app.post('/api/query', async (req, res) => {
@@ -1501,6 +1508,8 @@ app.get('/api/bossinfo/analyze', async (req, res) => {
   const {pokemon, tera} = req.query;
   if (!pokemon) return res.status(400).json({error:'pokemon required'});
   try {
+    // Ensure data is loaded (fast if DB-cached, slow on first CDN fetch)
+    if (!_sdReady) await _sdLoad();
     const data = await _fullAnalysis(pokemon);
     if (!data) return res.status(404).json({error:`${pokemon} not found in Showdown data`});
     if (tera) {

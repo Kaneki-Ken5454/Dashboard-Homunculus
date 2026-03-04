@@ -613,7 +613,7 @@ function WeaknessSection() {
         setData(d);
       }
     } catch {
-      setErr('Cannot reach the API server. Ensure the server is running on port 3001.');
+      setErr('API server not reachable. Check server deployment.');
     }
     setLoad(false);
   };
@@ -736,7 +736,7 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
     if (defData) setDefRaw(p => ({...p, data:defData, loading:false}));
     if (!atkData || !defData) {
       const missing = !atkData ? atk.name : def.name;
-      setErr(`Could not load Pokémon data for "${missing}". The server may still be loading — please wait a moment and try again.`);
+      setErr(`Could not load data for "${missing}". The server may still be initialising Showdown data — try again in 10 seconds.`);
       setRun(false); return;
     }
 
@@ -791,10 +791,30 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
   const [serverReady, setServerReady] = useState<boolean|null>(null);
   useEffect(() => {
     // Quick server health check
-    fetch('/api/health')
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(d => setServerReady(d.ok === true))
-      .catch(() => setServerReady(false));
+    // Check health - if sdReady is false, poll until data is loaded (max 30s)
+    let attempts = 0;
+    const checkHealth = async () => {
+      try {
+        const r = await fetch('/api/health');
+        if (!r.ok) { setServerReady(false); return; }
+        const d = await r.json();
+        if (d.ok && d.sdReady) { setServerReady(true); return; }
+        if (d.ok && (d.sdLoading || attempts < 10)) {
+          // Server is up but still loading Showdown data — retry
+          setServerReady(null); // keep spinner
+          attempts++;
+          setTimeout(checkHealth, 2000);
+        } else if (d.ok) {
+          // Server up, data not loading but not ready either — trigger load
+          fetch('/api/bossinfo/search?q=pika').catch(() => {});
+          setServerReady(null);
+          setTimeout(checkHealth, 3000);
+        } else {
+          setServerReady(false);
+        }
+      } catch { setServerReady(false); }
+    };
+    checkHealth();
   }, []);
 
   const TABS = [{id:'calc',label:'⚔️ Damage Calculator'},{id:'weakness',label:'🛡️ Weakness Lookup'}];
@@ -806,14 +826,22 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
         <div style={{background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',
           borderRadius:8,padding:'9px 14px',marginBottom:14,fontSize:12,color:'#fbbf24',
           display:'flex',alignItems:'center',gap:8}}>
-          ⚠️ <span>Dashboard API server not reachable — make sure the Express server is running alongside Vite.</span>
+          ⚠️ <span>API server not reachable. If hosting on Vercel, ensure the server app is deployed and accessible.</span>
+        </div>
+      )}
+      {serverReady === null && (
+        <div style={{background:'rgba(99,102,241,0.08)',border:'1px solid rgba(99,102,241,0.2)',
+          borderRadius:8,padding:'9px 14px',marginBottom:14,fontSize:12,color:'#818cf8',
+          display:'flex',alignItems:'center',gap:8}}>
+          <span style={{width:12,height:12,border:'2px solid #818cf8',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 0.8s linear infinite',flexShrink:0}}/>
+          <span>Loading Pokémon Showdown data… first load may take 10–15 seconds.</span>
         </div>
       )}
       {serverReady === true && (
         <div style={{background:'rgba(74,222,128,0.08)',border:'1px solid rgba(74,222,128,0.2)',
           borderRadius:8,padding:'7px 14px',marginBottom:14,fontSize:11,color:'#4ade80',
           display:'flex',alignItems:'center',gap:8}}>
-          ✓ <span>BossInfo server connected — Showdown data ready</span>
+          ✓ <span>Showdown data ready</span>
         </div>
       )}
 
