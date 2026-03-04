@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Settings, Zap,
   Ticket, Shield, Tag, BarChart2, BookOpen,
   RefreshCw, Server, Search, ChevronDown,
-  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle, Users, Swords,
+  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle, Users, Swords, Paintbrush, X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { discoverAllGuildIds, isConfigured, setDatabaseUrl, type DiscoveredGuild } from './lib/db';
@@ -21,7 +21,7 @@ import ActivityPage from './pages/Activity';
 import BlacklistPage from './pages/Blacklist';
 import HelpPage     from './pages/Help';
 import MembersPage  from './pages/Members';
-import BossInfoPage from './pages/BossInfo';
+import BossInfoPage   from './pages/BossInfo';
 import RaidBossesPage from './pages/RaidBosses';
 
 type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help'|'bossinfo'|'raidbosses';
@@ -85,7 +85,7 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
   if (page === 'activity')    return <ActivityPage guildId={guildId} />;
   if (page === 'blacklist')   return <BlacklistPage guildId={guildId} />;
   if (page === 'help')        return <HelpPage      guildId={guildId} />;
-  if (page === 'bossinfo')   return <BossInfoPage  guildId={guildId} />;
+  if (page === 'bossinfo')   return <BossInfoPage   guildId={guildId} />;
   if (page === 'raidbosses') return <RaidBossesPage guildId={guildId} />;
   return null;
 }
@@ -137,15 +137,37 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
     ? guilds.filter(g => g.guild_id.includes(pickerSearch))
     : guilds;
 
+  // ── Wallpaper ──────────────────────────────────────────────────────
+  const [wallpaper, setWallpaper] = useState<string>(() => {
+    try { return localStorage.getItem('dash_wallpaper') || ''; } catch { return ''; }
+  });
+  const [wallpaperDim, setWallpaperDim] = useState<number>(() => {
+    try { return Number(localStorage.getItem('dash_wallpaper_dim') ?? '65'); } catch { return 65; }
+  });
+  const [showWpPicker, setShowWpPicker] = useState(false);
+
+  const saveWallpaper = (url: string, dim: number) => {
+    setWallpaper(url); setWallpaperDim(dim);
+    try { localStorage.setItem('dash_wallpaper', url); localStorage.setItem('dash_wallpaper_dim', String(dim)); } catch {}
+  };
+
   const currentNav = NAV.find(n => n.id === page)!;
 
   // PageComp is now a proper component defined outside Dashboard (see bottom of file)
 
   return (
-    <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
+    <div style={{ display:'flex', height:'100vh', overflow:'hidden', position:'relative' }}>
+      {/* Wallpaper */}
+      {wallpaper && <>
+        <div style={{ position:'fixed', inset:0, zIndex:0, pointerEvents:'none',
+          backgroundImage:`url(${wallpaper})`, backgroundSize:'cover', backgroundPosition:'center' }}/>
+        <div style={{ position:'fixed', inset:0, zIndex:0, pointerEvents:'none',
+          background:`rgba(9,10,20,${wallpaperDim/100})` }}/>
+      </>}
+      <div style={{ position:'relative', zIndex:1, display:'flex', width:'100%', height:'100%', overflow:'hidden' }}>
 
       {/* ── Sidebar ── */}
-      <aside style={{ width:224, flexShrink:0, background:'#090a14', borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <aside style={{ width:224, flexShrink:0, background: wallpaper ? 'rgba(9,10,20,0.88)' : '#090a14', backdropFilter: wallpaper ? 'blur(16px)' : undefined, borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
         {/* Logo */}
         <div style={{ padding:'18px 16px 14px', borderBottom:'1px solid var(--border)' }}>
@@ -238,7 +260,7 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
 
       {/* ── Main ── */}
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
-        <header style={{ height:56, flexShrink:0, borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 24px', background:'var(--bg)' }}>
+        <header style={{ height:56, flexShrink:0, borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 24px', background: wallpaper ? 'rgba(11,12,24,0.82)' : 'var(--bg)', backdropFilter: wallpaper ? 'blur(16px)' : undefined }}>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             {(() => { const Icon = currentNav.icon; return <Icon size={16} style={{ color:'var(--text-muted)' }} />; })()}
             <div style={{ fontSize:14, fontWeight:700, color:'var(--text)' }}>{currentNav.label}</div>
@@ -252,10 +274,69 @@ function Dashboard({ onDisconnect }: { onDisconnect: () => void }) {
               NeonDB
             </div>
           </div>
+          {/* Wallpaper picker */}
+          <div style={{ position:'relative' }}>
+            <button onClick={() => setShowWpPicker(p => !p)}
+              style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px',
+                border:'1px solid var(--border)', borderRadius:7,
+                background: wallpaper ? 'var(--primary-subtle)' : 'var(--elevated)',
+                color: wallpaper ? '#818cf8' : 'var(--text-muted)',
+                cursor:'pointer', fontSize:11, fontFamily:'Lexend, sans-serif' }}>
+              <Paintbrush size={11} /> Wallpaper
+            </button>
+            {showWpPicker && (
+              <div style={{ position:'absolute', top:'calc(100% + 8px)', right:0, zIndex:300,
+                background:'var(--surface)', border:'1px solid var(--border)', borderRadius:12,
+                padding:18, width:310, boxShadow:'0 12px 40px rgba(0,0,0,0.75)' }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+                  <span style={{ fontSize:13, fontWeight:700, color:'var(--text)' }}>🖼️ Wallpaper</span>
+                  <button onClick={() => setShowWpPicker(false)}
+                    style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', padding:2 }}>
+                    <X size={14}/>
+                  </button>
+                </div>
+                <label style={{ fontSize:11, color:'var(--text-muted)', display:'block', marginBottom:5, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.06em' }}>Image URL</label>
+                <input className="inp" style={{ fontSize:12, marginBottom:10 }}
+                  placeholder="https://… or leave blank to remove"
+                  defaultValue={wallpaper}
+                  onBlur={e => saveWallpaper(e.target.value.trim(), wallpaperDim)}
+                />
+                <label style={{ fontSize:11, color:'var(--text-muted)', display:'block', marginBottom:5, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.06em' }}>
+                  Overlay Dim: {wallpaperDim}%
+                </label>
+                <input type="range" min={0} max={92} value={wallpaperDim}
+                  onChange={e => saveWallpaper(wallpaper, Number(e.target.value))}
+                  style={{ width:'100%', marginBottom:12, accentColor:'#5865f2' }}
+                />
+                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:8, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.06em' }}>Presets</div>
+                <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
+                  {([
+                    ['None', ''],
+                    ['Space', 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=1920&q=80'],
+                    ['Forest', 'https://images.unsplash.com/photo-1448375240586-882707db888b?w=1920&q=80'],
+                    ['City Night', 'https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b?w=1920&q=80'],
+                    ['Aurora', 'https://images.unsplash.com/photo-1531366936337-7c912a4589a7?w=1920&q=80'],
+                    ['Ocean', 'https://images.unsplash.com/photo-1505118380757-91f5f5632de0?w=1920&q=80'],
+                    ['Mountains', 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=1920&q=80'],
+                  ] as [string,string][]).map(([label, url]) => (
+                    <button key={label} onClick={() => saveWallpaper(url, wallpaperDim)}
+                      style={{ padding:'4px 10px', borderRadius:6, cursor:'pointer',
+                        border:`1px solid ${wallpaper===url?'#818cf8':'var(--border)'}`,
+                        background: wallpaper===url?'var(--primary-subtle)':'var(--elevated)',
+                        color: wallpaper===url?'#818cf8':'var(--text-muted)',
+                        fontSize:11, fontFamily:'Lexend, sans-serif' }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </header>
         <main style={{ flex:1, overflowY:'auto', padding:'22px 24px' }}>
           <PageContent page={page} guildId={guildId} discovering={discovering} guilds={guilds} discoverErr={discoverErr} onRescan={discover} />
         </main>
+      </div>
       </div>
     </div>
   );

@@ -662,18 +662,24 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
   const setAtk = (p: Partial<PanelState>) => { setAtkRaw(prev => ({...prev,...p})); setResult(null); setErr(''); };
   const setDef = (p: Partial<PanelState>) => { setDefRaw(prev => ({...prev,...p})); setResult(null); setErr(''); };
 
-  // Auto-load pokemon data when name changes
+  // Auto-load pokemon data — use refs so we only fetch when the NAME itself changes,
+  // not on every render triggered by other state (EVs, natures, etc.)
+  const loadedAtkName = useRef('');
+  const loadedDefName = useRef('');
+
   useEffect(() => {
-    if (!atk.name) return;
-    setAtk({ loading:true, data:null });
+    if (!atk.name || atk.name === loadedAtkName.current) return;
+    loadedAtkName.current = atk.name;
+    setAtkRaw(p => ({...p, loading:true, data:null}));
     fetchFullPoke(atk.name).then(data => {
       setAtkRaw(p => ({...p, data, loading:false}));
     });
   }, [atk.name]);
 
   useEffect(() => {
-    if (!def.name) return;
-    setDef({ loading:true, data:null });
+    if (!def.name || def.name === loadedDefName.current) return;
+    loadedDefName.current = def.name;
+    setDefRaw(p => ({...p, loading:true, data:null}));
     fetchFullPoke(def.name).then(data => {
       setDefRaw(p => ({...p, data, loading:false}));
     });
@@ -698,10 +704,16 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
     if (!atk.name || !def.name || !atk.moveName) {
       setErr('Enter Pokémon for both sides and a move to calculate.'); return;
     }
-    if (!atk.data || !def.data) {
-      setErr('Pokémon data is still loading — please wait a moment.'); return;
-    }
     setErr(''); setRun(true); setResult(null);
+    // Fetch on-demand in case data wasn't auto-loaded yet
+    const atkData = atk.data ?? await fetchFullPoke(atk.name);
+    const defData = def.data ?? await fetchFullPoke(def.name);
+    if (atkData) setAtkRaw(p => ({...p, data:atkData, loading:false}));
+    if (defData) setDefRaw(p => ({...p, data:defData, loading:false}));
+    if (!atkData || !defData) {
+      setErr(`Could not load data for "${!atkData ? atk.name : def.name}". Check the spelling.`);
+      setRun(false); return;
+    }
 
     try {
       // Get server-validated move BP and metadata
@@ -717,10 +729,10 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
       // Work backwards to get bp, then run our own calc with custom EVs
       const cat = srv.category as string;
       const mtyp = srv.move_type as string;
-      const atkStatDefault = cat==='Physical' ? calcStat(atk.data.stats.atk,252) : calcStat(atk.data.stats.spa,252);
-      const defStatDefault = cat==='Physical' ? calcStat(def.data.stats.def,0)   : calcStat(def.data.stats.spd,0);
-      const srvEff = typeEff(mtyp, def.data.types);
-      const srvStab = atk.data.types.includes(mtyp) ? 1.5 : 1;
+      const atkStatDefault = cat==='Physical' ? calcStat(atkData.stats.atk,252) : calcStat(atkData.stats.spa,252);
+      const defStatDefault = cat==='Physical' ? calcStat(defData.stats.def,0)   : calcStat(defData.stats.spd,0);
+      const srvEff = typeEff(mtyp, defData.types);
+      const srvStab = atkData.types.includes(mtyp) ? 1.5 : 1;
       // Unwrap mods from server's maxD: maxD has stab+eff applied
       let baseNoMods = srv.max_dmg;
       if (srvStab > 1) baseNoMods = Math.round(baseNoMods / srvStab);
@@ -730,7 +742,7 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
       const recoveredBP = Math.max(1, Math.round((baseNoMods - 2) * 50 * defStatDefault / (42 * atkStatDefault)));
 
       const res = runCalc({
-        atkPoke: atk.data, defPoke: def.data,
+        atkPoke: atkData, defPoke: defData,
         moveName: atk.moveName, bp: recoveredBP, category: cat, moveType: mtyp,
         atkEvs: atk.evs, defEvs: def.evs, atkIvs: atk.ivs, defIvs: def.ivs,
         atkNature: atk.nature, defNature: def.nature,

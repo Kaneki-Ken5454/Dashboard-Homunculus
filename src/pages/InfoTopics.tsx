@@ -234,32 +234,38 @@ export default function InfoTopicsPage({ guildId }: Props) {
     } catch(e) { setError((e as Error).message); } finally { setSaving(false); }
   };
 
-  if (loading) return (
-    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:300}}>
-      <div style={{width:32,height:32,border:'2px solid var(--border)',borderTopColor:'var(--primary)',borderRadius:'50%',animation:'spin 0.8s linear infinite'}} />
-    </div>
-  );
-
-  const draftCount=topics.filter(t=>!t.is_published).length;
-  const pubCount=topics.filter(t=>t.is_published).length;
+  // ── These hooks MUST be before any early return (Rules of Hooks) ──
+  const draftCount = topics.filter(t => !t.is_published).length;
+  const pubCount   = topics.filter(t =>  t.is_published).length;
 
   const filteredTopics = useMemo(() => {
     let list = topics;
     if (statusFilter === 'published') list = list.filter(t => t.is_published);
-    if (statusFilter === 'draft') list = list.filter(t => !t.is_published);
+    if (statusFilter === 'draft')     list = list.filter(t => !t.is_published);
     if (search.trim()) {
       const q = search.toLowerCase();
-      list = list.filter(t => t.name.toLowerCase().includes(q) || t.topic_id?.toLowerCase().includes(q) || t.embed_description?.toLowerCase().includes(q));
+      list = list.filter(t =>
+        t.name.toLowerCase().includes(q) ||
+        t.topic_id?.toLowerCase().includes(q) ||
+        t.embed_description?.toLowerCase().includes(q)
+      );
     }
     return list;
   }, [topics, statusFilter, search]);
 
   const groupedFiltered = useMemo(() => filteredTopics.reduce<Record<string,Record<string,InfoTopic[]>>>((acc,t) => {
-    const sec=t.section||'general', sub=t.subcategory||'General';
-    if (!acc[sec]) acc[sec]={};
-    if (!acc[sec][sub]) acc[sec][sub]=[];
-    acc[sec][sub].push(t); return acc;
+    const sec = t.section||'general', sub = t.subcategory||'General';
+    if (!acc[sec]) acc[sec] = {};
+    if (!acc[sec][sub]) acc[sec][sub] = [];
+    acc[sec][sub].push(t);
+    return acc;
   }, {}), [filteredTopics]);
+
+  if (loading) return (
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:300}}>
+      <div style={{width:32,height:32,border:'2px solid var(--border)',borderTopColor:'var(--primary)',borderRadius:'50%',animation:'spin 0.8s linear infinite'}} />
+    </div>
+  );
 
   return (
     <div className="animate-fade">
