@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Settings, Zap,
   Ticket, Shield, Tag, BarChart2, BookOpen,
   RefreshCw, Server, Search, ChevronDown,
-  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle, Users, Swords, Flame,
+  Database, Loader2, LogOut, Activity, ShieldBan, HelpCircle, Users, Swords, Flame, Crosshair,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { discoverAllGuildIds, isConfigured, setDatabaseUrl, type DiscoveredGuild } from './lib/db';
@@ -23,8 +23,9 @@ import HelpPage     from './pages/Help';
 import MembersPage  from './pages/Members';
 import BossInfoPage from './pages/BossInfo';
 import RaidCalcPage from './pages/RaidCalc';
+import BossCounter  from './pages/BossCounter';
 
-type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help'|'bossinfo'|'raidcalc';
+type Page = 'overview'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'members'|'help'|'bossinfo'|'raidcalc'|'bosscounter';
 
 const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'overview',    label: 'Overview',      icon: LayoutDashboard },
@@ -40,7 +41,8 @@ const NAV: { id: Page; label: string; icon: LucideIcon }[] = [
   { id: 'blacklist',  label: 'Blacklist',      icon: ShieldBan       },
   { id: 'help',       label: 'Help',           icon: HelpCircle      },
   { id: 'bossinfo',   label: 'BossInfo',       icon: Swords          },
-  { id: 'raidcalc',   label: 'Raid Calculator', icon: Flame           },
+  { id: 'raidcalc',     label: 'Raid Calculator', icon: Flame           },
+  { id: 'bosscounter',  label: 'Boss Counter',    icon: Crosshair       },
 ];
 
 
@@ -87,6 +89,7 @@ function PageContent({ page, guildId, discovering, guilds, discoverErr, onRescan
   if (page === 'help')        return <HelpPage      guildId={guildId} />;
   if (page === 'bossinfo')   return <BossInfoPage  guildId={guildId} />;
   if (page === 'raidcalc')   return <RaidCalcPage />;
+  if (page === 'bosscounter') return <BossCounter guildId={guildId} />;
   return null;
 }
 export default function App() {
