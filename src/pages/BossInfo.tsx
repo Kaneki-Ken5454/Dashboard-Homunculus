@@ -789,9 +789,9 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
   const [serverReady, setServerReady] = useState<boolean|null>(null);
   useEffect(() => {
     // Quick server health check
-    fetch('/api/bossinfo/search?q=pikachu')
+    fetch('/api/health')
       .then(r => r.ok ? r.json() : Promise.reject())
-      .then(d => setServerReady(d.results?.length >= 0))
+      .then(d => setServerReady(d.ok === true))
       .catch(() => setServerReady(false));
   }, []);
 
@@ -804,7 +804,7 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
         <div style={{background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',
           borderRadius:8,padding:'9px 14px',marginBottom:14,fontSize:12,color:'#fbbf24',
           display:'flex',alignItems:'center',gap:8}}>
-          ⚠️ <span>API server not reachable on port 3001. Start the dashboard server to use BossInfo features.</span>
+          ⚠️ <span>Dashboard API server not reachable — make sure the Express server is running alongside Vite.</span>
         </div>
       )}
       {serverReady === true && (
