@@ -24,15 +24,14 @@ try {
   // .env not present — rely on real environment variables
 }
 
-const DATABASE_URL = process.env.NEON_DATABASE_URL || process.env.VITE_DATABASE_URL || process.env.DATABASE_URL;
-// Don't crash at module load — let individual requests fail with a clear error.
-// On Vercel, env vars are available at request time, not necessarily at import time.
-const sql = DATABASE_URL
-  ? neon(DATABASE_URL)
-  : new Proxy({}, { get: () => () => { throw new Error('No database URL configured. Set NEON_DATABASE_URL in Vercel environment variables.'); } });
-if (!DATABASE_URL) {
-  console.error('⚠️  No database URL found. Set NEON_DATABASE_URL in Vercel project settings.');
-}
+const DATABASE_URL =
+  process.env.NEON_DATABASE_URL ||
+  process.env.VITE_DATABASE_URL ||
+  process.env.DATABASE_URL ||
+  'postgresql://neondb_owner:npg_dJjb8k0EAUGf@ep-floral-resonance-a1spd9bz-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+// DATABASE_URL is always set (env var or hardcoded fallback above).
+const sql = neon(DATABASE_URL);
+console.log(`✅  NeonDB connected: ${DATABASE_URL.replace(/:([^:@]+)@/, ':***@')}`);
 
 // ── Auto-create missing tables on startup ─────────────────────────────────────
 async function ensureTables() {

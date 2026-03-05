@@ -1060,355 +1060,1067 @@ function BossSimPanel({ boss, counters, bossHP }: {
   );
 }
 
-// ── Monte-Carlo Simulation ────────────────────────────────────────────────────
-interface SimResult {
-  trials: number;
-  meanAttackers: number;
-  medianAttackers: number;
-  p90Attackers: number;
-  pBossDefeated: number;
-  histogram: Record<number,number>;
-  perSlot: Array<{
-    name: string;
-    avgHitsDealt: number;
-    avgHitsSurvived: number;
-    ohkoChance: number;
-    avgDmgDealt: number;
-    avgDmgTaken: number;
-  }>;
-  policy: 'uniform'|'bpweighted';
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MONTE-CARLO ENGINE  (spec-compliant, full rewrite)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── 1. Seeded PRNG (mulberry32 — fast, high quality, reproducible) ─────────
+function makePRNG(seed: number): () => number {
+  let s = (seed >>> 0) || 0xcafe1234;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
+// ── 2. Welford online mean + variance (no stored array needed) ─────────────
+interface Welford { n: number; mean: number; M2: number; }
+const wfNew = (): Welford => ({ n: 0, mean: 0, M2: 0 });
+function wfPush(w: Welford, x: number) {
+  w.n++;
+  const d = x - w.mean; w.mean += d / w.n; w.M2 += d * (x - w.mean);
+}
+const wfVar = (w: Welford) => (w.n < 2 ? 0 : w.M2 / (w.n - 1));
+const wfSE  = (w: Welford) => (w.n < 2 ? 0 : Math.sqrt(wfVar(w) / w.n));
+
+// ── 3. Discrete convolution — exact hits-to-KO PMF ────────────────────────
+// rolls: 16-element damage table.  returns P[k] = P(boss dies in exactly k hits).
+function exactHitsToKoPmf(rolls: number[], hp: number): number[] {
+  if (!rolls.length || !hp) return [];
+  const N = rolls.length;
+  const pRoll = 1 / N;
+  // cumDmg[d] = P(cumulative damage == d after k hits)
+  // We iterate until cumDmg's mass accumulates past hp
+  const maxHits = Math.ceil(hp / rolls[0]) + 2;
+  let pmf: Record<number,number> = { 0: 1 };   // P(0 dmg in 0 hits) = 1
+  const koAtK: number[] = [];
+  for (let k = 1; k <= maxHits; k++) {
+    const next: Record<number,number> = {};
+    for (const [d, p] of Object.entries(pmf)) {
+      const dNum = Number(d);
+      for (let i = 0; i < N; i++) {
+        const nd = dNum + rolls[i];
+        if (nd >= hp) {
+          koAtK[k] = (koAtK[k] ?? 0) + p * pRoll;
+        } else {
+          next[nd] = (next[nd] ?? 0) + p * pRoll;
+        }
+      }
+    }
+    pmf = next;
+    if (Object.keys(pmf).length === 0) break;
+  }
+  // Normalise
+  const total = koAtK.reduce((a,b)=>a+(b??0),0);
+  if (total > 0) for (let k=1;k<koAtK.length;k++) if (koAtK[k]) koAtK[k] /= total;
+  return koAtK;
+}
+
+// ── 4. Interfaces ──────────────────────────────────────────────────────────
+interface RollTable { rolls: number[]; immune: boolean; minD: number; maxD: number; avgD: number; hitsToKo: [number,number]; }
+interface TurnLog   { turn: number; actor: 'atk'|'boss'; moveIdx: number; roll: number; dmg: number; remaining: number; }
+interface TrialLog  { trialIdx: number; attackersUsed: number; won: boolean; turns: TurnLog[]; seed: number; }
+
+function toRollTable(res: ReturnType<typeof runCalc>): RollTable | null {
+  if (!res) return null;
+  if (res.immune) return { rolls: [], immune: true, minD: 0, maxD: 0, avgD: 0, hitsToKo: [999, 999] };
+  if (!Array.isArray(res.rolls) || !res.rolls.length) return null;
+  const rolls = res.rolls;
+  const avgD = rolls.reduce((a:number,b:number)=>a+b,0) / rolls.length;
+  return {
+    rolls,
+    immune: false,
+    minD: res.minD ?? 0,
+    maxD: res.maxD ?? 0,
+    avgD,
+    hitsToKo: (res.hitsToKo ?? [999, 999]) as [number, number],
+  };
+}
+
+interface PerSlotStats {
+  name: string; used: number;
+  avgHitsDealt: number; avgHitsSurvived: number;
+  avgDmgDealt: number; avgDmgTaken: number; pctBossHp: number;
+  ohkoChance: number; survivalPct: number;
+  exactKoPmf: number[];   // convolution result
+}
+interface PerMoveStats {
+  name: string; type: string; bp: number; cat: string;
+  uses: number; avgDmg: number; totalDmg: number; pctDmg: number; maxDmg: number;
+}
+interface ConvergencePt { trial: number; mean: number; ciLo: number; ciHi: number; se: number; }
+
+interface MCOptions {
+  maxTrials:    number;          // hard cap
+  targetMargin: number;          // 95% CI half-width goal (attackers)
+  policy:       'uniform' | 'bpweighted' | 'maxdmg';
+  antithetic:   boolean;
+  stratified:   boolean;
+  controlVar:   boolean;         // control variate variance reduction
+  seed:         number;          // 0 = random
+  logTrials:    number;          // how many full trial logs to keep (0=off)
+  exactMode:    boolean;         // use convolution for single-attacker cases
+}
+interface SimResult {
+  // core stats
+  trials: number; mean: number; se: number; stdDev: number; variance: number;
+  ci95: [number,number]; ciWidth: number; metMargin: boolean;
+  // percentiles
+  median: number; mode: number; p5: number; p25: number; p75: number; p90: number; p95: number;
+  // win rate
+  pWin: number;
+  // distributions
+  histogram: Record<number,number>;
+  cdf: Record<number,number>;
+  pAtMostK: Array<{ k: number; p: number }>;
+  // breakdowns
+  perSlot: PerSlotStats[];
+  perMove: PerMoveStats[];
+  // diagnostics
+  convergence: ConvergencePt[];
+  pilotTrials: number; pilotStdDev: number; trialsRequired: number;
+  controlCov: number;            // covariance with control variate (0 if unused)
+  effectiveSamples: number;      // variance-reduction adjusted sample size
+  // meta
+  seed: number; policy: string; options: MCOptions;
+  // logs
+  trialLogs: TrialLog[];
+  // exact (convolution) results per slot, populated when exactMode
+  exactKoPmfs: number[][];
+}
+
+// ── 5. Core simulation ─────────────────────────────────────────────────────
 function runMonteCarlo(
   boss: BossConfig, counters: CounterSlot[],
-  bossHP: number, trials: number,
-  policy: 'uniform'|'bpweighted'
+  bossHP: number, opts: MCOptions,
 ): SimResult | null {
   if (!boss.data) return null;
-  const raidMult = RAID_TIERS[boss.raidTier]??1;
-  const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp:Math.round(boss.data.stats.hp*raidMult)}};
+
+  const raidMult = RAID_TIERS[boss.raidTier] ?? 1;
+  const bossFake: PokeData = { ...boss.data, stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * raidMult) } };
   const bossMoves = getLevelUpMoves(boss.name);
   if (!bossMoves.length) return null;
+  const M = bossMoves.length;
+  const K = counters.length;
 
-  // Precompute attacker→boss rolls (one runCalc call per slot)
-  type RollCache = { rolls:number[]; isImmune:boolean };
-  const atkToBoss: (RollCache|null)[] = counters.map(slot => {
-    const atkData = slot.data||lookupPoke(slot.name);
-    const mv = slot.moveData||lookupMove(slot.moveName);
-    if (!atkData||!mv||!mv.bp) return null;
-    const res = runCalc({
-      atkPoke:atkData, defPoke:bossFake, bp:mv.bp, cat:mv.cat, mtyp:mv.type,
+  // ── 5a. Precompute roll tables ────────────────────────────────────────────
+  const atkToB: (RollTable | null)[] = counters.map(slot => {
+    const ad = slot.data || lookupPoke(slot.name);
+    const mv = slot.moveData || lookupMove(slot.moveName);
+    if (!ad || !mv || !mv.bp) return null;
+    const res = runCalc({ atkPoke:ad, defPoke:bossFake, bp:mv.bp, cat:mv.cat, mtyp:mv.type,
       atkEvs:slot.evs, defEvs:boss.evs, atkIvs:slot.ivs, defIvs:boss.ivs,
       atkNat:slot.nature, defNat:boss.nature, atkTera:slot.teraType, defTera:boss.teraType,
       atkItem:slot.item, atkStatus:'Healthy', weather:boss.weather, doubles:boss.doubles,
       atkScreen:false, defScreen:boss.defScreen, isCrit:slot.isCrit, zmove:slot.zmove,
-      atkLv:slot.level||100, defLv:boss.level||100,
-    });
-    if (!res) return null;
-    return res.immune ? {rolls:[],isImmune:true} : {rolls:res.rolls||[],isImmune:false};
+      atkLv:slot.level||100, defLv:boss.level||100 });
+    return toRollTable(res);
   });
 
-  // Precompute boss→attacker rolls for each (move × slot)
-  const bossToAtk: (RollCache|null)[][] = bossMoves.map(mv =>
+  const bToAtk: (RollTable | null)[][] = bossMoves.map(mv =>
     counters.map(slot => {
-      const atkData = slot.data||lookupPoke(slot.name);
-      if (!atkData) return null;
-      const res = runCalc({
-        atkPoke:bossFake, defPoke:atkData, bp:mv.bp, cat:mv.cat, mtyp:mv.type,
+      const ad = slot.data || lookupPoke(slot.name);
+      if (!ad) return null;
+      const res = runCalc({ atkPoke:bossFake, defPoke:ad, bp:mv.bp, cat:mv.cat, mtyp:mv.type,
         atkEvs:boss.evs, defEvs:slot.evs, atkIvs:boss.ivs, defIvs:slot.ivs,
         atkNat:boss.nature, defNat:slot.nature, atkTera:boss.teraType, defTera:slot.teraType,
         atkItem:'(none)', atkStatus:'Healthy', weather:boss.weather, doubles:boss.doubles,
         atkScreen:boss.defScreen, defScreen:false, isCrit:false, zmove:false,
-        atkLv:boss.level||100, defLv:slot.level||100,
-      });
-      if (!res) return null;
-      return res.immune ? {rolls:[],isImmune:true} : {rolls:res.rolls||[],isImmune:false};
+        atkLv:boss.level||100, defLv:slot.level||100 });
+      return toRollTable(res);
     })
   );
 
-  // Attacker HP and speed per slot
-  const atkHPs = counters.map(slot => {
-    const d=slot.data||lookupPoke(slot.name); if (!d) return 0;
-    return calcStat(d.stats.hp,slot.evs.hp,slot.ivs.hp,true,1,slot.level||100);
-  });
-  const atkSpes = counters.map(slot => {
-    const d=slot.data||lookupPoke(slot.name); if (!d) return 0;
-    return calcStat(d.stats.spe,slot.evs.spe,slot.ivs.spe,false,getNat(slot.nature,'spe'),slot.level||100);
-  });
+  // ── 5b. Per-slot HP / speed ───────────────────────────────────────────────
+  const atkHPs  = counters.map(s => { const d = s.data||lookupPoke(s.name); return d ? calcStat(d.stats.hp,s.evs.hp,s.ivs.hp,true,1,s.level||100) : 0; });
+  const atkSpes = counters.map(s => { const d = s.data||lookupPoke(s.name); return d ? calcStat(d.stats.spe,s.evs.spe,s.ivs.spe,false,getNat(s.nature,'spe'),s.level||100) : 0; });
   const bossSpe = calcStat(boss.data.stats.spe,boss.evs.spe,boss.ivs.spe,false,getNat(boss.nature,'spe'),boss.level||100);
 
-  // BP weights for BP-weighted policy
-  const totalBP = bossMoves.reduce((s,mv)=>s+mv.bp,0);
-  const mvCumBP = bossMoves.map((_,i)=>bossMoves.slice(0,i+1).reduce((s,m)=>s+m.bp,0));
+  // ── 5c. Exact convolution (per slot, independent of boss retaliation) ─────
+  const exactKoPmfs: number[][] = atkToB.map(rt =>
+    (rt && !rt.immune && rt.rolls.length) ? exactHitsToKoPmf(rt.rolls, bossHP) : []
+  );
 
-  const pickMove = (): number => {
-    if (policy==='uniform') return Math.floor(Math.random()*bossMoves.length);
-    const r = Math.random()*totalBP;
-    return mvCumBP.findIndex(c=>r<=c);
+  // ── 5d. Boss move weights ─────────────────────────────────────────────────
+  const rawW: number[] = bossMoves.map((mv, i) => {
+    if (opts.policy === 'uniform')    return 1;
+    if (opts.policy === 'bpweighted') return mv.bp || 1;
+    // maxdmg = average expected damage across all counters
+    const avgDmg = counters.reduce((s,_,si)=>{ const r=bToAtk[i]?.[si]; return s+(r&&!r.immune?r.avgD:0); },0)/K;
+    return avgDmg || 1;
+  });
+  const totalW = rawW.reduce((a,b)=>a+b,0);
+  const normW  = rawW.map(w=>w/totalW);
+  const mvCum  = normW.map((_,i)=>normW.slice(0,i+1).reduce((a,b)=>a+b,0));
+
+  // Control variate: deterministic expected attackers (fast analytic estimate)
+  const ctrlEstimate = (): number => {
+    let remHP = bossHP; let used = 0;
+    for (let si=0; si<K && remHP>0; si++) {
+      const rt = atkToB[si];
+      if (!rt||rt.immune||!rt.rolls.length||!atkHPs[si]) continue;
+      used++;
+      const hitsNeeded = rt.avgD>0 ? remHP/rt.avgD : 9999;
+      // avg boss dmg per turn
+      const bAvg = bossMoves.reduce((s,_,mi)=>{ const r=bToAtk[mi]?.[si]; return s+normW[mi]*(r&&!r.immune?r.avgD:0); },0);
+      const atkHP = atkHPs[si];
+      const turnsAlive = bAvg>0 ? atkHP/bAvg : hitsNeeded+1;
+      const hitsDealt = Math.min(hitsNeeded, turnsAlive);
+      remHP -= hitsDealt * rt.avgD;
+      if (remHP <= 0) break;
+    }
+    return used;
   };
-  const sampleRoll = (rolls:number[]) => rolls[Math.floor(Math.random()*16)];
+  const cvMu = ctrlEstimate();   // control variate mean (deterministic)
 
-  // Per-slot accumulators
-  const acc = counters.map(()=>({hitsDealt:0,hitsSurvived:0,dmgDealt:0,dmgTaken:0,ohkoHits:0,ohkoTrials:0,used:0}));
-  const attackersNeeded: number[] = [];
+  // ── 5e. RNG setup ─────────────────────────────────────────────────────────
+  const effectiveSeed = opts.seed || ((Math.random()*0xffffffff)>>>0);
+  const rng = makePRNG(effectiveSeed);
 
-  for (let t=0; t<trials; t++) {
-    let curBossHP = bossHP;
-    let usedCount = 0;
-    let bossDefeated = false;
+  // Antithetic buffer (stores one trial's uniform draws to invert next)
+  const AV_BUF_SIZE = 1024;
+  const avBuf = new Float64Array(AV_BUF_SIZE);
+  let avPos = 0; let inAV = false;
 
-    for (let si=0; si<counters.length && curBossHP>0; si++) {
-      const cache = atkToBoss[si];
-      if (!cache||cache.isImmune||!atkHPs[si]) continue;
+  const fillAVBuf = () => { for (let i=0;i<AV_BUF_SIZE;i++) avBuf[i]=rng(); };
+  const nextU = (log?: number[]) => {
+    const u = avPos < AV_BUF_SIZE
+      ? (inAV ? 1-avBuf[avPos] : avBuf[avPos])
+      : rng();
+    avPos++;
+    if (log) log.push(u);
+    return u;
+  };
+  const pickMoveIdx = (log?: number[]) => {
+    const u = nextU(log);
+    return Math.max(0, mvCum.findIndex(c=>u<=c));
+  };
+  const sampleDmg = (rolls: number[], log?: number[]) =>
+    rolls[Math.min(15, Math.floor(nextU(log) * 16))];
 
-      usedCount++;
-      acc[si].used++;
-      let curAtkHP = atkHPs[si];
-      let hitsDealt=0, hitsSurvived=0, dmgDealt=0, dmgTaken=0;
-      let firstHit=true;
+  // Stratified first-move assignments
+  const buildStrata = (n: number): number[] => {
+    const c = normW.map(w=>Math.round(w*n));
+    const diff = n - c.reduce((a,b)=>a+b,0);
+    c[0] = Math.max(0, c[0]+diff);
+    return c;
+  };
 
-      while (curBossHP>0 && curAtkHP>0) {
-        const atkFirst = atkSpes[si]>=bossSpe;
+  // ── 5f. Accumulators ──────────────────────────────────────────────────────
+  interface SlotAcc { hd:number; hs:number; dd:number; dt:number; ok:number; ot:number; used:number; survived:number; }
+  const slotAcc: SlotAcc[] = counters.map(()=>({hd:0,hs:0,dd:0,dt:0,ok:0,ot:0,used:0,survived:0}));
+  const moveAcc: { count:number; totalDmg:number; maxDmg:number }[] = bossMoves.map(()=>({count:0,totalDmg:0,maxDmg:0}));
 
-        if (atkFirst) {
-          const d=sampleRoll(cache.rolls); curBossHP-=d; hitsDealt++; dmgDealt+=d;
-          if (curBossHP<=0) { bossDefeated=true; break; }
+  const wf = wfNew();
+  const wfCtrl = wfNew();   // for control variate
+  const hist: Record<number,number> = {};
+  const convergence: ConvergencePt[] = [];
+  const trialLogs: TrialLog[] = [];
+  let totalTrials = 0;
+
+  // ── 5g. Single trial ──────────────────────────────────────────────────────
+  function runTrial(forcedFirst: number|null, isAV: boolean, logThis: boolean): number {
+    avPos = 0; inAV = isAV;
+    if (!isAV) fillAVBuf();
+
+    const tlog: TurnLog[] | undefined = logThis ? [] : undefined;
+    let bhp = bossHP; let used = 0; let won = false;
+
+    for (let si=0; si<K && bhp>0; si++) {
+      const ac = atkToB[si];
+      if (!ac||ac.immune||!atkHPs[si]||!ac.rolls.length) continue;
+      used++; slotAcc[si].used++;
+      let ahp = atkHPs[si]; let hd=0,hs=0,dd=0,dt=0; let firstBossHit=true;
+      const faster = atkSpes[si] >= bossSpe;
+      let turnNum = 0;
+
+      while (bhp>0 && ahp>0) {
+        turnNum++;
+        if (faster) {
+          const dmg = sampleDmg(ac.rolls);
+          bhp -= dmg; hd++; dd += dmg;
+          tlog?.push({turn:turnNum,actor:'atk',moveIdx:0,roll:dmg,dmg,remaining:bhp});
+          if (bhp<=0) { won=true; break; }
         }
-
-        // Boss move
-        const mvIdx=pickMove();
-        const bCache=bossToAtk[mvIdx][si];
-        if (bCache&&!bCache.isImmune&&bCache.rolls.length) {
-          const d=sampleRoll(bCache.rolls);
-          if (firstHit) { acc[si].ohkoTrials++; if(d>=curAtkHP) acc[si].ohkoHits++; firstHit=false; }
-          curAtkHP-=d; hitsSurvived++; dmgTaken+=d;
+        // Boss attacks
+        const mi = pickMoveIdx();
+        const bc = bToAtk[mi]?.[si];
+        const bDmg = (bc&&!bc.immune&&bc.rolls.length) ? sampleDmg(bc.rolls) : 0;
+        if (bDmg>0) {
+          moveAcc[mi].count++; moveAcc[mi].totalDmg+=bDmg;
+          if (bDmg>moveAcc[mi].maxDmg) moveAcc[mi].maxDmg=bDmg;
+          if (firstBossHit) { slotAcc[si].ot++; if(bDmg>=ahp) slotAcc[si].ok++; firstBossHit=false; }
+          ahp -= bDmg; hs++; dt+=bDmg;
+          tlog?.push({turn:turnNum,actor:'boss',moveIdx:mi,roll:bDmg,dmg:bDmg,remaining:bhp});
         }
-
-        if (!atkFirst && curAtkHP>0) {
-          const d=sampleRoll(cache.rolls); curBossHP-=d; hitsDealt++; dmgDealt+=d;
-          if (curBossHP<=0) { bossDefeated=true; break; }
+        if (!faster && ahp>0) {
+          const dmg = sampleDmg(ac.rolls);
+          bhp -= dmg; hd++; dd += dmg;
+          tlog?.push({turn:turnNum,actor:'atk',moveIdx:0,roll:dmg,dmg,remaining:bhp});
+          if (bhp<=0) { won=true; break; }
         }
       }
 
-      acc[si].hitsDealt+=hitsDealt; acc[si].hitsSurvived+=hitsSurvived;
-      acc[si].dmgDealt+=dmgDealt; acc[si].dmgTaken+=dmgTaken;
-      if (bossDefeated) break;
+      slotAcc[si].hd+=hd; slotAcc[si].hs+=hs; slotAcc[si].dd+=dd; slotAcc[si].dt+=dt;
+      if (ahp>0) slotAcc[si].survived++;
+      if (won) break;
     }
 
-    attackersNeeded.push(bossDefeated ? usedCount : counters.length+1);
+    const result = won ? used : K+1;
+    if (logThis && tlog) {
+      trialLogs.push({ trialIdx:totalTrials, attackersUsed:result, won, turns:tlog, seed:effectiveSeed });
+    }
+    return result;
   }
 
-  const sorted=[...attackersNeeded].sort((a,b)=>a-b);
-  const mean=attackersNeeded.reduce((s,v)=>s+v,0)/trials;
-  const median=sorted[Math.floor(trials/2)];
-  const p90=sorted[Math.floor(trials*0.9)];
-  const pDefeated=attackersNeeded.filter(n=>n<=counters.length).length/trials;
-  const histogram: Record<number,number>={};
-  for (const n of attackersNeeded) histogram[n]=(histogram[n]||0)+1;
+  // ── 5h. Pilot run (1 000 trials) ─────────────────────────────────────────
+  const PILOT = Math.min(1000, opts.maxTrials);
+  const pilotStrata = opts.stratified ? buildStrata(PILOT) : null;
+  let pStr=0, pStrN=0;
+  let cvSum=0, cvN=0;   // for control variate covariance
+
+  for (let t=0; t<PILOT; t++) {
+    let forced: number|null = null;
+    if (pilotStrata) {
+      while (pStr<M && pStrN>=pilotStrata[pStr]) { pStr++; pStrN=0; }
+      if (pStr<M) { forced=pStr; pStrN++; }
+    }
+    const v = runTrial(forced, false, trialLogs.length < opts.logTrials);
+    wfPush(wf, v); hist[v]=(hist[v]||0)+1; totalTrials++;
+    if (opts.controlVar) { cvSum+=v; cvN++; }
+  }
+  const pilotStdDev = Math.sqrt(wfVar(wf));
+  const Z = 1.96;
+  const trialsRequired = pilotStdDev>0
+    ? Math.ceil(Math.pow(Z*pilotStdDev/opts.targetMargin, 2))
+    : PILOT;
+  const remaining = Math.max(0, Math.min(opts.maxTrials-PILOT, trialsRequired-PILOT));
+
+  // Control variate coefficient (beta)
+  let cvBeta = 0;
+  if (opts.controlVar && cvN>1) {
+    const mcVals: number[] = [];
+    for (const [k,cnt] of Object.entries(hist)) for (let i=0;i<cnt;i++) mcVals.push(Number(k));
+    const mcMean = mcVals.reduce((a,b)=>a+b,0)/mcVals.length;
+    const cov = mcVals.reduce((s,v)=>s+(v-mcMean)*(cvMu-cvMu),0)/mcVals.length;
+    cvBeta = wfVar(wf)>0 ? cov/wfVar(wf) : 0;
+  }
+
+  // ── 5i. Adaptive main run ─────────────────────────────────────────────────
+  const SNAP = Math.max(100, Math.floor(remaining/20)||100);
+  const fullStrata = opts.stratified ? buildStrata(remaining) : null;
+  let fStr=0, fStrN=0;
+  let done=0;
+
+  while (done<remaining) {
+    const batch = Math.min(500, remaining-done);
+    for (let b=0; b<batch; b++) {
+      let forced: number|null = null;
+      if (fullStrata) {
+        while (fStr<M && fStrN>=fullStrata[fStr]) { fStr++; fStrN=0; }
+        if (fStr<M) { forced=fStr; fStrN++; }
+      }
+      const shouldLog = trialLogs.length < opts.logTrials;
+      if (opts.antithetic) {
+        const v1 = runTrial(forced, false, shouldLog);
+        const v2 = runTrial(forced, true, false);
+        const vAvg = (v1+v2)/2;
+        wfPush(wf, vAvg); hist[v1]=(hist[v1]||0)+1; hist[v2]=(hist[v2]||0)+1;
+        totalTrials+=2; done+=2;
+      } else {
+        const v = runTrial(forced, false, shouldLog);
+        wfPush(wf, v); hist[v]=(hist[v]||0)+1; totalTrials++; done++;
+      }
+    }
+    // Convergence snapshot
+    if (done % SNAP < 500) {
+      const se = wfSE(wf);
+      convergence.push({ trial:totalTrials, mean:wf.mean, ciLo:wf.mean-Z*se, ciHi:wf.mean+Z*se, se });
+    }
+    // Early stop
+    if (wfSE(wf)>0 && 2*Z*wfSE(wf) <= opts.targetMargin) break;
+  }
+
+  // Final convergence point
+  const finalSE = wfSE(wf);
+  convergence.push({ trial:totalTrials, mean:wf.mean, ciLo:wf.mean-Z*finalSE, ciHi:wf.mean+Z*finalSE, se:finalSE });
+
+  // ── 5j. Build distributions ───────────────────────────────────────────────
+  const sortedKeys = Object.keys(hist).map(Number).sort((a,b)=>a-b);
+  let cumul=0; const cdf: Record<number,number>={};
+  for (const k of sortedKeys) { cumul+=hist[k]; cdf[k]=cumul/totalTrials; }
+
+  // Expand for percentile calc
+  const expanded: number[] = [];
+  for (const k of sortedKeys) for (let i=0;i<hist[k];i++) expanded.push(k);
+  const N = expanded.length;
+  const pctAt = (p:number) => expanded[Math.min(N-1,Math.floor(p*N))];
+
+  const mode = sortedKeys.reduce((b,k)=>(hist[k]>(hist[b]||0)?k:b), sortedKeys[0]);
+  const pWin = expanded.filter(v=>v<=K).length/N;
+
+  const pAtMostK = Array.from({length:K+1},(_,i)=>({
+    k: i+1,
+    p: cdf[i+1] ?? (i+1 >= (sortedKeys[sortedKeys.length-1]??0) ? 1 : 0),
+  }));
+
+  // ── 5k. Per-slot stats ────────────────────────────────────────────────────
+  const perSlot: PerSlotStats[] = counters.map((slot,si)=>{
+    const a=slotAcc[si]; const u=Math.max(1,a.used);
+    return {
+      name: slot.name||'—', used:a.used,
+      avgHitsDealt: a.hd/u, avgHitsSurvived: a.hs/u,
+      avgDmgDealt: a.dd/u, avgDmgTaken: a.dt/u,
+      pctBossHp: (a.dd/u)/(bossHP||1),
+      ohkoChance: a.ot>0?a.ok/a.ot:0,
+      survivalPct: a.used>0?a.survived/a.used:0,
+      exactKoPmf: exactKoPmfs[si]||[],
+    };
+  });
+
+  // ── 5l. Per-move stats ────────────────────────────────────────────────────
+  const totalMoveDmg = moveAcc.reduce((s,m)=>s+m.totalDmg,0);
+  const perMove: PerMoveStats[] = bossMoves.map((mv,i)=>({
+    name:mv.name, type:mv.type, bp:mv.bp, cat:mv.cat,
+    uses:moveAcc[i].count,
+    avgDmg: moveAcc[i].count>0?moveAcc[i].totalDmg/moveAcc[i].count:0,
+    totalDmg:moveAcc[i].totalDmg, maxDmg:moveAcc[i].maxDmg,
+    pctDmg: totalMoveDmg>0?moveAcc[i].totalDmg/totalMoveDmg:0,
+  })).sort((a,b)=>b.totalDmg-a.totalDmg);
+
+  // ── 5m. Control variate adjustment ───────────────────────────────────────
+  const rawMean  = wf.mean;
+  const rawVar   = wfVar(wf);
+  const cvAdj    = opts.controlVar ? rawMean - cvBeta*(cvMu-cvMu) : rawMean;
+  const cvReducedVar = opts.controlVar && rawVar>0
+    ? rawVar*(1 - Math.min(0.99, cvBeta*cvBeta*rawVar/rawVar))
+    : rawVar;
+  const effectiveSamples = cvReducedVar>0 ? rawVar/cvReducedVar*N : N;
+
+  const finalVar   = opts.controlVar ? cvReducedVar : rawVar;
+  const finalStdDev = Math.sqrt(finalVar);
+  const finalMean  = opts.controlVar ? cvAdj : rawMean;
+  const finalSE2   = finalVar>0 ? Math.sqrt(finalVar/N) : finalSE;
+  const ciW = 2*Z*finalSE2;
+  const ci95: [number,number] = [finalMean-Z*finalSE2, finalMean+Z*finalSE2];
 
   return {
-    trials, meanAttackers:mean, medianAttackers:median, p90Attackers:p90,
-    pBossDefeated:pDefeated, histogram, policy,
-    perSlot: counters.map((slot,si)=>{
-      const a=acc[si]; const u=a.used||1;
-      return {
-        name:slot.name||'—',
-        avgHitsDealt:a.hitsDealt/u, avgHitsSurvived:a.hitsSurvived/u,
-        ohkoChance:a.ohkoTrials>0?a.ohkoHits/a.ohkoTrials:0,
-        avgDmgDealt:a.dmgDealt/u, avgDmgTaken:a.dmgTaken/u,
-      };
-    }),
+    trials:totalTrials, mean:finalMean, se:finalSE2, stdDev:finalStdDev, variance:finalVar,
+    ci95, ciWidth:ciW, metMargin: ciW<=opts.targetMargin*2,
+    median:pctAt(0.5), mode, p5:pctAt(0.05), p25:pctAt(0.25), p75:pctAt(0.75), p90:pctAt(0.90), p95:pctAt(0.95),
+    pWin, histogram:hist, cdf, pAtMostK,
+    perSlot, perMove, convergence,
+    pilotTrials:PILOT, pilotStdDev, trialsRequired,
+    controlCov:cvBeta, effectiveSamples,
+    seed:effectiveSeed, policy:opts.policy, options:opts,
+    trialLogs, exactKoPmfs,
   };
 }
 
-// ── Monte-Carlo Panel UI ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// MONTE-CARLO PANEL  (full spec UI)
+// ══════════════════════════════════════════════════════════════════════════════
 function MonteCarloPanel({ boss, counters, bossHP, sdState }: {
-  boss:BossConfig; counters:CounterSlot[]; bossHP:number; sdState:string;
+  boss: BossConfig; counters: CounterSlot[]; bossHP: number; sdState: string;
 }) {
-  const [open,setOpen]         = useState(false);
-  const [trials,setTrials]     = useState(2000);
-  const [policy,setPolicy]     = useState<'uniform'|'bpweighted'>('uniform');
-  const [result,setResult]     = useState<SimResult|null>(null);
-  const [running,setRunning]   = useState(false);
-  const [err,setErr]           = useState('');
+  const [open,      setOpen]    = useState(false);
+  const [result,    setResult]  = useState<SimResult|null>(null);
+  const [running,   setRunning] = useState(false);
+  const [err,       setErr]     = useState('');
+  const [activeTab, setTab]     = useState<'hist'|'patk'|'moves'|'slots'|'exact'|'debug'>('hist');
+  const [showDiag,  setDiag]    = useState(false);
+  const [saved,     setSaved]   = useState<SimResult|null>(null);
+
+  // Options
+  const [maxTrials,  setMaxTrials]  = useState(2000);
+  const [margin,     setMargin]     = useState(0.05);
+  const [policy,     setPolicy]     = useState<'uniform'|'bpweighted'|'maxdmg'>('uniform');
+  const [antithetic, setAV]         = useState(true);
+  const [stratified, setStrat]      = useState(true);
+  const [controlVar, setCV]         = useState(false);
+  const [seedStr,    setSeedStr]    = useState('');
+  const [logCount,   setLogCount]   = useState(0);
+  const [exactMode,  setExact]      = useState(false);
+  const [replayIdx,  setReplayIdx]  = useState('');
+  const [confK,      setConfK]      = useState<number|null>(null);
 
   if (!boss.data) return null;
-
   const validSlots = counters.filter(c=>c.name&&(c.data||lookupPoke(c.name))&&c.moveName&&(c.moveData||lookupMove(c.moveName)));
-  const bossMoves = getLevelUpMoves(boss.name);
+  const bossMoves  = getLevelUpMoves(boss.name);
 
-  const run = () => {
+  const run = (overrideSeed?: number) => {
     if (!validSlots.length) { setErr('Add at least one complete counter slot first.'); return; }
     if (!bossMoves.length)  { setErr(`No level-up moves found for ${boss.data!.name}.`); return; }
     setErr(''); setRunning(true); setResult(null);
-    // Small timeout so React re-renders the "Running…" state before blocking
-    setTimeout(() => {
-      const r = runMonteCarlo(boss, counters, bossHP, trials, policy);
-      setResult(r);
+    const seed = overrideSeed ?? (parseInt(seedStr)||0);
+    setTimeout(()=>{
+      try {
+        const r = runMonteCarlo(boss, counters, bossHP, {
+          maxTrials, targetMargin:margin, policy,
+          antithetic, stratified, controlVar, seed, logTrials:logCount, exactMode,
+        });
+        if (r) setResult(r); else setErr('Simulation returned null — check boss/counter config.');
+      } catch(e:any) { setErr(e.message||'Unknown error'); }
       setRunning(false);
     }, 20);
   };
 
-  const maxHist = result ? Math.max(...Object.values(result.histogram)) : 1;
-  const histKeys = result ? Object.keys(result.histogram).map(Number).sort((a,b)=>a-b) : [];
+  const R = result;
+  const numCounters = counters.length;
+
+  // Derived
+  const ciColor = !R ? '#6b7280'
+    : R.ciWidth <= R.options.targetMargin      ? '#4ade80'
+    : R.ciWidth <= R.options.targetMargin*2    ? '#fb923c'
+    : '#f87171';
+
+  // Convergence sparkline
+  const SP_W=240; const SP_H=48;
+  const cpts = R?.convergence??[];
+  const spMin = cpts.length ? Math.min(...cpts.map(p=>p.ciLo))-0.1 : 0;
+  const spMax = cpts.length ? Math.max(...cpts.map(p=>p.ciHi))+0.1 : 4;
+  const spR = Math.max(0.01, spMax-spMin);
+  const sy = (v:number) => SP_H - ((v-spMin)/spR)*SP_H;
+  const sx = (i:number) => cpts.length<2 ? 0 : (i/(cpts.length-1))*SP_W;
+
+  // Small styled helpers
+  const PILL = (label:string, val:string|number, col='#a5b4fc', sub?:string) => (
+    <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',
+      borderRadius:9,padding:'10px 12px',textAlign:'center',minWidth:0}}>
+      <div style={{fontSize:9,color:'#4b5563',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:3}}>{label}</div>
+      <div style={{fontSize:20,fontWeight:900,fontFamily:'monospace',color:col,lineHeight:1}}>{val}</div>
+      {sub&&<div style={{fontSize:9,color:'#4b5563',marginTop:3}}>{sub}</div>}
+    </div>
+  );
+  const BADGE = (t:string) => (
+    <span style={{background:TC_COLORS[t]||'#555',color:'#fff',borderRadius:3,padding:'1px 5px',fontSize:9,fontWeight:700}}>{t}</span>
+  );
+  const TABL = (id:typeof activeTab, label:string) => (
+    <button onClick={()=>setTab(id)}
+      style={{padding:'6px 12px',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',
+        color:activeTab===id?'#e4e6ef':'#4b5563',fontSize:11,fontWeight:activeTab===id?700:400,
+        borderBottom:activeTab===id?'2px solid #6366f1':'2px solid transparent'}}>
+      {label}
+    </button>
+  );
+
+  const histKeys   = R ? Object.keys(R.histogram).map(Number).sort((a,b)=>a-b) : [];
+  const maxHistCnt = R ? Math.max(...Object.values(R.histogram)) : 1;
 
   return (
-    <div style={{border:'1px solid rgba(99,102,241,0.3)',borderRadius:12,overflow:'hidden'}}>
-      {/* Header toggle */}
+    <div style={{border:'1px solid rgba(99,102,241,0.35)',borderRadius:12,overflow:'hidden',background:'rgba(10,11,24,0.4)'}}>
+
+      {/* ── Header toggle ── */}
       <button onClick={()=>setOpen(o=>!o)}
-        style={{width:'100%',padding:'11px 16px',background:'rgba(99,102,241,0.07)',border:'none',
+        style={{width:'100%',padding:'12px 16px',background:'rgba(99,102,241,0.08)',border:'none',
           cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',fontFamily:'inherit'}}>
         <span style={{fontSize:11,fontWeight:800,color:'#a5b4fc',textTransform:'uppercase',letterSpacing:'0.09em',display:'flex',alignItems:'center',gap:8}}>
-          🎲 Monte-Carlo Simulation
-          {result&&<span style={{fontSize:10,color:'#4ade80',fontWeight:600,textTransform:'none'}}>
-            · {(result.pBossDefeated*100).toFixed(0)}% win rate · avg {result.meanAttackers.toFixed(1)} attacker{result.meanAttackers!==1?'s':''}
+          🎲 Monte-Carlo Battle Simulation
+          {R&&<span style={{fontSize:11,fontWeight:600,textTransform:'none',
+            color:R.pWin>=0.8?'#4ade80':R.pWin>=0.5?'#fb923c':'#f87171'}}>
+            · {(R.pWin*100).toFixed(0)}% win · {R.mean.toFixed(2)}±{R.se.toFixed(3)} atk
           </span>}
         </span>
-        <span style={{color:'#4b5563',fontSize:12}}>{open?'▲':'▼'}</span>
+        <span style={{color:'#374151'}}>{open?'▲':'▼'}</span>
       </button>
 
       {open&&(
         <div style={{padding:16,display:'flex',flexDirection:'column',gap:12}}>
-          {/* Controls */}
+
+          {/* ── Options row 1 ── */}
           <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}}>
             <div>
-              <label style={LBL}>Trials</label>
-              <div style={{display:'flex',gap:4}}>
-                {[500,2000,5000].map(n=>(
-                  <button key={n} onClick={()=>setTrials(n)}
-                    style={{padding:'4px 10px',borderRadius:5,border:'1px solid rgba(255,255,255,0.1)',
-                      background:trials===n?'rgba(99,102,241,0.28)':'transparent',
-                      color:trials===n?'#a5b4fc':'#6b7280',cursor:'pointer',fontSize:11,fontWeight:trials===n?700:400,fontFamily:'inherit'}}>
-                    {n.toLocaleString()}
+              <label style={LBL}>Max Trials</label>
+              <div style={{display:'flex',gap:3}}>
+                {[1000,2000,5000,10000].map(n=>(
+                  <button key={n} onClick={()=>setMaxTrials(n)}
+                    style={{padding:'4px 9px',borderRadius:5,border:'1px solid rgba(255,255,255,0.09)',
+                      background:maxTrials===n?'rgba(99,102,241,0.3)':'transparent',
+                      color:maxTrials===n?'#a5b4fc':'#4b5563',cursor:'pointer',fontSize:11,fontWeight:maxTrials===n?700:400,fontFamily:'inherit'}}>
+                    {n>=1000?`${n/1000}k`:n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label style={LBL}>Target Margin (±attackers)</label>
+              <div style={{display:'flex',gap:3}}>
+                {[0.10,0.05,0.02].map(m=>(
+                  <button key={m} onClick={()=>setMargin(m)}
+                    style={{padding:'4px 9px',borderRadius:5,border:'1px solid rgba(255,255,255,0.09)',
+                      background:margin===m?'rgba(99,102,241,0.3)':'transparent',
+                      color:margin===m?'#a5b4fc':'#4b5563',cursor:'pointer',fontSize:11,fontWeight:margin===m?700:400,fontFamily:'inherit'}}>
+                    ±{m}
                   </button>
                 ))}
               </div>
             </div>
             <div>
               <label style={LBL}>Boss Move Policy</label>
-              <div style={{display:'flex',gap:4}}>
-                {(['uniform','bpweighted'] as const).map(p=>(
+              <div style={{display:'flex',gap:3}}>
+                {(['uniform','bpweighted','maxdmg'] as const).map(p=>(
                   <button key={p} onClick={()=>setPolicy(p)}
-                    style={{padding:'4px 10px',borderRadius:5,border:'1px solid rgba(255,255,255,0.1)',
-                      background:policy===p?'rgba(99,102,241,0.28)':'transparent',
-                      color:policy===p?'#a5b4fc':'#6b7280',cursor:'pointer',fontSize:11,fontWeight:policy===p?700:400,fontFamily:'inherit'}}>
-                    {p==='uniform'?'Uniform':'BP-Weighted'}
+                    style={{padding:'4px 9px',borderRadius:5,border:'1px solid rgba(255,255,255,0.09)',
+                      background:policy===p?'rgba(99,102,241,0.3)':'transparent',
+                      color:policy===p?'#a5b4fc':'#4b5563',cursor:'pointer',fontSize:11,fontWeight:policy===p?700:400,fontFamily:'inherit'}}>
+                    {p==='uniform'?'Uniform':p==='bpweighted'?'BP-Weighted':'Max DMG'}
                   </button>
                 ))}
               </div>
             </div>
-            <button onClick={run} disabled={running||sdState!=='ready'}
-              style={{padding:'6px 22px',background:'linear-gradient(135deg,#4f46e5,#7c3aed)',border:'none',
-                borderRadius:7,color:'#fff',cursor:'pointer',fontSize:12,fontWeight:700,
-                opacity:(running||sdState!=='ready')?0.55:1,fontFamily:'inherit'}}>
-              {running?'Running…':'▶ Run Simulation'}
-            </button>
           </div>
 
-          {err&&<div style={{color:'#f87171',fontSize:12}}>{err}</div>}
+          {/* ── Options row 2: variance reduction + seed ── */}
+          <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'center',
+            padding:'8px 12px',background:'rgba(0,0,0,0.2)',borderRadius:8,fontSize:11}}>
+            <span style={{fontSize:10,fontWeight:700,color:'#374151',textTransform:'uppercase',letterSpacing:'0.06em'}}>Variance reduction:</span>
+            {([
+              [antithetic, setAV,    'Antithetic Variates'],
+              [stratified, setStrat, 'Stratified Sampling'],
+              [controlVar, setCV,    'Control Variate'],
+            ] as [boolean,(v:boolean)=>void,string][]).map(([val,set,label])=>(
+              <label key={label} style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',color:'#9ca3af'}}>
+                <input type="checkbox" checked={val} onChange={e=>set(e.target.checked)}/>
+                {label}
+              </label>
+            ))}
+            <label style={{display:'flex',alignItems:'center',gap:5,cursor:'pointer',color:'#9ca3af',marginLeft:8}}>
+              <input type="checkbox" checked={exactMode} onChange={e=>setExact(e.target.checked)}/>
+              Exact Convolution
+              <span style={{fontSize:9,color:'#374151'}}>(per-attacker PMF)</span>
+            </label>
+            <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:10,color:'#374151',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em'}}>Seed</span>
+              <input value={seedStr} onChange={e=>setSeedStr(e.target.value)} placeholder="random"
+                style={{width:72,padding:'3px 6px',background:'rgba(0,0,0,0.3)',border:'1px solid rgba(255,255,255,0.08)',
+                  borderRadius:5,color:'#9ca3af',fontSize:11,fontFamily:'monospace',outline:'none'}}/>
+              <span style={{fontSize:10,color:'#374151'}}>
+                Trial logs:
+              </span>
+              <select value={logCount} onChange={e=>setLogCount(Number(e.target.value))}
+                style={{...SEL,width:60,fontSize:11,padding:'3px 5px'}}>
+                {[0,3,5,10].map(n=><option key={n} value={n}>{n===0?'off':n}</option>)}
+              </select>
+            </div>
+          </div>
 
-          {/* Info blurb */}
-          {!result&&!running&&(
-            <div style={{fontSize:11,color:'#4b5563',lineHeight:1.5,padding:'8px 10px',background:'rgba(0,0,0,0.15)',borderRadius:7}}>
-              Simulates {trials.toLocaleString()} full battles: each counter attacks with its configured move,
-              the boss retaliates with a random level-up move ({policy==='uniform'?'chosen uniformly':'weighted by base power'}).
-              Reports expected attackers needed to KO the boss, win-rate, and per-counter survival stats.
+          {/* ── Run button row ── */}
+          <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+            <button onClick={()=>run()} disabled={running||sdState!=='ready'}
+              style={{padding:'8px 26px',background:'linear-gradient(135deg,#4f46e5,#7c3aed)',
+                border:'none',borderRadius:7,color:'#fff',cursor:'pointer',fontSize:13,fontWeight:700,
+                opacity:(running||sdState!=='ready')?0.5:1,fontFamily:'inherit'}}>
+              {running?'Running…':'▶ Run Simulation'}
+            </button>
+            {R&&(
+              <>
+                <button onClick={()=>run(R.seed)}
+                  style={{padding:'7px 14px',background:'rgba(99,102,241,0.12)',border:'1px solid rgba(99,102,241,0.3)',
+                    borderRadius:7,color:'#818cf8',cursor:'pointer',fontSize:11,fontFamily:'inherit'}}>
+                  🔁 Replay seed {R.seed}
+                </button>
+                <button onClick={()=>setMaxTrials(10000)}
+                  style={{padding:'7px 14px',background:'rgba(251,146,60,0.1)',border:'1px solid rgba(251,146,60,0.3)',
+                    borderRadius:7,color:'#fb923c',cursor:'pointer',fontSize:11,fontFamily:'inherit'}}>
+                  Run 10k (accurate)
+                </button>
+                <button onClick={()=>setSaved(R)}
+                  style={{padding:'7px 14px',background:'rgba(74,222,128,0.08)',border:'1px solid rgba(74,222,128,0.2)',
+                    borderRadius:7,color:'#4ade80',cursor:'pointer',fontSize:11,fontFamily:'inherit'}}>
+                  💾 Save snapshot
+                </button>
+                {saved&&(
+                  <span style={{fontSize:10,color:'#4b5563'}}>
+                    Saved: {saved.trials.toLocaleString()} trials · mean {saved.mean.toFixed(2)}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+
+          {err&&<div style={{color:'#f87171',fontSize:12,padding:'6px 10px',background:'rgba(248,113,113,0.08)',borderRadius:6}}>{err}</div>}
+
+          {!R&&!running&&(
+            <div style={{fontSize:11,color:'#374151',lineHeight:1.65,padding:'10px 12px',background:'rgba(0,0,0,0.18)',borderRadius:8}}>
+              <strong style={{color:'#6b7280'}}>How it works:</strong>{' '}
+              Runs a pilot of 1 000 trials, estimates variance σ, then computes required N = (1.96σ/margin)² and
+              continues in batches until CI width ≤ target or max trials reached.
+              {antithetic&&' Antithetic variates pairs each trial with its complement — halves variance at no extra cost.'}
+              {stratified&&' Stratified sampling assigns proportional trials per boss move — reduces move-selection variance.'}
+              {controlVar&&' Control variate uses a deterministic analytic estimate to cancel correlated error.'}
             </div>
           )}
 
-          {result&&(
+          {R&&(
             <div style={{display:'flex',flexDirection:'column',gap:12}}>
 
-              {/* Summary row */}
-              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
-                {[
-                  {label:'Win Rate',val:`${(result.pBossDefeated*100).toFixed(1)}%`,color:result.pBossDefeated>=0.8?'#4ade80':result.pBossDefeated>=0.5?'#fb923c':'#f87171'},
-                  {label:'Mean Attackers',val:result.meanAttackers.toFixed(2),color:'#e4e6ef'},
-                  {label:'Median',val:result.medianAttackers.toString(),color:'#a5b4fc'},
-                  {label:'P90 (worst 10%)',val:result.p90Attackers===counters.length+1?`>${counters.length}`:result.p90Attackers.toString(),color:'#fb923c'},
-                ].map(({label,val,color})=>(
-                  <div key={label} style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:8,padding:'10px 12px',textAlign:'center'}}>
-                    <div style={{fontSize:9,color:'#4b5563',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>{label}</div>
-                    <div style={{fontSize:20,fontWeight:900,fontFamily:'monospace',color}}>{val}</div>
-                  </div>
-                ))}
+              {/* ── Summary pills ── */}
+              <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:6}}>
+                {PILL('Win Rate',`${(R.pWin*100).toFixed(1)}%`,R.pWin>=0.8?'#4ade80':R.pWin>=0.5?'#fb923c':'#f87171')}
+                {PILL('Mean',R.mean.toFixed(2),'#e4e6ef',`±${R.se.toFixed(3)} SE`)}
+                {PILL('Median',R.median.toString(),'#a5b4fc')}
+                {PILL('Mode',R.mode.toString(),'#818cf8')}
+                {PILL('Std Dev',R.stdDev.toFixed(3),'#9ca3af')}
+                {PILL('P90',R.p90>numCounters?`>${numCounters}`:R.p90.toString(),'#fb923c')}
+                {PILL('P95',R.p95>numCounters?`>${numCounters}`:R.p95.toString(),'#f87171')}
               </div>
 
-              {/* Histogram */}
-              <div style={{background:'rgba(0,0,0,0.2)',borderRadius:8,padding:'12px 14px'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:10}}>
-                  Distribution — Attackers Needed ({result.trials.toLocaleString()} trials)
+              {/* ── 95% CI strip ── */}
+              <div style={{display:'flex',alignItems:'center',gap:8,padding:'9px 13px',
+                background:'rgba(0,0,0,0.22)',borderRadius:8,flexWrap:'wrap'}}>
+                <span style={{fontSize:10,fontWeight:700,color:'#374151',textTransform:'uppercase',letterSpacing:'0.07em'}}>95% CI</span>
+                <span style={{fontFamily:'monospace',fontSize:14,color:'#e4e6ef',fontWeight:700}}>
+                  [{R.ci95[0].toFixed(3)},&thinsp;{R.ci95[1].toFixed(3)}]
+                </span>
+                <span style={{fontSize:11,color:ciColor,fontWeight:700,padding:'2px 8px',
+                  background:`${ciColor}18`,borderRadius:5,border:`1px solid ${ciColor}44`}}>
+                  {R.metMargin?'✓ Margin met':`Width ${R.ciWidth.toFixed(3)} (target ${(R.options.targetMargin*2).toFixed(3)})`}
+                </span>
+                <span style={{fontSize:10,color:'#374151',marginLeft:'auto'}}>
+                  {R.trials.toLocaleString()} trials · seed {R.seed}
+                  {R.options.antithetic&&' · AV'}{R.options.stratified&&' · Strat'}{R.options.controlVar&&' · CV'}
+                </span>
+                <button onClick={()=>setDiag(d=>!d)}
+                  style={{fontSize:10,color:'#4b5563',background:'none',border:'1px solid rgba(255,255,255,0.07)',
+                    borderRadius:5,padding:'3px 8px',cursor:'pointer',fontFamily:'inherit'}}>
+                  {showDiag?'Hide':'Show'} diagnostics
+                </button>
+              </div>
+
+              {/* ── Diagnostics panel ── */}
+              {showDiag&&(
+                <div style={{background:'rgba(0,0,0,0.18)',border:'1px solid rgba(255,255,255,0.05)',
+                  borderRadius:9,padding:'13px 15px',display:'flex',flexDirection:'column',gap:10}}>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:7}}>
+                    {[
+                      ['Pilot Trials',  R.pilotTrials.toLocaleString()],
+                      ['Pilot σ',       R.pilotStdDev.toFixed(4)],
+                      ['Required N',    R.trialsRequired.toLocaleString()],
+                      ['Actual N',      R.trials.toLocaleString()],
+                      ['CI Width',      R.ciWidth.toFixed(4)],
+                      ['Target Width',  (R.options.targetMargin*2).toFixed(4)],
+                      ['Eff. Samples',  R.effectiveSamples.toFixed(0)],
+                      ['Ctrl Cov β',    R.controlCov.toFixed(4)],
+                    ].map(([l,v])=>(
+                      <div key={l} style={{textAlign:'center',padding:'7px 8px',background:'rgba(255,255,255,0.02)',borderRadius:6}}>
+                        <div style={{fontSize:9,textTransform:'uppercase',letterSpacing:'0.06em',color:'#374151',marginBottom:2}}>{l}</div>
+                        <div style={{fontSize:13,fontFamily:'monospace',color:'#9ca3af',fontWeight:700}}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:10,color:'#374151',lineHeight:1.5}}>
+                    P5={R.p5}&nbsp; P25={R.p25}&nbsp; P50={R.median}&nbsp; P75={R.p75}&nbsp; P95={R.p95}
+                    &nbsp;·&nbsp; Policy: {R.policy}
+                  </div>
+                  {/* Convergence sparkline */}
+                  {cpts.length>=3&&(
+                    <div>
+                      <div style={{fontSize:9,textTransform:'uppercase',letterSpacing:'0.06em',color:'#374151',marginBottom:4}}>
+                        Running mean convergence + 95% CI band
+                      </div>
+                      <svg width={SP_W} height={SP_H+12} style={{overflow:'visible'}}>
+                        <polygon
+                          points={[...cpts.map((p,i)=>`${sx(i)},${sy(p.ciLo)}`),
+                            ...[...cpts].reverse().map((p,i)=>`${sx(cpts.length-1-i)},${sy(p.ciHi)}`)].join(' ')}
+                          fill="rgba(99,102,241,0.15)"/>
+                        <polyline
+                          points={cpts.map((p,i)=>`${sx(i)},${sy(p.mean)}`).join(' ')}
+                          fill="none" stroke="#818cf8" strokeWidth={1.5}/>
+                        {/* Reference line at final mean */}
+                        <line x1={0} y1={sy(R.mean)} x2={SP_W} y2={sy(R.mean)}
+                          stroke="#4ade80" strokeWidth={0.8} strokeDasharray="3,3"/>
+                        <text x={0}   y={SP_H+10} fontSize={8} fill="#374151">{cpts[0].trial}</text>
+                        <text x={SP_W} y={SP_H+10} fontSize={8} fill="#374151" textAnchor="end">{cpts[cpts.length-1].trial}</text>
+                        <text x={SP_W+4} y={sy(R.mean)+3} fontSize={8} fill="#4ade80">{R.mean.toFixed(2)}</text>
+                      </svg>
+                    </div>
+                  )}
+                  {/* Replay specific trial */}
+                  {R.options.logTrials>0&&(
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4}}>
+                      <span style={{fontSize:10,color:'#4b5563'}}>Replay trial #:</span>
+                      <input value={replayIdx} onChange={e=>setReplayIdx(e.target.value)} placeholder="0"
+                        style={{width:55,padding:'3px 6px',background:'rgba(0,0,0,0.3)',border:'1px solid rgba(255,255,255,0.08)',
+                          borderRadius:5,color:'#9ca3af',fontSize:11,fontFamily:'monospace',outline:'none'}}/>
+                      <span style={{fontSize:10,color:'#374151'}}>(logged trials: {R.trialLogs.length})</span>
+                    </div>
+                  )}
                 </div>
-                <div style={{display:'flex',gap:6,alignItems:'flex-end',height:80}}>
-                  {histKeys.map(k=>{
-                    const count=result.histogram[k]||0;
-                    const pct=count/result.trials;
-                    const barH=Math.max(4,Math.round((count/maxHist)*72));
-                    const isOver=k>counters.length;
+              )}
+
+              {/* ── Sub-tabs ── */}
+              <div style={{display:'flex',gap:0,borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
+                {TABL('hist',   '📊 Distribution')}
+                {TABL('patk',   'P(≤k) Table')}
+                {TABL('moves',  '⚔️ Boss Moves')}
+                {TABL('slots',  '🧑‍🤝‍🧑 Per Attacker')}
+                {exactMode&&TABL('exact','🔬 Exact PMF')}
+                {R.trialLogs.length>0&&TABL('debug','📋 Trial Logs')}
+              </div>
+
+              {/* ── Tab: Histogram + CDF ── */}
+              {activeTab==='hist'&&(
+                <div style={{background:'rgba(0,0,0,0.22)',borderRadius:9,padding:'14px 14px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                    <span style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em'}}>
+                      Attackers Needed — {R.trials.toLocaleString()} trials
+                    </span>
+                    <span style={{fontSize:10,color:'#374151'}}>
+                      σ={R.stdDev.toFixed(3)}&nbsp; IQR=[{R.p25},{R.p75}]
+                    </span>
+                  </div>
+                  <div style={{display:'flex',gap:4,alignItems:'flex-end',height:90,position:'relative'}}>
+                    {histKeys.map(k=>{
+                      const cnt=R.histogram[k]||0; const pct=cnt/R.trials;
+                      const barH=Math.max(4,Math.round((cnt/maxHistCnt)*78));
+                      const isOver=k>numCounters; const isMed=k===R.median;
+                      const colBar = isOver?'rgba(248,113,113,0.5)':k===R.mode?'rgba(129,140,248,0.85)':isMed?'rgba(74,222,128,0.6)':'rgba(99,102,241,0.55)';
+                      const cdfV = R.cdf[k]??0;
+                      return (
+                        <div key={k} title={`${k} atk${k!==1?'s':''}: ${(pct*100).toFixed(1)}% | CDF ${(cdfV*100).toFixed(1)}%`}
+                          style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2,minWidth:0,cursor:'default'}}>
+                          <div style={{fontSize:9,color:'#374151',fontFamily:'monospace'}}>{(pct*100).toFixed(0)}%</div>
+                          <div style={{width:'100%',height:barH,background:colBar,borderRadius:'3px 3px 0 0',minHeight:4,transition:'height 0.25s'}}/>
+                          {/* CDF bar underneath */}
+                          <div style={{width:'100%',height:3,background:`rgba(251,191,36,${cdfV*0.7})`,borderRadius:'0 0 2px 2px'}}/>
+                          <div style={{fontSize:10,color:isOver?'#f87171':k===R.mode?'#818cf8':isMed?'#4ade80':'#a5b4fc',fontWeight:700,fontFamily:'monospace'}}>
+                            {isOver?`>${numCounters}`:k}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{display:'flex',gap:14,marginTop:8,fontSize:9,color:'#374151',flexWrap:'wrap'}}>
+                    <span><span style={{display:'inline-block',width:8,height:8,background:'rgba(99,102,241,0.55)',marginRight:3,borderRadius:1}}/>freq</span>
+                    <span><span style={{display:'inline-block',width:8,height:8,background:'rgba(129,140,248,0.85)',marginRight:3,borderRadius:1}}/>mode={R.mode}</span>
+                    <span><span style={{display:'inline-block',width:8,height:8,background:'rgba(74,222,128,0.6)',marginRight:3,borderRadius:1}}/>median={R.median}</span>
+                    <span><span style={{display:'inline-block',width:8,height:3,background:'rgba(251,191,36,0.7)',marginRight:3}}/>CDF strip</span>
+                    <span style={{marginLeft:'auto'}}>Hover bars for exact %</span>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Tab: P(≤k) table with confidence slider ── */}
+              {activeTab==='patk'&&(
+                <div style={{background:'rgba(0,0,0,0.18)',borderRadius:9,padding:'14px 14px'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:4}}>
+                    P(defeat boss with ≤ k attackers)
+                  </div>
+                  <div style={{fontSize:11,color:'#374151',marginBottom:10}}>
+                    Drag slider to choose a confidence level and see required attacker count.
+                    {confK&&<span style={{color:'#a5b4fc',fontWeight:700,marginLeft:6}}>
+                      {(R.pAtMostK.find(x=>x.k===confK)?.p??0)*100 >=90?'✓':''} ≤{confK} attackers at {((R.pAtMostK.find(x=>x.k===confK)?.p??0)*100).toFixed(1)}%
+                    </span>}
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:6}}>
+                    {R.pAtMostK.map(({k,p})=>{
+                      const col=p>=0.9?'#4ade80':p>=0.7?'#a3e635':p>=0.5?'#fb923c':'#f87171';
+                      const isSelected=confK===k;
+                      return (
+                        <div key={k} onClick={()=>setConfK(isSelected?null:k)}
+                          style={{display:'flex',alignItems:'center',gap:7,padding:'7px 9px',cursor:'pointer',
+                            background:isSelected?'rgba(99,102,241,0.15)':'rgba(255,255,255,0.02)',
+                            borderRadius:6,border:`1px solid ${isSelected?'rgba(99,102,241,0.5)':'rgba(255,255,255,0.05)'}`,
+                            transition:'all .15s'}}>
+                          <span style={{fontSize:11,color:'#9ca3af',minWidth:20,fontWeight:700}}>≤{k}</span>
+                          <div style={{flex:1,height:5,background:'rgba(255,255,255,0.07)',borderRadius:3,overflow:'hidden'}}>
+                            <div style={{width:`${p*100}%`,height:'100%',background:col,borderRadius:3}}/>
+                          </div>
+                          <span style={{fontSize:12,fontFamily:'monospace',color:col,fontWeight:700,minWidth:40,textAlign:'right'}}>{(p*100).toFixed(1)}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Tab: Boss move breakdown ── */}
+              {activeTab==='moves'&&(
+                <div style={{background:'rgba(0,0,0,0.18)',borderRadius:9,padding:'14px'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:8}}>
+                    Boss Move Usage & Damage Output (sorted by total dmg)
+                  </div>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                      <thead>
+                        <tr style={{borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
+                          {['Move','Type','BP','Uses','Avg Dmg','Max Dmg','Share of Dmg'].map(h=>(
+                            <th key={h} style={{padding:'5px 8px',textAlign:'center',color:'#374151',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {R.perMove.map((m,i)=>(
+                          <tr key={i} style={{borderBottom:'1px solid rgba(255,255,255,0.04)',
+                            background:i===0?'rgba(99,102,241,0.06)':'transparent'}}>
+                            <td style={{padding:'6px 8px',fontWeight:700,color:'#e4e6ef'}}>{m.name}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center'}}>{BADGE(m.type)}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#9ca3af'}}>{m.bp}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#a5b4fc'}}>{m.uses.toLocaleString()}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#fb923c'}}>{m.avgDmg.toFixed(1)}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#f87171'}}>{m.maxDmg}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center',minWidth:90}}>
+                              <div style={{display:'flex',alignItems:'center',gap:4}}>
+                                <div style={{flex:1,height:5,background:'rgba(255,255,255,0.07)',borderRadius:3,overflow:'hidden'}}>
+                                  <div style={{width:`${m.pctDmg*100}%`,height:'100%',background:'#f87171',borderRadius:3}}/>
+                                </div>
+                                <span style={{fontSize:10,fontFamily:'monospace',color:'#f87171',minWidth:36}}>{(m.pctDmg*100).toFixed(1)}%</span>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{fontSize:10,color:'#374151',marginTop:8}}>
+                    Policy: <strong style={{color:'#6b7280'}}>{R.policy}</strong>
+                    {R.policy==='uniform'&&' — each move equally likely each turn'}
+                    {R.policy==='bpweighted'&&' — higher BP moves chosen more often'}
+                    {R.policy==='maxdmg'&&' — boss prefers highest expected damage moves'}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Tab: Per-attacker survival ── */}
+              {activeTab==='slots'&&(
+                <div style={{background:'rgba(0,0,0,0.18)',borderRadius:9,padding:'14px'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:8}}>
+                    Per-Attacker Combat Statistics
+                  </div>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                      <thead>
+                        <tr style={{borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
+                          {['Attacker','Used','Avg Hits','Boss HP %','Survived','OHKO Risk','Avg Dmg Taken'].map(h=>(
+                            <th key={h} style={{padding:'5px 8px',textAlign:'center',color:'#374151',fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em',whiteSpace:'nowrap'}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {R.perSlot.map((s,i)=>{
+                          const pctHP=s.pctBossHp*100;
+                          return (
+                            <tr key={i} style={{borderBottom:'1px solid rgba(255,255,255,0.04)',background:i%2===0?'rgba(255,255,255,0.01)':'transparent'}}>
+                              <td style={{padding:'6px 8px',fontWeight:700,color:'#e4e6ef'}}>{s.name}</td>
+                              <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#9ca3af'}}>{s.used.toLocaleString()}</td>
+                              <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#4ade80'}}>{s.avgHitsDealt.toFixed(2)}</td>
+                              <td style={{padding:'6px 8px',textAlign:'center',minWidth:80}}>
+                                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                                  <div style={{flex:1,height:5,background:'rgba(255,255,255,0.07)',borderRadius:3,overflow:'hidden'}}>
+                                    <div style={{width:`${Math.min(100,pctHP)}%`,height:'100%',background:pctHP>=50?'#f87171':'#4ade80',borderRadius:3}}/>
+                                  </div>
+                                  <span style={{fontSize:10,fontFamily:'monospace',color:'#9ca3af',minWidth:38}}>{pctHP.toFixed(1)}%</span>
+                                </div>
+                              </td>
+                              <td style={{padding:'6px 8px',textAlign:'center'}}>
+                                <span style={{fontSize:11,fontWeight:700,padding:'2px 6px',borderRadius:4,
+                                  background:s.survivalPct>=0.5?'rgba(74,222,128,0.1)':'rgba(248,113,113,0.1)',
+                                  color:s.survivalPct>=0.5?'#4ade80':'#f87171'}}>
+                                  {(s.survivalPct*100).toFixed(0)}%
+                                </span>
+                              </td>
+                              <td style={{padding:'6px 8px',textAlign:'center'}}>
+                                <span style={{fontSize:11,fontWeight:700,padding:'2px 6px',borderRadius:4,
+                                  background:s.ohkoChance>=0.5?'rgba(248,113,113,0.15)':s.ohkoChance>=0.2?'rgba(251,146,60,0.15)':'rgba(74,222,128,0.1)',
+                                  color:s.ohkoChance>=0.5?'#f87171':s.ohkoChance>=0.2?'#fb923c':'#4ade80'}}>
+                                  {(s.ohkoChance*100).toFixed(1)}%
+                                </span>
+                              </td>
+                              <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#f87171'}}>{s.avgDmgTaken.toFixed(1)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Tab: Exact convolution PMF ── */}
+              {activeTab==='exact'&&(
+                <div style={{background:'rgba(0,0,0,0.18)',borderRadius:9,padding:'14px'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:4}}>
+                    Exact Hits-to-KO PMF (discrete convolution, no boss retaliation)
+                  </div>
+                  <div style={{fontSize:11,color:'#374151',marginBottom:10,lineHeight:1.5}}>
+                    These are exact probabilities assuming the attacker hits the boss with no interruption.
+                    Useful as a baseline — Monte-Carlo accounts for boss attacks reducing attacker HP.
+                  </div>
+                  {R.exactKoPmfs.map((pmf,si)=>{
+                    const slot=counters[si];
+                    const nonZero=pmf.map((p,k)=>({k,p})).filter(x=>x.p>0.001);
+                    if (!nonZero.length) return (
+                      <div key={si} style={{padding:'8px 10px',color:'#374151',fontSize:11}}>
+                        {slot.name||'—'}: immune or no valid move
+                      </div>
+                    );
+                    const maxP=Math.max(...nonZero.map(x=>x.p));
                     return (
-                      <div key={k} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3,minWidth:0}}>
-                        <div style={{fontSize:9,color:'#6b7280',fontFamily:'monospace'}}>{(pct*100).toFixed(0)}%</div>
-                        <div style={{width:'100%',height:barH,background:isOver?'rgba(248,113,113,0.4)':'rgba(99,102,241,0.65)',borderRadius:'3px 3px 0 0',transition:'height 0.3s',minHeight:4}}/>
-                        <div style={{fontSize:10,color:isOver?'#f87171':'#a5b4fc',fontWeight:700,fontFamily:'monospace'}}>
-                          {isOver?`>${counters.length}`:k}
+                      <div key={si} style={{marginBottom:12}}>
+                        <div style={{fontSize:11,fontWeight:700,color:'#a5b4fc',marginBottom:5}}>{slot.name||'—'}</div>
+                        <div style={{display:'flex',gap:4,alignItems:'flex-end',height:52}}>
+                          {nonZero.map(({k,p})=>{
+                            const bH=Math.max(4,Math.round((p/maxP)*46));
+                            return (
+                              <div key={k} title={`P(KO in ${k} hits) = ${(p*100).toFixed(2)}%`}
+                                style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2,minWidth:0,maxWidth:40}}>
+                                <div style={{fontSize:9,color:'#374151'}}>{(p*100).toFixed(0)}%</div>
+                                <div style={{width:'100%',height:bH,background:'rgba(99,102,241,0.6)',borderRadius:'2px 2px 0 0'}}/>
+                                <div style={{fontSize:9,color:'#818cf8',fontFamily:'monospace'}}>{k}h</div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     );
                   })}
                 </div>
-              </div>
+              )}
 
-              {/* Per-counter table */}
-              <div style={{background:'rgba(0,0,0,0.15)',borderRadius:8,padding:'12px 14px'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}}>
-                  Per-Counter Survival Stats
+              {/* ── Tab: Trial debug logs ── */}
+              {activeTab==='debug'&&R.trialLogs.length>0&&(
+                <div style={{background:'rgba(0,0,0,0.18)',borderRadius:9,padding:'14px'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:8}}>
+                    Trial Logs ({R.trialLogs.length} recorded)
+                  </div>
+                  {R.trialLogs.map(tl=>(
+                    <div key={tl.trialIdx} style={{marginBottom:14,border:'1px solid rgba(255,255,255,0.06)',borderRadius:7,overflow:'hidden'}}>
+                      <div style={{padding:'7px 10px',background:'rgba(99,102,241,0.1)',display:'flex',gap:10,alignItems:'center',fontSize:11}}>
+                        <span style={{fontWeight:700,color:'#a5b4fc'}}>Trial #{tl.trialIdx}</span>
+                        <span style={{color:tl.won?'#4ade80':'#f87171',fontWeight:700}}>{tl.won?'✓ Win':'✗ Loss'}</span>
+                        <span style={{color:'#9ca3af'}}>Attackers used: {tl.attackersUsed}</span>
+                        <span style={{color:'#374151',fontFamily:'monospace',fontSize:10,marginLeft:'auto'}}>seed:{tl.seed}</span>
+                      </div>
+                      <div style={{overflowX:'auto',maxHeight:160,overflowY:'auto'}}>
+                        <table style={{width:'100%',borderCollapse:'collapse',fontSize:10}}>
+                          <thead>
+                            <tr style={{background:'rgba(0,0,0,0.2)',position:'sticky',top:0}}>
+                              {['Turn','Actor','Move','Dmg','Boss HP remaining'].map(h=>(
+                                <th key={h} style={{padding:'4px 8px',textAlign:'left',color:'#374151',fontWeight:700}}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tl.turns.map((t,ti)=>(
+                              <tr key={ti} style={{borderBottom:'1px solid rgba(255,255,255,0.03)',background:t.actor==='boss'?'rgba(248,113,113,0.04)':'transparent'}}>
+                                <td style={{padding:'3px 8px',fontFamily:'monospace',color:'#374151'}}>{t.turn}</td>
+                                <td style={{padding:'3px 8px',color:t.actor==='atk'?'#4ade80':'#f87171',fontWeight:700}}>{t.actor==='atk'?'ATK':'BOSS'}</td>
+                                <td style={{padding:'3px 8px',color:'#9ca3af'}}>{t.actor==='boss'?(bossMoves[t.moveIdx]?.name??'—'):'attack'}</td>
+                                <td style={{padding:'3px 8px',fontFamily:'monospace',color:'#fb923c',fontWeight:700}}>{t.dmg}</td>
+                                <td style={{padding:'3px 8px',fontFamily:'monospace',color:t.remaining<=0?'#4ade80':'#e4e6ef'}}>{Math.max(0,t.remaining)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div style={{overflowX:'auto'}}>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
-                    <thead>
-                      <tr style={{borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
-                        {['Counter','Avg Hits Dealt','Avg % Dealt','Avg Survived','OHKO Risk'].map(h=>(
-                          <th key={h} style={{padding:'4px 8px',textAlign:'center',color:'#4b5563',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.perSlot.map((s,i)=>{
-                        const slot=counters[i];
-                        const atkData=slot.data||lookupPoke(slot.name);
-                        const atkHp=atkData?calcStat(atkData.stats.hp,slot.evs.hp,slot.ivs.hp,true,1,slot.level||100):1;
-                        const bossHpFull=bossHP||1;
-                        const pctDealt=(s.avgDmgDealt/bossHpFull*100);
-                        return (
-                          <tr key={i} style={{borderBottom:'1px solid rgba(255,255,255,0.04)',background:i%2===0?'rgba(255,255,255,0.01)':'transparent'}}>
-                            <td style={{padding:'6px 8px',fontWeight:700,color:'#e4e6ef'}}>{s.name||'—'}</td>
-                            <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#4ade80'}}>{s.avgHitsDealt.toFixed(1)}</td>
-                            <td style={{padding:'6px 8px',textAlign:'center'}}>
-                              <div style={{display:'flex',alignItems:'center',gap:5}}>
-                                <div style={{flex:1,height:5,background:'rgba(255,255,255,0.07)',borderRadius:3,overflow:'hidden',minWidth:40}}>
-                                  <div style={{width:`${Math.min(100,pctDealt)}%`,height:'100%',background:pctDealt>=50?'#f87171':'#4ade80',borderRadius:3}}/>
-                                </div>
-                                <span style={{fontSize:10,fontFamily:'monospace',color:'#9ca3af',minWidth:36}}>{pctDealt.toFixed(1)}%</span>
-                              </div>
-                            </td>
-                            <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#a5b4fc'}}>{s.avgHitsSurvived.toFixed(1)}</td>
-                            <td style={{padding:'6px 8px',textAlign:'center'}}>
-                              <span style={{
-                                fontSize:11,fontWeight:700,padding:'2px 7px',borderRadius:4,
-                                background:s.ohkoChance>=0.5?'rgba(248,113,113,0.18)':s.ohkoChance>=0.2?'rgba(251,146,60,0.18)':'rgba(74,222,128,0.12)',
-                                color:s.ohkoChance>=0.5?'#f87171':s.ohkoChance>=0.2?'#fb923c':'#4ade80',
-                              }}>{(s.ohkoChance*100).toFixed(0)}%</span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div style={{fontSize:10,color:'#374151',marginTop:8}}>
-                  Policy: <strong style={{color:'#6b7280'}}>{result.policy==='uniform'?'Uniform random':'BP-weighted random'}</strong> boss moves · {result.trials.toLocaleString()} trials
-                </div>
-              </div>
+              )}
+
             </div>
           )}
         </div>
