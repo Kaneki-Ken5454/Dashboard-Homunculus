@@ -156,6 +156,7 @@ function getLevelUpMoves(pokeName: string): Array<{level:number; name:string; ty
   }
   return Object.values(result).sort((a,b) => b.bp - a.bp || a.level - b.level).slice(0,12);
 }
+
 function searchPokemon(q:string, limit=25): string[] {
   if (!q || !_dex) return [];
   const k = _key(q);
@@ -982,7 +983,7 @@ function BossSimPanel({ boss, counters, bossHP }: {
         <span style={{fontSize:11,fontWeight:800,textTransform:'uppercase',letterSpacing:'0.09em',display:'flex',alignItems:'center',gap:8}}>
           <span>🎯</span> Boss Simulation
           <span style={{fontSize:10,color:'#6b7280',fontWeight:400,textTransform:'none'}}>
-            — {bossData.name}'s level-up moves vs each counter
+            — {boss.data.name}'s level-up moves vs each counter
           </span>
         </span>
         <span style={{fontSize:13,color:'#6b7280'}}>{open?'▲':'▼'}</span>
@@ -993,7 +994,7 @@ function BossSimPanel({ boss, counters, bossHP }: {
           {validCounters.length===0 ? (
             <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:16}}>Add at least one counter Pokémon above to simulate.</div>
           ) : bossLvlUpMoves.length===0 ? (
-            <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:16}}>No level-up damaging moves found for {bossData.name}.</div>
+            <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:16}}>No level-up damaging moves found for {boss.data.name}.</div>
           ) : (
             <div style={{overflowX:'auto'}}>
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
@@ -1050,6 +1051,363 @@ function BossSimPanel({ boss, counters, bossHP }: {
               </table>
               <div style={{fontSize:10,color:'#374151',marginTop:8,paddingLeft:4}}>
                 Shows boss damage output against each counter at Lv{boss.level} with configured EVs. Level-up damaging moves only, sorted by BP.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Monte-Carlo Simulation ────────────────────────────────────────────────────
+interface SimResult {
+  trials: number;
+  meanAttackers: number;
+  medianAttackers: number;
+  p90Attackers: number;
+  pBossDefeated: number;
+  histogram: Record<number,number>;
+  perSlot: Array<{
+    name: string;
+    avgHitsDealt: number;
+    avgHitsSurvived: number;
+    ohkoChance: number;
+    avgDmgDealt: number;
+    avgDmgTaken: number;
+  }>;
+  policy: 'uniform'|'bpweighted';
+}
+
+function runMonteCarlo(
+  boss: BossConfig, counters: CounterSlot[],
+  bossHP: number, trials: number,
+  policy: 'uniform'|'bpweighted'
+): SimResult | null {
+  if (!boss.data) return null;
+  const raidMult = RAID_TIERS[boss.raidTier]??1;
+  const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp:Math.round(boss.data.stats.hp*raidMult)}};
+  const bossMoves = getLevelUpMoves(boss.name);
+  if (!bossMoves.length) return null;
+
+  // Precompute attacker→boss rolls (one runCalc call per slot)
+  type RollCache = { rolls:number[]; isImmune:boolean };
+  const atkToBoss: (RollCache|null)[] = counters.map(slot => {
+    const atkData = slot.data||lookupPoke(slot.name);
+    const mv = slot.moveData||lookupMove(slot.moveName);
+    if (!atkData||!mv||!mv.bp) return null;
+    const res = runCalc({
+      atkPoke:atkData, defPoke:bossFake, bp:mv.bp, cat:mv.cat, mtyp:mv.type,
+      atkEvs:slot.evs, defEvs:boss.evs, atkIvs:slot.ivs, defIvs:boss.ivs,
+      atkNat:slot.nature, defNat:boss.nature, atkTera:slot.teraType, defTera:boss.teraType,
+      atkItem:slot.item, atkStatus:'Healthy', weather:boss.weather, doubles:boss.doubles,
+      atkScreen:false, defScreen:boss.defScreen, isCrit:slot.isCrit, zmove:slot.zmove,
+      atkLv:slot.level||100, defLv:boss.level||100,
+    });
+    if (!res) return null;
+    return res.immune ? {rolls:[],isImmune:true} : {rolls:res.rolls||[],isImmune:false};
+  });
+
+  // Precompute boss→attacker rolls for each (move × slot)
+  const bossToAtk: (RollCache|null)[][] = bossMoves.map(mv =>
+    counters.map(slot => {
+      const atkData = slot.data||lookupPoke(slot.name);
+      if (!atkData) return null;
+      const res = runCalc({
+        atkPoke:bossFake, defPoke:atkData, bp:mv.bp, cat:mv.cat, mtyp:mv.type,
+        atkEvs:boss.evs, defEvs:slot.evs, atkIvs:boss.ivs, defIvs:slot.ivs,
+        atkNat:boss.nature, defNat:slot.nature, atkTera:boss.teraType, defTera:slot.teraType,
+        atkItem:'(none)', atkStatus:'Healthy', weather:boss.weather, doubles:boss.doubles,
+        atkScreen:boss.defScreen, defScreen:false, isCrit:false, zmove:false,
+        atkLv:boss.level||100, defLv:slot.level||100,
+      });
+      if (!res) return null;
+      return res.immune ? {rolls:[],isImmune:true} : {rolls:res.rolls||[],isImmune:false};
+    })
+  );
+
+  // Attacker HP and speed per slot
+  const atkHPs = counters.map(slot => {
+    const d=slot.data||lookupPoke(slot.name); if (!d) return 0;
+    return calcStat(d.stats.hp,slot.evs.hp,slot.ivs.hp,true,1,slot.level||100);
+  });
+  const atkSpes = counters.map(slot => {
+    const d=slot.data||lookupPoke(slot.name); if (!d) return 0;
+    return calcStat(d.stats.spe,slot.evs.spe,slot.ivs.spe,false,getNat(slot.nature,'spe'),slot.level||100);
+  });
+  const bossSpe = calcStat(boss.data.stats.spe,boss.evs.spe,boss.ivs.spe,false,getNat(boss.nature,'spe'),boss.level||100);
+
+  // BP weights for BP-weighted policy
+  const totalBP = bossMoves.reduce((s,mv)=>s+mv.bp,0);
+  const mvCumBP = bossMoves.map((_,i)=>bossMoves.slice(0,i+1).reduce((s,m)=>s+m.bp,0));
+
+  const pickMove = (): number => {
+    if (policy==='uniform') return Math.floor(Math.random()*bossMoves.length);
+    const r = Math.random()*totalBP;
+    return mvCumBP.findIndex(c=>r<=c);
+  };
+  const sampleRoll = (rolls:number[]) => rolls[Math.floor(Math.random()*16)];
+
+  // Per-slot accumulators
+  const acc = counters.map(()=>({hitsDealt:0,hitsSurvived:0,dmgDealt:0,dmgTaken:0,ohkoHits:0,ohkoTrials:0,used:0}));
+  const attackersNeeded: number[] = [];
+
+  for (let t=0; t<trials; t++) {
+    let curBossHP = bossHP;
+    let usedCount = 0;
+    let bossDefeated = false;
+
+    for (let si=0; si<counters.length && curBossHP>0; si++) {
+      const cache = atkToBoss[si];
+      if (!cache||cache.isImmune||!atkHPs[si]) continue;
+
+      usedCount++;
+      acc[si].used++;
+      let curAtkHP = atkHPs[si];
+      let hitsDealt=0, hitsSurvived=0, dmgDealt=0, dmgTaken=0;
+      let firstHit=true;
+
+      while (curBossHP>0 && curAtkHP>0) {
+        const atkFirst = atkSpes[si]>=bossSpe;
+
+        if (atkFirst) {
+          const d=sampleRoll(cache.rolls); curBossHP-=d; hitsDealt++; dmgDealt+=d;
+          if (curBossHP<=0) { bossDefeated=true; break; }
+        }
+
+        // Boss move
+        const mvIdx=pickMove();
+        const bCache=bossToAtk[mvIdx][si];
+        if (bCache&&!bCache.isImmune&&bCache.rolls.length) {
+          const d=sampleRoll(bCache.rolls);
+          if (firstHit) { acc[si].ohkoTrials++; if(d>=curAtkHP) acc[si].ohkoHits++; firstHit=false; }
+          curAtkHP-=d; hitsSurvived++; dmgTaken+=d;
+        }
+
+        if (!atkFirst && curAtkHP>0) {
+          const d=sampleRoll(cache.rolls); curBossHP-=d; hitsDealt++; dmgDealt+=d;
+          if (curBossHP<=0) { bossDefeated=true; break; }
+        }
+      }
+
+      acc[si].hitsDealt+=hitsDealt; acc[si].hitsSurvived+=hitsSurvived;
+      acc[si].dmgDealt+=dmgDealt; acc[si].dmgTaken+=dmgTaken;
+      if (bossDefeated) break;
+    }
+
+    attackersNeeded.push(bossDefeated ? usedCount : counters.length+1);
+  }
+
+  const sorted=[...attackersNeeded].sort((a,b)=>a-b);
+  const mean=attackersNeeded.reduce((s,v)=>s+v,0)/trials;
+  const median=sorted[Math.floor(trials/2)];
+  const p90=sorted[Math.floor(trials*0.9)];
+  const pDefeated=attackersNeeded.filter(n=>n<=counters.length).length/trials;
+  const histogram: Record<number,number>={};
+  for (const n of attackersNeeded) histogram[n]=(histogram[n]||0)+1;
+
+  return {
+    trials, meanAttackers:mean, medianAttackers:median, p90Attackers:p90,
+    pBossDefeated:pDefeated, histogram, policy,
+    perSlot: counters.map((slot,si)=>{
+      const a=acc[si]; const u=a.used||1;
+      return {
+        name:slot.name||'—',
+        avgHitsDealt:a.hitsDealt/u, avgHitsSurvived:a.hitsSurvived/u,
+        ohkoChance:a.ohkoTrials>0?a.ohkoHits/a.ohkoTrials:0,
+        avgDmgDealt:a.dmgDealt/u, avgDmgTaken:a.dmgTaken/u,
+      };
+    }),
+  };
+}
+
+// ── Monte-Carlo Panel UI ──────────────────────────────────────────────────────
+function MonteCarloPanel({ boss, counters, bossHP, sdState }: {
+  boss:BossConfig; counters:CounterSlot[]; bossHP:number; sdState:string;
+}) {
+  const [open,setOpen]         = useState(false);
+  const [trials,setTrials]     = useState(2000);
+  const [policy,setPolicy]     = useState<'uniform'|'bpweighted'>('uniform');
+  const [result,setResult]     = useState<SimResult|null>(null);
+  const [running,setRunning]   = useState(false);
+  const [err,setErr]           = useState('');
+
+  if (!boss.data) return null;
+
+  const validSlots = counters.filter(c=>c.name&&(c.data||lookupPoke(c.name))&&c.moveName&&(c.moveData||lookupMove(c.moveName)));
+  const bossMoves = getLevelUpMoves(boss.name);
+
+  const run = () => {
+    if (!validSlots.length) { setErr('Add at least one complete counter slot first.'); return; }
+    if (!bossMoves.length)  { setErr(`No level-up moves found for ${boss.data!.name}.`); return; }
+    setErr(''); setRunning(true); setResult(null);
+    // Small timeout so React re-renders the "Running…" state before blocking
+    setTimeout(() => {
+      const r = runMonteCarlo(boss, counters, bossHP, trials, policy);
+      setResult(r);
+      setRunning(false);
+    }, 20);
+  };
+
+  const maxHist = result ? Math.max(...Object.values(result.histogram)) : 1;
+  const histKeys = result ? Object.keys(result.histogram).map(Number).sort((a,b)=>a-b) : [];
+
+  return (
+    <div style={{border:'1px solid rgba(99,102,241,0.3)',borderRadius:12,overflow:'hidden'}}>
+      {/* Header toggle */}
+      <button onClick={()=>setOpen(o=>!o)}
+        style={{width:'100%',padding:'11px 16px',background:'rgba(99,102,241,0.07)',border:'none',
+          cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',fontFamily:'inherit'}}>
+        <span style={{fontSize:11,fontWeight:800,color:'#a5b4fc',textTransform:'uppercase',letterSpacing:'0.09em',display:'flex',alignItems:'center',gap:8}}>
+          🎲 Monte-Carlo Simulation
+          {result&&<span style={{fontSize:10,color:'#4ade80',fontWeight:600,textTransform:'none'}}>
+            · {(result.pBossDefeated*100).toFixed(0)}% win rate · avg {result.meanAttackers.toFixed(1)} attacker{result.meanAttackers!==1?'s':''}
+          </span>}
+        </span>
+        <span style={{color:'#4b5563',fontSize:12}}>{open?'▲':'▼'}</span>
+      </button>
+
+      {open&&(
+        <div style={{padding:16,display:'flex',flexDirection:'column',gap:12}}>
+          {/* Controls */}
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}}>
+            <div>
+              <label style={LBL}>Trials</label>
+              <div style={{display:'flex',gap:4}}>
+                {[500,2000,5000].map(n=>(
+                  <button key={n} onClick={()=>setTrials(n)}
+                    style={{padding:'4px 10px',borderRadius:5,border:'1px solid rgba(255,255,255,0.1)',
+                      background:trials===n?'rgba(99,102,241,0.28)':'transparent',
+                      color:trials===n?'#a5b4fc':'#6b7280',cursor:'pointer',fontSize:11,fontWeight:trials===n?700:400,fontFamily:'inherit'}}>
+                    {n.toLocaleString()}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label style={LBL}>Boss Move Policy</label>
+              <div style={{display:'flex',gap:4}}>
+                {(['uniform','bpweighted'] as const).map(p=>(
+                  <button key={p} onClick={()=>setPolicy(p)}
+                    style={{padding:'4px 10px',borderRadius:5,border:'1px solid rgba(255,255,255,0.1)',
+                      background:policy===p?'rgba(99,102,241,0.28)':'transparent',
+                      color:policy===p?'#a5b4fc':'#6b7280',cursor:'pointer',fontSize:11,fontWeight:policy===p?700:400,fontFamily:'inherit'}}>
+                    {p==='uniform'?'Uniform':'BP-Weighted'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button onClick={run} disabled={running||sdState!=='ready'}
+              style={{padding:'6px 22px',background:'linear-gradient(135deg,#4f46e5,#7c3aed)',border:'none',
+                borderRadius:7,color:'#fff',cursor:'pointer',fontSize:12,fontWeight:700,
+                opacity:(running||sdState!=='ready')?0.55:1,fontFamily:'inherit'}}>
+              {running?'Running…':'▶ Run Simulation'}
+            </button>
+          </div>
+
+          {err&&<div style={{color:'#f87171',fontSize:12}}>{err}</div>}
+
+          {/* Info blurb */}
+          {!result&&!running&&(
+            <div style={{fontSize:11,color:'#4b5563',lineHeight:1.5,padding:'8px 10px',background:'rgba(0,0,0,0.15)',borderRadius:7}}>
+              Simulates {trials.toLocaleString()} full battles: each counter attacks with its configured move,
+              the boss retaliates with a random level-up move ({policy==='uniform'?'chosen uniformly':'weighted by base power'}).
+              Reports expected attackers needed to KO the boss, win-rate, and per-counter survival stats.
+            </div>
+          )}
+
+          {result&&(
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+
+              {/* Summary row */}
+              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
+                {[
+                  {label:'Win Rate',val:`${(result.pBossDefeated*100).toFixed(1)}%`,color:result.pBossDefeated>=0.8?'#4ade80':result.pBossDefeated>=0.5?'#fb923c':'#f87171'},
+                  {label:'Mean Attackers',val:result.meanAttackers.toFixed(2),color:'#e4e6ef'},
+                  {label:'Median',val:result.medianAttackers.toString(),color:'#a5b4fc'},
+                  {label:'P90 (worst 10%)',val:result.p90Attackers===counters.length+1?`>${counters.length}`:result.p90Attackers.toString(),color:'#fb923c'},
+                ].map(({label,val,color})=>(
+                  <div key={label} style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:8,padding:'10px 12px',textAlign:'center'}}>
+                    <div style={{fontSize:9,color:'#4b5563',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>{label}</div>
+                    <div style={{fontSize:20,fontWeight:900,fontFamily:'monospace',color}}>{val}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Histogram */}
+              <div style={{background:'rgba(0,0,0,0.2)',borderRadius:8,padding:'12px 14px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:10}}>
+                  Distribution — Attackers Needed ({result.trials.toLocaleString()} trials)
+                </div>
+                <div style={{display:'flex',gap:6,alignItems:'flex-end',height:80}}>
+                  {histKeys.map(k=>{
+                    const count=result.histogram[k]||0;
+                    const pct=count/result.trials;
+                    const barH=Math.max(4,Math.round((count/maxHist)*72));
+                    const isOver=k>counters.length;
+                    return (
+                      <div key={k} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3,minWidth:0}}>
+                        <div style={{fontSize:9,color:'#6b7280',fontFamily:'monospace'}}>{(pct*100).toFixed(0)}%</div>
+                        <div style={{width:'100%',height:barH,background:isOver?'rgba(248,113,113,0.4)':'rgba(99,102,241,0.65)',borderRadius:'3px 3px 0 0',transition:'height 0.3s',minHeight:4}}/>
+                        <div style={{fontSize:10,color:isOver?'#f87171':'#a5b4fc',fontWeight:700,fontFamily:'monospace'}}>
+                          {isOver?`>${counters.length}`:k}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Per-counter table */}
+              <div style={{background:'rgba(0,0,0,0.15)',borderRadius:8,padding:'12px 14px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#6b7280',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:8}}>
+                  Per-Counter Survival Stats
+                </div>
+                <div style={{overflowX:'auto'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                    <thead>
+                      <tr style={{borderBottom:'1px solid rgba(255,255,255,0.08)'}}>
+                        {['Counter','Avg Hits Dealt','Avg % Dealt','Avg Survived','OHKO Risk'].map(h=>(
+                          <th key={h} style={{padding:'4px 8px',textAlign:'center',color:'#4b5563',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.perSlot.map((s,i)=>{
+                        const slot=counters[i];
+                        const atkData=slot.data||lookupPoke(slot.name);
+                        const atkHp=atkData?calcStat(atkData.stats.hp,slot.evs.hp,slot.ivs.hp,true,1,slot.level||100):1;
+                        const bossHpFull=bossHP||1;
+                        const pctDealt=(s.avgDmgDealt/bossHpFull*100);
+                        return (
+                          <tr key={i} style={{borderBottom:'1px solid rgba(255,255,255,0.04)',background:i%2===0?'rgba(255,255,255,0.01)':'transparent'}}>
+                            <td style={{padding:'6px 8px',fontWeight:700,color:'#e4e6ef'}}>{s.name||'—'}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#4ade80'}}>{s.avgHitsDealt.toFixed(1)}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center'}}>
+                              <div style={{display:'flex',alignItems:'center',gap:5}}>
+                                <div style={{flex:1,height:5,background:'rgba(255,255,255,0.07)',borderRadius:3,overflow:'hidden',minWidth:40}}>
+                                  <div style={{width:`${Math.min(100,pctDealt)}%`,height:'100%',background:pctDealt>=50?'#f87171':'#4ade80',borderRadius:3}}/>
+                                </div>
+                                <span style={{fontSize:10,fontFamily:'monospace',color:'#9ca3af',minWidth:36}}>{pctDealt.toFixed(1)}%</span>
+                              </div>
+                            </td>
+                            <td style={{padding:'6px 8px',textAlign:'center',fontFamily:'monospace',color:'#a5b4fc'}}>{s.avgHitsSurvived.toFixed(1)}</td>
+                            <td style={{padding:'6px 8px',textAlign:'center'}}>
+                              <span style={{
+                                fontSize:11,fontWeight:700,padding:'2px 7px',borderRadius:4,
+                                background:s.ohkoChance>=0.5?'rgba(248,113,113,0.18)':s.ohkoChance>=0.2?'rgba(251,146,60,0.18)':'rgba(74,222,128,0.12)',
+                                color:s.ohkoChance>=0.5?'#f87171':s.ohkoChance>=0.2?'#fb923c':'#4ade80',
+                              }}>{(s.ohkoChance*100).toFixed(0)}%</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{fontSize:10,color:'#374151',marginTop:8}}>
+                  Policy: <strong style={{color:'#6b7280'}}>{result.policy==='uniform'?'Uniform random':'BP-weighted random'}</strong> boss moves · {result.trials.toLocaleString()} trials
+                </div>
               </div>
             </div>
           )}
@@ -1223,6 +1581,11 @@ function CounterCalcSection({ sdState }: { sdState:'loading'|'ready'|'error' }) 
 
       {/* Boss simulation — boss moves vs counters */}
       {calculated && boss.data && <BossSimPanel boss={boss} counters={counters} bossHP={effectiveHp()}/>}
+
+      {/* Monte-Carlo simulation */}
+      {calculated && boss.data && (
+        <MonteCarloPanel boss={boss} counters={counters} bossHP={effectiveHp()} sdState={sdState}/>
+      )}
 
       {/* Rankings summary */}
       {calculated&&counters.some(c=>c.result&&!c.result.immune&&c.name)&&(
