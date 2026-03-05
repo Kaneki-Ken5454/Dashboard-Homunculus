@@ -303,3 +303,32 @@ export async function getLogChannels(guildId: string): Promise<LogChannelConfig>
 export async function setLogChannels(guildId: string, config: LogChannelConfig) {
   return apiCall('setLogChannels', { guildId, config });
 }
+
+// ── Client Tools — Visitor Logs & Feature Flags ────────────────────────────────
+export interface ClientVisitor {
+  id: number; guild_id: string; session_id: string; ip: string|null;
+  country: string|null; user_agent: string|null; page: string;
+  referrer: string|null; visited_at: string;
+}
+export interface ClientVisitorStats {
+  total: number; today: number;
+  byPage: Array<{page:string; count:number}>;
+  byCountry: Array<{country:string; count:number}>;
+}
+export interface ClientFeatureFlags { damage_calc:boolean; weakness_lookup:boolean; counter_calc:boolean; [k:string]:boolean; }
+
+export async function getClientVisitors(guildId='global', limit=200): Promise<ClientVisitor[]> {
+  return apiCall<ClientVisitor[]>('getClientVisitors', { guildId, limit });
+}
+export async function getClientVisitorStats(guildId='global'): Promise<ClientVisitorStats> {
+  return apiCall<ClientVisitorStats>('getClientVisitorStats', { guildId });
+}
+export async function clearClientVisitors(guildId='global') {
+  return apiCall('clearClientVisitors', { guildId });
+}
+export async function getClientFeatureFlags(guildId='global'): Promise<ClientFeatureFlags> {
+  return apiCall<ClientFeatureFlags>('getClientFeatureFlags', { guildId });
+}
+export async function setClientFeatureFlag(guildId='global', feature:string, enabled:boolean) {
+  return apiCall('setClientFeatureFlag', { guildId, feature, enabled });
+}

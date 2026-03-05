@@ -983,7 +983,7 @@ function BossSimPanel({ boss, counters, bossHP }: {
         <span style={{fontSize:11,fontWeight:800,textTransform:'uppercase',letterSpacing:'0.09em',display:'flex',alignItems:'center',gap:8}}>
           <span>🎯</span> Boss Simulation
           <span style={{fontSize:10,color:'#6b7280',fontWeight:400,textTransform:'none'}}>
-            — {boss.data.name}'s level-up moves vs each counter
+            — {bossData.name}'s level-up moves vs each counter
           </span>
         </span>
         <span style={{fontSize:13,color:'#6b7280'}}>{open?'▲':'▼'}</span>
@@ -994,7 +994,7 @@ function BossSimPanel({ boss, counters, bossHP }: {
           {validCounters.length===0 ? (
             <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:16}}>Add at least one counter Pokémon above to simulate.</div>
           ) : bossLvlUpMoves.length===0 ? (
-            <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:16}}>No level-up damaging moves found for {boss.data.name}.</div>
+            <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:16}}>No level-up damaging moves found for {bossData.name}.</div>
           ) : (
             <div style={{overflowX:'auto'}}>
               <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>

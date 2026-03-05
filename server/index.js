@@ -220,6 +220,25 @@ async function ensureTables() {
     // Plain ALTER with USING works if column is BIGINT; if already TEXT Postgres errors
     // and the catch below silently ignores it — so this is safe either way.
     `ALTER TABLE blacklist_data ALTER COLUMN guild_id TYPE TEXT USING guild_id::text`,
+    `CREATE TABLE IF NOT EXISTS client_visitors (
+      id          BIGSERIAL PRIMARY KEY,
+      guild_id    TEXT NOT NULL DEFAULT 'global',
+      session_id  TEXT NOT NULL,
+      ip          TEXT,
+      country     TEXT,
+      user_agent  TEXT,
+      page        TEXT NOT NULL DEFAULT '/',
+      referrer    TEXT,
+      visited_at  TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS client_feature_flags (
+      id          BIGSERIAL PRIMARY KEY,
+      guild_id    TEXT NOT NULL DEFAULT 'global',
+      feature     TEXT NOT NULL,
+      enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at  TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(guild_id, feature)
+    )`,
   ];
   for (const m of migrations) {
     try { await sql(m); } catch (e) { /* column already exists or table missing */ }
@@ -1204,11 +1223,114 @@ app.post('/api/query', async (req, res) => {
         return ok(res, combined);
       }
 
+      case 'getClientVisitors': {
+        const { guildId = 'global', limit = 200 } = params;
+        const rows = await sql(
+          `SELECT id, guild_id, session_id, ip, country, user_agent, page, referrer, visited_at
+           FROM client_visitors WHERE guild_id = $1
+           ORDER BY visited_at DESC LIMIT $2`,
+          [guildId, limit]
+        );
+        return ok(res, rows);
+      }
+
+      case 'getClientVisitorStats': {
+        const { guildId = 'global' } = params;
+        const [total, today, byPage, byCountry] = await Promise.all([
+          sql(`SELECT COUNT(*) AS count FROM client_visitors WHERE guild_id = $1`, [guildId]),
+          sql(`SELECT COUNT(*) AS count FROM client_visitors WHERE guild_id = $1 AND visited_at >= NOW() - INTERVAL '24 hours'`, [guildId]),
+          sql(`SELECT page, COUNT(*) AS count FROM client_visitors WHERE guild_id = $1 GROUP BY page ORDER BY count DESC LIMIT 10`, [guildId]),
+          sql(`SELECT COALESCE(country,'Unknown') AS country, COUNT(*) AS count FROM client_visitors WHERE guild_id = $1 GROUP BY country ORDER BY count DESC LIMIT 10`, [guildId]),
+        ]);
+        return ok(res, {
+          total: Number(total[0]?.count || 0),
+          today: Number(today[0]?.count || 0),
+          byPage, byCountry,
+        });
+      }
+
+      case 'clearClientVisitors': {
+        const { guildId = 'global' } = params;
+        await sql(`DELETE FROM client_visitors WHERE guild_id = $1`, [guildId]);
+        return ok(res, { deleted: true });
+      }
+
+      case 'getClientFeatureFlags': {
+        const { guildId = 'global' } = params;
+        const rows = await sql(
+          `SELECT feature, enabled FROM client_feature_flags WHERE guild_id = $1`,
+          [guildId]
+        );
+        // Build map; default all features to enabled if not set
+        const defaults = ['damage_calc', 'weakness_lookup', 'counter_calc'];
+        const map = Object.fromEntries(defaults.map(f => [f, true]));
+        for (const r of rows) map[r.feature] = r.enabled;
+        return ok(res, map);
+      }
+
+      case 'setClientFeatureFlag': {
+        const { guildId = 'global', feature, enabled } = params;
+        if (!feature) return err(res, 'feature required');
+        await sql(
+          `INSERT INTO client_feature_flags(guild_id, feature, enabled, updated_at)
+           VALUES($1, $2, $3, NOW())
+           ON CONFLICT(guild_id, feature) DO UPDATE SET enabled = $3, updated_at = NOW()`,
+          [guildId, feature, !!enabled]
+        );
+        return ok(res, { feature, enabled: !!enabled });
+      }
+
       default:
         return err(res, `Unknown action: ${action}`);
     }
   } catch (e) {
     console.error('[Unhandled]', e?.stack || e); return err(res, e.message, 500);
+  }
+});
+
+// ── Public client-tools endpoints (CORS open — used by the separate Vercel app) ─
+// Allow any origin so the client dashboard at its own domain can call these.
+const clientCors = cors({ origin: '*', methods: ['GET','POST','OPTIONS'] });
+
+app.options('/api/client/config',  clientCors, (_req, res) => res.sendStatus(204));
+app.options('/api/client/visit',   clientCors, (_req, res) => res.sendStatus(204));
+
+// GET /api/client/config?guild_id=…  → returns feature flags + branding
+app.get('/api/client/config', clientCors, async (req, res) => {
+  await ensureTablesOnce().catch(() => {});
+  const guildId = req.query.guild_id || 'global';
+  try {
+    const rows = await sql(
+      `SELECT feature, enabled FROM client_feature_flags WHERE guild_id = $1`,
+      [guildId]
+    );
+    const defaults = ['damage_calc', 'weakness_lookup', 'counter_calc'];
+    const map = Object.fromEntries(defaults.map(f => [f, true]));
+    for (const r of rows) map[r.feature] = r.enabled;
+    res.json({ ok: true, features: map });
+  } catch (e) {
+    res.json({ ok: false, features: { damage_calc:true, weakness_lookup:true, counter_calc:true } });
+  }
+});
+
+// POST /api/client/visit  → logs a visitor row (fire-and-forget from client)
+app.post('/api/client/visit', clientCors, async (req, res) => {
+  await ensureTablesOnce().catch(() => {});
+  const { guild_id = 'global', session_id, page = '/', referrer = '' } = req.body || {};
+  if (!session_id) return res.status(400).json({ ok: false, error: 'session_id required' });
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+  const ua = (req.headers['user-agent'] || '').toString().slice(0, 512);
+  // Best-effort country from Vercel/CF headers
+  const country = (req.headers['x-vercel-ip-country'] || req.headers['cf-ipcountry'] || '').toString().slice(0,4) || null;
+  try {
+    await sql(
+      `INSERT INTO client_visitors(guild_id, session_id, ip, country, user_agent, page, referrer)
+       VALUES($1, $2, $3, $4, $5, $6, $7)`,
+      [guildId, session_id, ip || null, country, ua || null, page, referrer || null]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
