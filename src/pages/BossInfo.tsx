@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { apiCall } from '../lib/db';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface PokeStat { hp:number; atk:number; def:number; spa:number; spd:number; spe:number }
@@ -82,6 +83,7 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 // Module-level: survives re-renders, resets on page refresh only
 let _dex: Record<string,any> | null = null;
 let _mvs: Record<string,any> | null = null;
+let _lrn: Record<string,any> | null = null;
 let _sdLoading = false;
 let _waiters: Array<(ok:boolean)=>void> = [];
 
@@ -105,11 +107,10 @@ async function loadSdData(): Promise<boolean> {
   if (_sdLoading) return new Promise(r => _waiters.push(r));
   _sdLoading = true;
 
-  // Try localStorage first (instant)
   _dex = _readCache('pokedex');
   _mvs = _readCache('moves');
+  _lrn = _readCache('learnsets');
 
-  // Fetch missing from CDN in parallel
   const jobs: Promise<void>[] = [];
   if (!_dex) jobs.push(
     fetch(`${CDN}/pokedex.json`).then(r=>r.json()).then(d=>{ _dex=d; _writeCache('pokedex',d); })
@@ -118,6 +119,10 @@ async function loadSdData(): Promise<boolean> {
   if (!_mvs) jobs.push(
     fetch(`${CDN}/moves.json`).then(r=>r.json()).then(d=>{ _mvs=d; _writeCache('moves',d); })
     .catch(()=>{ _mvs={}; })
+  );
+  if (!_lrn) jobs.push(
+    fetch(`${CDN}/learnsets.json`).then(r=>r.json()).then(d=>{ _lrn=d; _writeCache('learnsets',d); })
+    .catch(()=>{ _lrn={}; })
   );
   await Promise.all(jobs);
 
@@ -128,6 +133,29 @@ async function loadSdData(): Promise<boolean> {
   return ok;
 }
 
+// Get level-up moves for simulation (sorted by BP desc)
+function getLevelUpMoves(pokeName: string): Array<{level:number; name:string; type:string; cat:string; bp:number}> {
+  if (!_lrn || !_mvs) return [];
+  const k = _key(pokeName);
+  const entry = (_lrn as any)[k] || (_lrn as any)[k + 'base'] || {};
+  const learnset = (entry.learnset || {}) as Record<string,string[]>;
+  const result: Record<string, {level:number; name:string; type:string; cat:string; bp:number}> = {};
+  for (const [moveKey, sources] of Object.entries(learnset)) {
+    let level: number|null = null;
+    for (const src of sources) {
+      const m = src.match(/^(\d)L(\d+)$/);
+      if (m) { level = parseInt(m[2]); break; }
+    }
+    if (level === null) continue;
+    const mv = (_mvs as any)[moveKey];
+    if (!mv || !mv.basePower || mv.category === 'Status') continue;
+    result[`${level}_${moveKey}`] = {
+      level, name: mv.name || moveKey,
+      type: mv.type||'Normal', cat: mv.category||'Physical', bp: mv.basePower,
+    };
+  }
+  return Object.values(result).sort((a,b) => b.bp - a.bp || a.level - b.level).slice(0,12);
+}
 function searchPokemon(q:string, limit=25): string[] {
   if (!q || !_dex) return [];
   const k = _key(q);
@@ -586,23 +614,75 @@ function DamageResult({ result, atk, def }:{ result:any; atk:PanelState; def:Pan
 }
 
 // ── Weakness Section (fully client-side) ──────────────────────────────────────
-function WeaknessSection() {
-  const [poke,setPoke]    = useState('');
-  const [tera,setTera]    = useState('');
-  const [data,setData]    = useState<PokeData|null>(null);
-  const [err,setErr]      = useState('');
+// ── Weakness + Counter Assignment ─────────────────────────────────────────────
+interface AssignedCounter { pokemon:string; moves:string; notes:string; is_preferred:boolean; }
+const BLANK_CTR = ():AssignedCounter => ({ pokemon:'', moves:'', notes:'', is_preferred:false });
 
-  const onPokeChange = (v:string) => {
-    setPoke(v);
-    const p = lookupPoke(v);
-    setData(p);
-    setErr(v && !p ? `"${v}" not found` : '');
+function WeaknessSection({ guildId }: { guildId:string }) {
+  const [poke,setPoke]   = useState('');
+  const [tera,setTera]   = useState('');
+  const [data,setData]   = useState<PokeData|null>(null);
+  const [err,setErr]     = useState('');
+  // counter state
+  const [ctrs,setCtrs]         = useState<AssignedCounter[]>([]);
+  const [bossId,setBossId]     = useState<number|null>(null);
+  const [loadingC,setLoadingC] = useState(false);
+  const [saving,setSaving]     = useState(false);
+  const [saveMsg,setSaveMsg]   = useState('');
+  const [editIdx,setEditIdx]   = useState<number|null>(null); // -1 = new
+  const [editForm,setEditForm] = useState<AssignedCounter>(BLANK_CTR());
+
+  const loadCtrs = async (pokeName:string, pd:PokeData) => {
+    if (!guildId) return;
+    setLoadingC(true);
+    try {
+      const bosses = await apiCall<any[]>('getRaidBosses',{guildId});
+      const hit = (bosses||[]).find((b:any)=>
+        b.pokemon_key===_key(pokeName) || b.display_name?.toLowerCase()===pokeName.toLowerCase()
+      );
+      setCtrs(hit?.counters||[]); setBossId(hit?.id??null);
+    } catch { setCtrs([]); setBossId(null); }
+    setLoadingC(false);
   };
 
-  // Compute weakness chart (live, instant)
-  const types  = tera ? [tera] : (data?.types||[]);
-  const chart  = data ? weaknessChart(types, data.abilities[0]||'') : null;
-  const sections = [
+  const onPokeChange = (v:string) => {
+    setPoke(v); const p=lookupPoke(v); setData(p);
+    setErr(v&&!p?`"${v}" not found`:'');
+    setCtrs([]); setBossId(null); setSaveMsg(''); setEditIdx(null);
+    if (p) loadCtrs(v,p);
+  };
+
+  const persist = async (updated:AssignedCounter[]) => {
+    if (!data||!guildId) return;
+    setSaving(true); setSaveMsg('');
+    try {
+      await apiCall('upsertRaidBoss',{ guildId, data:{
+        id:bossId??undefined, pokemon_key:_key(data.name),
+        display_name:data.name, types:data.types,
+        notes:'', counters:updated, is_active:true,
+      }});
+      setCtrs(updated); setSaveMsg('✓ Saved');
+      setTimeout(()=>setSaveMsg(''),2200);
+      if (!bossId) loadCtrs(data.name,data);
+    } catch { setSaveMsg('❌ Failed'); }
+    setSaving(false);
+  };
+
+  const openEdit = (idx:number|'new') => {
+    setEditForm(idx==='new' ? BLANK_CTR() : {...ctrs[idx as number]});
+    setEditIdx(idx==='new' ? -1 : idx as number);
+  };
+  const commitEdit = () => {
+    if (!editForm.pokemon.trim()) return;
+    const updated = editIdx===-1 ? [...ctrs,editForm] : ctrs.map((c,i)=>i===editIdx?editForm:c);
+    setEditIdx(null); persist(updated);
+  };
+  const removeC = (idx:number) => persist(ctrs.filter((_,i)=>i!==idx));
+  const togglePref = (idx:number) => persist(ctrs.map((c,i)=>i===idx?{...c,is_preferred:!c.is_preferred}:c));
+
+  const types   = tera ? [tera] : (data?.types||[]);
+  const chart   = data ? weaknessChart(types, data.abilities[0]||'') : null;
+  const wcSects = [
     {k:'quad',   label:'4× Weak',    color:'#f87171'},
     {k:'double', label:'2× Weak',    color:'#fb923c'},
     {k:'half',   label:'½× Resists', color:'#4ade80'},
@@ -611,10 +691,11 @@ function WeaknessSection() {
   ];
 
   return (
-    <div>
-      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14,alignItems:'flex-end'}}>
+    <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      {/* Search bar */}
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
         <div style={{flex:1,minWidth:140}}>
-          <AutoInput label="Pokémon" value={poke} searchFn={searchPokemon} onChange={onPokeChange} placeholder="e.g. Garchomp"/>
+          <AutoInput label="Pokémon" value={poke} searchFn={searchPokemon} onChange={onPokeChange} placeholder="e.g. Heatran"/>
         </div>
         <div style={{minWidth:120}}>
           <label style={LBL}>Tera Type</label>
@@ -624,25 +705,125 @@ function WeaknessSection() {
           </select>
         </div>
       </div>
-      {err && <div style={{color:'#f87171',fontSize:12,marginBottom:8}}>{err}</div>}
+      {err && <div style={{color:'#f87171',fontSize:12}}>{err}</div>}
+
       {data && chart && (
-        <div>
-          <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:10,flexWrap:'wrap'}}>
-            <span style={{fontSize:16,fontWeight:700,color:'#e4e6ef'}}>{data.name}</span>
-            {data.types.map(t=><TypeBadge key={t} t={t}/>)}
-            {tera&&<><span style={{fontSize:10,color:'#6b7280'}}>Tera:</span><TypeBadge t={tera}/></>}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,alignItems:'start'}}>
+
+          {/* LEFT — type chart */}
+          <div>
+            <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:10,flexWrap:'wrap'}}>
+              <span style={{fontSize:16,fontWeight:700,color:'#e4e6ef'}}>{data.name}</span>
+              {data.types.map(t=><TypeBadge key={t} t={t}/>)}
+              {tera&&<><span style={{fontSize:10,color:'#6b7280'}}>Tera:</span><TypeBadge t={tera}/></>}
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {wcSects.map(s=>{
+                const lst:string[]=chart[s.k]||[];
+                if (!lst.length) return null;
+                return (
+                  <div key={s.k} style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:7,padding:'8px 12px'}}>
+                    <div style={{fontSize:10,fontWeight:700,color:s.color,marginBottom:5,textTransform:'uppercase',letterSpacing:'0.05em'}}>{s.label}</div>
+                    <div style={{display:'flex',flexWrap:'wrap',gap:4}}>{lst.map(t=><TypeBadge key={t} t={t}/>)}</div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            {sections.map(s=>{
-              const lst:string[] = chart[s.k]||[];
-              if (!lst.length) return null;
-              return (
-                <div key={s.k} style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:7,padding:'8px 12px'}}>
-                  <div style={{fontSize:10,fontWeight:700,color:s.color,marginBottom:5,textTransform:'uppercase',letterSpacing:'0.05em'}}>{s.label}</div>
-                  <div style={{display:'flex',flexWrap:'wrap',gap:4}}>{lst.map(t=><TypeBadge key={t} t={t}/>)}</div>
+
+          {/* RIGHT — counter assignment */}
+          <div style={{background:'rgba(88,101,242,0.06)',border:'1px solid rgba(88,101,242,0.22)',borderRadius:11,padding:14}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10,gap:6,flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:11,fontWeight:800,color:'#818cf8',textTransform:'uppercase',letterSpacing:'0.08em'}}>
+                  ⭐ Assigned Counters
                 </div>
-              );
-            })}
+                <div style={{fontSize:10,color:'#4b5563',marginTop:1}}>Shown in /bossinfo · saved to Raid Bosses</div>
+              </div>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                {loadingC && <span style={{fontSize:10,color:'#6b7280'}}>Loading…</span>}
+                {saveMsg && <span style={{fontSize:11,color:saveMsg.startsWith('✓')?'#4ade80':'#f87171',fontWeight:600}}>{saveMsg}</span>}
+                {saving && <span style={{fontSize:10,color:'#6b7280'}}>Saving…</span>}
+                <button onClick={()=>openEdit('new')}
+                  style={{padding:'4px 12px',background:'rgba(88,101,242,0.2)',border:'1px solid rgba(88,101,242,0.4)',borderRadius:6,color:'#818cf8',cursor:'pointer',fontSize:11,fontWeight:700}}>
+                  + Add Counter
+                </button>
+              </div>
+            </div>
+
+            {/* Inline edit form */}
+            {editIdx !== null && (
+              <div style={{background:'rgba(0,0,0,0.35)',border:'1px solid rgba(88,101,242,0.35)',borderRadius:8,padding:12,marginBottom:10,display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#818cf8',marginBottom:2}}>
+                  {editIdx===-1?'New Counter':'Edit Counter'}
+                </div>
+                <div>
+                  <label style={LBL}>Counter Pokémon *</label>
+                  <AutoInput label="" value={editForm.pokemon} searchFn={searchPokemon}
+                    onChange={v=>setEditForm(f=>({...f,pokemon:v}))} placeholder="e.g. Complete Zygarde"/>
+                </div>
+                <div>
+                  <label style={LBL}>Recommended Moves <span style={{color:'#4b5563',fontWeight:400}}>(comma-separated)</span></label>
+                  <input style={INP} value={editForm.moves} placeholder="e.g. Core Enforcer, Thousand Arrows"
+                    onChange={e=>setEditForm(f=>({...f,moves:e.target.value}))}/>
+                </div>
+                <div>
+                  <label style={LBL}>Notes</label>
+                  <input style={INP} value={editForm.notes} placeholder="Optional strategy tip"
+                    onChange={e=>setEditForm(f=>({...f,notes:e.target.value}))}/>
+                </div>
+                <label style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#9ca3af',cursor:'pointer'}}>
+                  <input type="checkbox" checked={editForm.is_preferred}
+                    onChange={e=>setEditForm(f=>({...f,is_preferred:e.target.checked}))}/>
+                  Mark as ⭐ Best Counter
+                </label>
+                <div style={{display:'flex',gap:6,justifyContent:'flex-end',marginTop:2}}>
+                  <button onClick={()=>setEditIdx(null)}
+                    style={{padding:'4px 12px',background:'transparent',border:'1px solid rgba(255,255,255,0.1)',borderRadius:5,color:'#6b7280',cursor:'pointer',fontSize:11,fontFamily:'inherit'}}>
+                    Cancel
+                  </button>
+                  <button onClick={commitEdit} disabled={saving||!editForm.pokemon.trim()}
+                    style={{padding:'4px 16px',background:'rgba(88,101,242,0.3)',border:'1px solid rgba(88,101,242,0.5)',borderRadius:5,color:'#c7d2fe',cursor:'pointer',fontSize:11,fontWeight:700,fontFamily:'inherit',opacity:(saving||!editForm.pokemon.trim())?0.5:1}}>
+                    {editIdx===-1?'Add':'Save'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Counter list */}
+            {ctrs.length===0 && editIdx===null && (
+              <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:'18px 0'}}>
+                No counters assigned yet.<br/>
+                <span style={{fontSize:11,color:'#374151'}}>They will show in Discord /bossinfo</span>
+              </div>
+            )}
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {ctrs.map((c,i)=>(
+                <div key={i} style={{background:'rgba(255,255,255,0.035)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:8,padding:'9px 10px',display:'flex',alignItems:'flex-start',gap:8}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:2,flexWrap:'wrap'}}>
+                      {c.is_preferred && <span title="Best Counter" style={{fontSize:13,cursor:'pointer'}} onClick={()=>togglePref(i)}>⭐</span>}
+                      {!c.is_preferred && <span title="Mark as best" style={{fontSize:11,color:'#374151',cursor:'pointer'}} onClick={()=>togglePref(i)}>☆</span>}
+                      <span style={{fontSize:13,fontWeight:700,color:'#e4e6ef'}}>{c.pokemon}</span>
+                    </div>
+                    {c.moves && (
+                      <div style={{fontSize:11,color:'#818cf8',fontFamily:'monospace',marginBottom:2}}>
+                        {c.moves.split(',').map(m=>m.trim()).filter(Boolean).map((m,mi)=>(
+                          <span key={mi} style={{display:'inline-block',background:'rgba(88,101,242,0.14)',border:'1px solid rgba(88,101,242,0.22)',borderRadius:4,padding:'1px 6px',margin:'1px 2px',fontSize:10}}>{m}</span>
+                        ))}
+                      </div>
+                    )}
+                    {c.notes && <div style={{fontSize:11,color:'#6b7280',fontStyle:'italic'}}>{c.notes}</div>}
+                  </div>
+                  <div style={{display:'flex',gap:4,flexShrink:0,marginTop:1}}>
+                    <button onClick={()=>openEdit(i)}
+                      style={{background:'rgba(88,101,242,0.12)',border:'1px solid rgba(88,101,242,0.2)',color:'#818cf8',borderRadius:4,padding:'2px 7px',cursor:'pointer',fontSize:10}}>✏️</button>
+                    <button onClick={()=>removeC(i)}
+                      style={{background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.2)',color:'#f87171',borderRadius:4,padding:'2px 7px',cursor:'pointer',fontSize:10}}>✕</button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -716,26 +897,164 @@ function CounterRow({ slot, onChange, onRemove, rank }: {
       )}
       {slot.error&&(<div style={{fontSize:11,color:'#f87171',background:'rgba(248,113,113,0.08)',borderRadius:5,padding:'4px 8px'}}>{slot.error}</div>)}
       {r&&!r.immune&&(
-        <div>
-          <div style={{display:'flex',justifyContent:'space-between',marginBottom:3}}>
-            <span style={{fontSize:14,fontWeight:800,color:'#fff',fontFamily:'monospace'}}>{r.minP.toFixed(1)}%–{r.maxP.toFixed(1)}%</span>
-            <span style={{fontSize:12,fontWeight:700,color:r.ohko||r.possibleOhko?'#f87171':r.twoHko||r.maxP>=50?'#fb923c':'#4ade80'}}>
+        <div style={{background:'rgba(0,0,0,0.25)',borderRadius:8,padding:'10px 12px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:5}}>
+            <span style={{fontSize:22,fontWeight:900,color:'#fff',fontFamily:'monospace',letterSpacing:'-0.02em'}}>{r.minP.toFixed(1)}%–{r.maxP.toFixed(1)}%</span>
+            <span style={{fontSize:15,fontWeight:800,color:r.ohko||r.possibleOhko?'#f87171':r.twoHko||r.maxP>=50?'#fb923c':'#4ade80'}}>
               {r.ohko?'OHKO':r.possibleOhko?'Poss. OHKO':r.twoHko?'2HKO':r.maxP>=50?'Poss. 2HKO':`${r.hitsToKo[0]}HKO`}
             </span>
           </div>
-          <div style={{height:7,background:'rgba(255,255,255,0.07)',borderRadius:4,overflow:'hidden',position:'relative',marginBottom:3}}>
-            <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,r.minP)}%`,background:r.maxP>=100?'#f87171':r.maxP>=50?'#fb923c':'#5865f2',opacity:0.4,borderRadius:4}}/>
-            <div style={{position:'absolute',left:`${Math.min(100,r.minP)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,r.maxP)-Math.min(100,r.minP))}%`,background:r.maxP>=100?'#f87171':r.maxP>=50?'#fb923c':'#5865f2',borderRadius:4}}/>
+          <div style={{height:9,background:'rgba(255,255,255,0.07)',borderRadius:5,overflow:'hidden',position:'relative',marginBottom:6}}>
+            <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,r.minP)}%`,background:r.maxP>=100?'#f87171':r.maxP>=50?'#fb923c':'#5865f2',opacity:0.45,borderRadius:5}}/>
+            <div style={{position:'absolute',left:`${Math.min(100,r.minP)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,r.maxP)-Math.min(100,r.minP))}%`,background:r.maxP>=100?'#f87171':r.maxP>=50?'#fb923c':'#5865f2',borderRadius:5}}/>
           </div>
-          <div style={{fontSize:10,color:'#4b5563'}}>
-            {r.minD??0}–{r.maxD??0} dmg / {r.defHp??0} HP
-            {r.eff!==1&&<span style={{marginLeft:6,color:r.eff>1?'#fb923c':'#4ade80'}}>{r.eff}×</span>}
-            {r.stab&&<span style={{marginLeft:6,color:'#818cf8'}}>STAB</span>}
-            <span style={{marginLeft:8,color:'#374151'}}>{r.hitsToKo[0]===r.hitsToKo[1]?`${r.hitsToKo[0]} hit${r.hitsToKo[0]>1?'s':''} to KO`:`${r.hitsToKo[0]}–${r.hitsToKo[1]} hits to KO`}</span>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',fontSize:12,color:'#6b7280'}}>
+            <span style={{color:'#9ca3af'}}><strong style={{color:'#d1d5db'}}>{r.minD??0}–{r.maxD??0}</strong> dmg / <strong style={{color:'#d1d5db'}}>{r.defHp??0}</strong> HP</span>
+            {r.eff!==1&&<span style={{color:r.eff>1?'#fb923c':'#4ade80',fontWeight:700}}>{r.eff}× type</span>}
+            {r.stab&&<span style={{color:'#818cf8',fontWeight:700}}>STAB</span>}
+            <span style={{color:'#4b5563',marginLeft:'auto'}}>
+              {r.hitsToKo[0]===r.hitsToKo[1]
+                ?`${r.hitsToKo[0]} hit${r.hitsToKo[0]>1?'s':''} to KO`
+                :`${r.hitsToKo[0]}–${r.hitsToKo[1]} hits to KO`}
+            </span>
           </div>
         </div>
       )}
       {r?.immune&&<div style={{fontSize:11,color:'#6b7280',fontStyle:'italic'}}>🛡 Immune to {slot.moveData?.type} moves</div>}
+    </div>
+  );
+}
+
+// ── Boss → Counter Simulation ─────────────────────────────────────────────────
+function BossSimPanel({ boss, counters, bossHP }: {
+  boss: BossConfig; counters: CounterSlot[]; bossHP: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const validCounters = counters.filter(c=>c.data||lookupPoke(c.name));
+  const bossData = boss.data;
+  if (!bossData) return null;
+
+  const bossLvlUpMoves = getLevelUpMoves(boss.name);
+  if (!bossLvlUpMoves.length) return null;
+
+  const bossTypes = boss.teraType ? [boss.teraType] : bossData.types;
+  const raidMult = RAID_TIERS[boss.raidTier]??1;
+  const bossFake:PokeData = {...bossData, stats:{...bossData.stats, hp:Math.round(bossData.stats.hp*raidMult)}};
+
+  // Compute all simulated rows lazily (only when open)
+  const simRows = !open ? [] : bossLvlUpMoves.map(mv=>{
+    const cols = validCounters.map(slot=>{
+      const cData = slot.data||lookupPoke(slot.name);
+      if (!cData) return null;
+      const res = runCalc({
+        atkPoke: bossFake, defPoke: cData,
+        bp: mv.bp, cat: mv.cat, mtyp: mv.type,
+        atkEvs: boss.evs, defEvs: slot.evs,
+        atkIvs: boss.ivs, defIvs: slot.ivs,
+        atkNat: boss.nature, defNat: slot.nature,
+        atkTera: boss.teraType, defTera: slot.teraType,
+        atkItem: '(none)', atkStatus: 'Healthy',
+        weather: boss.weather, doubles: boss.doubles,
+        atkScreen: boss.defScreen, defScreen: false,
+        isCrit: false, zmove: false,
+        atkLv: boss.level||100, defLv: slot.level||100,
+      });
+      if (!res||res.immune) return {immune:true,minP:0,maxP:0,minD:0,maxD:0,hitsToKo:[0,0] as [number,number]};
+      const defHp = res.defHp||1;
+      const minP = Math.floor((res.minD??0)/defHp*1000)/10;
+      const maxP = Math.floor((res.maxD??0)/defHp*1000)/10;
+      return {...res, minP, maxP,
+        hitsToKo:[
+          (res.maxD??0)?Math.ceil(defHp/(res.maxD??1)):99,
+          (res.minD??0)?Math.ceil(defHp/(res.minD??1)):99,
+        ] as [number,number]};
+    });
+    return {mv, cols};
+  });
+
+  const isStab = (mvType:string) => bossTypes.includes(mvType);
+
+  return (
+    <div style={{background:'linear-gradient(135deg,rgba(124,58,237,0.07),rgba(220,38,38,0.07))',border:'1px solid rgba(124,58,237,0.25)',borderRadius:12}}>
+      <button onClick={()=>setOpen(o=>!o)}
+        style={{width:'100%',padding:'11px 16px',background:'transparent',border:'none',cursor:'pointer',
+          display:'flex',alignItems:'center',justifyContent:'space-between',color:'#c4b5fd',fontFamily:'inherit'}}>
+        <span style={{fontSize:11,fontWeight:800,textTransform:'uppercase',letterSpacing:'0.09em',display:'flex',alignItems:'center',gap:8}}>
+          <span>🎯</span> Boss Simulation
+          <span style={{fontSize:10,color:'#6b7280',fontWeight:400,textTransform:'none'}}>
+            — {bossData.name}'s level-up moves vs each counter
+          </span>
+        </span>
+        <span style={{fontSize:13,color:'#6b7280'}}>{open?'▲':'▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{padding:'0 14px 14px'}}>
+          {validCounters.length===0 ? (
+            <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:16}}>Add at least one counter Pokémon above to simulate.</div>
+          ) : bossLvlUpMoves.length===0 ? (
+            <div style={{textAlign:'center',color:'#4b5563',fontSize:12,padding:16}}>No level-up damaging moves found for {bossData.name}.</div>
+          ) : (
+            <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                <thead>
+                  <tr>
+                    <th style={{textAlign:'left',padding:'5px 8px',color:'#6b7280',fontWeight:700,borderBottom:'1px solid rgba(255,255,255,0.08)',whiteSpace:'nowrap',minWidth:160}}>
+                      Boss Move
+                    </th>
+                    {validCounters.map(slot=>(
+                      <th key={slot.id} style={{textAlign:'center',padding:'5px 8px',color:'#c4c8e4',fontWeight:700,borderBottom:'1px solid rgba(255,255,255,0.08)',whiteSpace:'nowrap',minWidth:110}}>
+                        {slot.name||'?'}
+                        {(slot.data||lookupPoke(slot.name))?.types.map(t=>(
+                          <TypeBadge key={t} t={t}/>
+                        ))}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {simRows.map(({mv,cols},ri)=>(
+                    <tr key={ri} style={{background:ri%2===0?'rgba(255,255,255,0.015)':'transparent'}}>
+                      <td style={{padding:'6px 8px',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:5}}>
+                          <TypeBadge t={mv.type}/>
+                          <span style={{color:'#e4e6ef',fontWeight:600}}>{mv.name}</span>
+                          {isStab(mv.type)&&<span style={{fontSize:9,color:'#818cf8',fontWeight:700,background:'rgba(129,140,248,0.15)',border:'1px solid rgba(129,140,248,0.25)',borderRadius:3,padding:'1px 4px'}}>STAB</span>}
+                          <span style={{fontSize:10,color:'#4b5563'}}>BP {mv.bp}</span>
+                          <span style={{fontSize:10,color:'#4b5563',textTransform:'uppercase'}}>{mv.cat==='Physical'?'Phys':mv.cat==='Special'?'Spec':'—'}</span>
+                        </div>
+                      </td>
+                      {cols.map((r,ci)=>(
+                        <td key={ci} style={{padding:'6px 8px',textAlign:'center',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
+                          {r===null ? <span style={{color:'#374151'}}>—</span>
+                          : r.immune ? <span style={{fontSize:10,color:'#6b7280'}}>🛡 Immune</span>
+                          : (
+                            <div>
+                              <div style={{fontSize:13,fontWeight:800,fontFamily:'monospace',
+                                color:r.maxP>=100?'#f87171':r.maxP>=50?'#fb923c':r.maxP>=25?'#fbbf24':'#4ade80'}}>
+                                {r.minP.toFixed(0)}–{r.maxP.toFixed(0)}%
+                              </div>
+                              <div style={{height:4,background:'rgba(255,255,255,0.07)',borderRadius:2,overflow:'hidden',margin:'3px 4px'}}>
+                                <div style={{height:'100%',width:`${Math.min(100,r.maxP)}%`,background:r.maxP>=100?'#f87171':r.maxP>=50?'#fb923c':'#5865f2',borderRadius:2}}/>
+                              </div>
+                              <div style={{fontSize:10,color:r.maxP>=100?'#f87171':r.maxP>=50?'#fb923c':'#6b7280',fontWeight:700}}>
+                                {r.maxP>=100?'OHKO':r.maxP>=50?'2HKO':`${r.hitsToKo[0]}HKO`}
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{fontSize:10,color:'#374151',marginTop:8,paddingLeft:4}}>
+                Shows boss damage output against each counter at Lv{boss.level} with configured EVs. Level-up damaging moves only, sorted by BP.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -902,6 +1221,9 @@ function CounterCalcSection({ sdState }: { sdState:'loading'|'ready'|'error' }) 
         </button>
       </div>
 
+      {/* Boss simulation — boss moves vs counters */}
+      {calculated && boss.data && <BossSimPanel boss={boss} counters={counters} bossHP={effectiveHp()}/>}
+
       {/* Rankings summary */}
       {calculated&&counters.some(c=>c.result&&!c.result.immune&&c.name)&&(
         <div style={{background:'rgba(255,255,255,0.025)',border:'1px solid rgba(255,255,255,0.09)',borderRadius:10,padding:14}}>
@@ -1028,7 +1350,7 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
         ))}
       </div>
 
-      {tab==='weakness' && <WeaknessSection/>}
+      {tab==='weakness' && <WeaknessSection guildId={guildId}/>}
 
       {tab==='counter' && (
         sdState!=='ready'
