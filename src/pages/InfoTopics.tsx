@@ -537,8 +537,8 @@ export default function InfoTopicsPage({ guildId }: Props) {
                   <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{ago(h.created_at)} by {h.changed_by}</span>
                   <button className="btn btn-ghost btn-sm" onClick={() => doRestore(h)}><RotateCcw size={10} /> Restore</button>
                 </div>
-                <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 500, marginBottom: 3 }}>{h.embed_title || '(no title)'}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'hidden' }}>{h.embed_description || ''}</div>
+                <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 500, marginBottom: 3 }}>{h.snapshot?.embed_title || '(no title)'}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'hidden' }}>{h.snapshot?.embed_description || ''}</div>
               </div>
             ))}
         </Modal>

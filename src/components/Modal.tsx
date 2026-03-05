@@ -5,10 +5,11 @@ interface Props {
   title: string;
   onClose: () => void;
   children: ReactNode;
-  width?: string;
+  width?: number | string;
 }
 
 export default function Modal({ title, onClose, children, width = '560px' }: Props) {
+  const maxWidth = typeof width === 'number' ? `${width}px` : width;
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', handler);
@@ -21,7 +22,7 @@ export default function Modal({ title, onClose, children, width = '560px' }: Pro
         onClick={e => e.stopPropagation()}
         style={{
           width: '100%',
-          maxWidth: width,
+          maxWidth: maxWidth,
           background: 'var(--surface)',
           border: '1px solid var(--border)',
           borderRadius: 14,

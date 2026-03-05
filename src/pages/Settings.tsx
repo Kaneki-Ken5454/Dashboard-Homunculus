@@ -117,8 +117,8 @@ function LogChannelSection({ guildId }: { guildId: string }) {
                   onChange={e => setDraft(prev => ({ ...prev, [lt.key]: e.target.value }))} />
                 <div style={{ display: 'flex', justifyContent: 'center' }}>
                   {isSaved
-                    ? <CheckCircle size={14} style={{ color: '#4ade80' }} title="Active" />
-                    : <AlertCircle size={14} style={{ color: 'var(--text-faint)', opacity: 0.35 }} title="Not configured" />}
+                    ? <CheckCircle size={14} style={{ color: '#4ade80' }} aria-label="Active" />
+                    : <AlertCircle size={14} style={{ color: 'var(--text-faint)', opacity: 0.35 }} aria-label="Not configured" />}
                 </div>
               </div>
             );
