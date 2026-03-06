@@ -469,7 +469,7 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
 }
 
 // ── Main Export ───────────────────────────────────────────────────────────────
-export default function CounterCalc({ sdState, user }: { sdState: string; user?: { discord_id: string; username: string } | null }) {
+export default function CounterCalc({ sdState, user }: { sdState: string; user?: { discord_id: string; username: string; avatar_url?: string | null } | null }) {
   const [boss, setBossRaw]    = useState<BossConfig>(mkBoss());
   const [counters, setCounters] = useState<CounterSlot[]>([mkSlot(), mkSlot()]);
   const [calculated, setCalc] = useState(false);

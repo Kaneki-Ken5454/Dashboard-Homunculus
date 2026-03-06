@@ -1343,6 +1343,52 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { revoked: true });
       }
 
+      case 'getCommandUsageLog': {
+        await ensureCommandUsageTable().catch(() => {});
+        const { guildId, command, limit = 200 } = params;
+        const rows = command
+          ? await sql(
+              `SELECT id, guild_id, user_id, username, command, metadata, used_at
+               FROM command_usage_log WHERE guild_id=$1 AND command=$2
+               ORDER BY used_at DESC LIMIT $3`,
+              [guildId, command, Math.min(Number(limit), 500)]
+            ).catch(() => [])
+          : await sql(
+              `SELECT id, guild_id, user_id, username, command, metadata, used_at
+               FROM command_usage_log WHERE guild_id=$1
+               ORDER BY used_at DESC LIMIT $2`,
+              [guildId, Math.min(Number(limit), 500)]
+            ).catch(() => []);
+        return ok(res, rows);
+      }
+
+      case 'getCommandUsageStats': {
+        await ensureCommandUsageTable().catch(() => {});
+        const { guildId } = params;
+        // Per-command totals
+        const byCommand = await sql(
+          `SELECT command, COUNT(*)::int AS total_uses, COUNT(DISTINCT user_id)::int AS unique_users
+           FROM command_usage_log WHERE guild_id=$1
+           GROUP BY command ORDER BY total_uses DESC`,
+          [guildId]
+        ).catch(() => []);
+        // Top users (by usage count)
+        const topUsers = await sql(
+          `SELECT user_id, username, COUNT(*)::int AS uses
+           FROM command_usage_log WHERE guild_id=$1
+           GROUP BY user_id, username ORDER BY uses DESC LIMIT 10`,
+          [guildId]
+        ).catch(() => []);
+        // Recent 7 days daily trend
+        const daily = await sql(
+          `SELECT DATE_TRUNC('day', used_at)::date AS day, COUNT(*)::int AS uses
+           FROM command_usage_log WHERE guild_id=$1 AND used_at >= NOW() - INTERVAL '7 days'
+           GROUP BY day ORDER BY day ASC`,
+          [guildId]
+        ).catch(() => []);
+        return ok(res, { byCommand, topUsers, daily });
+      }
+
       default:
         return err(res, `Unknown action: ${action}`);
     }
@@ -2062,6 +2108,157 @@ app.delete('/api/client/auth/sessions/:id', async (req, res) => {
   await ensureTablesOnce().catch(() => {});
   try { await sql(`DELETE FROM client_sessions WHERE id=$1`,[req.params.id]).catch(()=>{}); res.json({ ok:true }); }
   catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Google OAuth 2.0 — Login with Google (battle-tools & admin whitelist)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Required env vars:
+//   GOOGLE_CLIENT_ID     — from console.cloud.google.com → OAuth 2.0 Client IDs
+//   GOOGLE_CLIENT_SECRET — from same page
+//
+// Authorised redirect URI to add in Google Cloud Console:
+//   https://your-dashboard.vercel.app/api/auth/google/callback
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+
+// Whitelist of Google accounts (by email) that get full admin access
+// e.g. ADMIN_GOOGLE_EMAILS=you@gmail.com,partner@gmail.com
+const ADMIN_GOOGLE_EMAILS = (process.env.ADMIN_GOOGLE_EMAILS || '')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+app.get('/api/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID) {
+    return res.status(500).send('GOOGLE_CLIENT_ID not set — add it in Vercel → Environment Variables.');
+  }
+  const returnTo    = String(req.query.return_to || `${req.protocol}://${req.get('host')}`);
+  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+  const state       = Buffer.from(JSON.stringify({ returnTo })).toString('base64url');
+  const params = new URLSearchParams({
+    client_id:     GOOGLE_CLIENT_ID,
+    redirect_uri:  callbackUrl,
+    response_type: 'code',
+    scope:         'openid email profile',
+    state,
+    access_type:   'offline',
+    prompt:        'consent',
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+app.get('/api/auth/google/callback', async (req, res) => {
+  await ensureTablesOnce().catch(() => {});
+  await runSessionMigrations().catch(() => {});
+
+  const { code, state, error } = req.query;
+  let returnTo = `${req.protocol}://${req.get('host')}`;
+  try { const p = JSON.parse(Buffer.from(String(state || ''), 'base64url').toString('utf8')); if (p.returnTo) returnTo = p.returnTo; } catch {}
+
+  if (error) return res.redirect(`${returnTo}?auth_error=${encodeURIComponent(String(error))}`);
+  if (!code)  return res.status(400).send('Missing OAuth code from Google.');
+
+  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+  try {
+    // 1. Exchange code for tokens
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id:     GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        grant_type:    'authorization_code',
+        code:          String(code),
+        redirect_uri:  callbackUrl,
+      }),
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) {
+      console.error('[Google OAuth] Token exchange failed:', JSON.stringify(tokenData));
+      return res.status(400).send('Google token exchange failed — check GOOGLE_CLIENT_ID/SECRET and Redirect URI in Google Cloud Console.');
+    }
+
+    // 2. Fetch Google user info
+    const userRes  = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const gUser = await userRes.json();
+    if (!gUser.id) return res.status(400).send('Could not fetch Google user info.');
+
+    const googleId = `google_${gUser.id}`;
+    const email    = (gUser.email || '').toLowerCase();
+    const username = gUser.name || gUser.given_name || email.split('@')[0] || `Google_${gUser.id.slice(-4)}`;
+    const avatarUrl = gUser.picture || null;
+
+    // 3. Determine admin status by email whitelist
+    const isAdmin = ADMIN_GOOGLE_EMAILS.includes(email) || ADMIN_DISCORD_IDS.includes(googleId);
+
+    // 4. Create 14-day session
+    const sessionToken = `hom_g_${gUser.id}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    await sql(
+      `INSERT INTO client_sessions
+         (guild_id, discord_id, username, avatar_url, session_token, expires_at,
+          is_admin, guilds_json, access_token, refresh_token, token_expires_at)
+       VALUES ($1,$2,$3,$4,$5, NOW() + INTERVAL '14 days', $6,$7,$8,$9,$10)
+       ON CONFLICT (session_token) DO NOTHING`,
+      ['global', googleId, username, avatarUrl, sessionToken,
+       isAdmin, JSON.stringify([]),
+       tokenData.access_token, tokenData.refresh_token || null,
+       tokenData.expires_in ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString() : null]
+    );
+
+    res.redirect(`${returnTo}?token=${encodeURIComponent(sessionToken)}`);
+  } catch (e) {
+    console.error('[Google OAuth] Callback error:', e?.message || e);
+    res.status(500).send('Internal Google OAuth error — check server logs.');
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Bot Command Usage Logging
+// POST /api/bot/log_command  — called by the Python bot after each command use
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Ensure command_usage_log table exists (idempotent)
+async function ensureCommandUsageTable() {
+  try {
+    await sql(`CREATE TABLE IF NOT EXISTS command_usage_log (
+      id         BIGSERIAL PRIMARY KEY,
+      guild_id   TEXT NOT NULL,
+      user_id    TEXT NOT NULL,
+      username   TEXT NOT NULL DEFAULT '',
+      command    TEXT NOT NULL,
+      metadata   JSONB DEFAULT '{}',
+      used_at    TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await sql(`CREATE INDEX IF NOT EXISTS idx_command_usage_guild ON command_usage_log(guild_id, used_at DESC)`);
+    await sql(`CREATE INDEX IF NOT EXISTS idx_command_usage_cmd   ON command_usage_log(guild_id, command, used_at DESC)`);
+  } catch { /* already exists */ }
+}
+
+// Bot authentication — uses the same BOT_API_SECRET already in .env
+const BOT_API_SECRET = process.env.BOT_API_SECRET || '';
+
+app.post('/api/bot/log_command', async (req, res) => {
+  await ensureCommandUsageTable().catch(() => {});
+  const secret = (req.headers['x-bot-secret'] || '').toString().trim();
+  if (BOT_API_SECRET && secret !== BOT_API_SECRET) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  const { guild_id, user_id, username = '', command, metadata = {} } = req.body || {};
+  if (!guild_id || !user_id || !command) {
+    return res.status(400).json({ ok: false, error: 'guild_id, user_id, command required' });
+  }
+  try {
+    await sql(
+      `INSERT INTO command_usage_log (guild_id, user_id, username, command, metadata)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [String(guild_id), String(user_id), String(username), String(command), JSON.stringify(metadata)]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // Export the app for Vercel (serverless) usage.
