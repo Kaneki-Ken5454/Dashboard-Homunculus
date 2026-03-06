@@ -332,3 +332,20 @@ export async function getClientFeatureFlags(guildId='global'): Promise<ClientFea
 export async function setClientFeatureFlag(guildId='global', feature:string, enabled:boolean) {
   return apiCall('setClientFeatureFlag', { guildId, feature, enabled });
 }
+
+// ── Client Sessions (Discord DM login) ────────────────────────────────────────
+export interface ClientSession {
+  id: number;
+  guild_id: string;
+  discord_id: string;
+  username: string;
+  avatar_url?: string;
+  last_seen: string;
+  created_at: string;
+}
+export async function getClientSessions(guildId='global', limit=100): Promise<ClientSession[]> {
+  return apiCall<ClientSession[]>('getClientSessions', { guildId, limit });
+}
+export async function revokeClientSession(id: number) {
+  return apiCall('revokeClientSession', { id });
+}

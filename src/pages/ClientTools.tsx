@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Monitor, RefreshCw, Trash2, Globe, Hash, Clock, BarChart2 } from 'lucide-react';
+import { Monitor, RefreshCw, Trash2, Globe, Hash, Clock, BarChart2, Users, ShieldOff } from 'lucide-react';
 import {
   getClientVisitors, getClientVisitorStats, clearClientVisitors,
   getClientFeatureFlags, setClientFeatureFlag,
-  type ClientVisitor, type ClientVisitorStats, type ClientFeatureFlags,
+  getClientSessions, revokeClientSession,
+  type ClientVisitor, type ClientVisitorStats, type ClientFeatureFlags, type ClientSession,
 } from '../lib/db';
 
 // ── Feature definitions ───────────────────────────────────────────────────────
@@ -27,14 +28,14 @@ function fmtTime(ts: string): string {
   const d = new Date(ts);
   const now = Date.now();
   const diff = now - d.getTime();
-  if (diff < 60_000)   return `${Math.floor(diff/1000)}s ago`;
-  if (diff < 3_600_000)return `${Math.floor(diff/60_000)}m ago`;
+  if (diff < 60_000)    return `${Math.floor(diff/1000)}s ago`;
+  if (diff < 3_600_000) return `${Math.floor(diff/60_000)}m ago`;
   if (diff < 86_400_000)return `${Math.floor(diff/3_600_000)}h ago`;
   return d.toLocaleDateString();
 }
 function pageLabel(page: string): string {
   const map: Record<string,string> = {
-    '/':'Home',damage:'⚡ Damage',weakness:'🛡️ Weakness',counter:'👹 Counter',
+    '/':'Home', damage:'⚡ Damage', weakness:'🛡️ Weakness', counter:'👹 Counter',
   };
   return map[page] ?? page;
 }
@@ -44,47 +45,56 @@ function FeatureToggle({ feature, flags, guildId, onToggle }: {
   feature: typeof FEATURES[0]; flags: ClientFeatureFlags|null;
   guildId: string; onToggle: (id:string, val:boolean)=>void;
 }) {
-  const [saving, setSaving] = useState(false);
+  const [saving,  setSaving]  = useState(false);
+  const [saveErr, setSaveErr] = useState('');
   const enabled = flags ? (flags[feature.id] ?? true) : true;
 
   const toggle = async () => {
-    setSaving(true);
+    setSaving(true); setSaveErr('');
     try {
       await setClientFeatureFlag(guildId, feature.id, !enabled);
       onToggle(feature.id, !enabled);
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      setSaveErr(e.message || 'Save failed');
     }
     setSaving(false);
   };
 
   return (
     <div style={{
-      display:'flex',alignItems:'center',gap:14,padding:'13px 16px',
-      background:'var(--elevated)',border:`1px solid ${enabled?'rgba(59,165,93,.3)':'var(--border)'}`,
-      borderRadius:10,transition:'border-color .2s',
+      display:'flex', alignItems:'center', gap:14, padding:'13px 16px',
+      background:'var(--elevated)', border:`1px solid ${enabled?'rgba(59,165,93,.3)':'var(--border)'}`,
+      borderRadius:10, transition:'border-color .2s', flexDirection:'column', alignItems:'stretch',
     }}>
-      <span style={{fontSize:22,flexShrink:0}}>{feature.icon}</span>
-      <div style={{flex:1}}>
-        <div style={{fontSize:14,fontWeight:700,color:'var(--text)',marginBottom:2}}>{feature.label}</div>
-        <div style={{fontSize:11,color:'var(--text-muted)'}}>{feature.desc}</div>
+      <div style={{display:'flex',alignItems:'center',gap:14}}>
+        <span style={{fontSize:22,flexShrink:0}}>{feature.icon}</span>
+        <div style={{flex:1}}>
+          <div style={{fontSize:14,fontWeight:700,color:'var(--text)',marginBottom:2}}>{feature.label}</div>
+          <div style={{fontSize:11,color:'var(--text-muted)'}}>{feature.desc}</div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+          <span style={{fontSize:11,color:enabled?'var(--success)':'var(--text-faint)',fontWeight:600}}>
+            {saving ? '…' : enabled ? 'Enabled' : 'Disabled'}
+          </span>
+          <button onClick={toggle} disabled={saving} style={{
+            appearance:'none', width:44, height:24, borderRadius:12, border:'none',
+            cursor:saving?'wait':'pointer',
+            background:enabled?'var(--success)':'var(--border)', position:'relative',
+            transition:'background .2s', flexShrink:0,
+          }}>
+            <div style={{
+              position:'absolute', left:enabled?22:2, top:2, width:20, height:20,
+              borderRadius:'50%', background:'white', transition:'left .18s',
+              boxShadow:'0 1px 4px rgba(0,0,0,.4)',
+            }}/>
+          </button>
+        </div>
       </div>
-      <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
-        <span style={{fontSize:11,color:enabled?'var(--success)':'var(--text-faint)',fontWeight:600}}>
-          {saving ? '…' : enabled ? 'Enabled' : 'Disabled'}
-        </span>
-        <button onClick={toggle} disabled={saving} style={{
-          appearance:'none',width:44,height:24,borderRadius:12,border:'none',cursor:saving?'wait':'pointer',
-          background:enabled?'var(--success)':'var(--border)',position:'relative',transition:'background .2s',
-          flexShrink:0,
-        }}>
-          <div style={{
-            position:'absolute',left:enabled?22:2,top:2,width:20,height:20,
-            borderRadius:'50%',background:'white',transition:'left .18s',
-            boxShadow:'0 1px 4px rgba(0,0,0,.4)',
-          }}/>
-        </button>
-      </div>
+      {saveErr && (
+        <div style={{fontSize:11,color:'var(--danger)',background:'var(--danger-subtle)',borderRadius:5,padding:'4px 10px'}}>
+          ⚠️ {saveErr}
+        </div>
+      )}
     </div>
   );
 }
@@ -107,21 +117,23 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
   const [visitors,   setVisitors]   = useState<ClientVisitor[]>([]);
   const [stats,      setStats]      = useState<ClientVisitorStats|null>(null);
   const [flags,      setFlags]      = useState<ClientFeatureFlags|null>(null);
+  const [sessions,   setSessions]   = useState<ClientSession[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [clearing,   setClearing]   = useState(false);
   const [error,      setError]      = useState('');
-  const [tab,        setTab]        = useState<'visitors'|'toggles'>('visitors');
+  const [tab,        setTab]        = useState<'visitors'|'toggles'|'sessions'>('visitors');
   const [search,     setSearch]     = useState('');
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
-      const [v, s, f] = await Promise.all([
+      const [v, s, f, sess] = await Promise.all([
         getClientVisitors(guildId, 200),
         getClientVisitorStats(guildId),
         getClientFeatureFlags(guildId),
+        getClientSessions(guildId),
       ]);
-      setVisitors(v); setStats(s); setFlags(f);
+      setVisitors(v); setStats(s); setFlags(f); setSessions(sess);
     } catch (e: any) {
       setError(e.message || 'Failed to load');
     }
@@ -142,6 +154,14 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
     setFlags(prev => prev ? { ...prev, [id]: val } : { damage_calc:true, weakness_lookup:true, counter_calc:true, [id]:val });
   };
 
+  const handleRevoke = async (id: number) => {
+    if (!window.confirm('Revoke this session?')) return;
+    try {
+      await revokeClientSession(id);
+      setSessions(s => s.filter(x => x.id !== id));
+    } catch (e: any) { setError(e.message); }
+  };
+
   const filtered = visitors.filter(v =>
     !search || (v.ip||'').includes(search) || (v.country||'').toLowerCase().includes(search.toLowerCase())
       || (v.user_agent||'').toLowerCase().includes(search.toLowerCase())
@@ -156,7 +176,7 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
         <div>
           <h2 style={{fontSize:17,fontWeight:700,color:'var(--text)',margin:0}}>Client Tools Dashboard</h2>
           <p style={{fontSize:12,color:'var(--text-muted)',margin:'2px 0 0'}}>
-            Visitor analytics + feature toggles for the public-facing tools site
+            Visitor analytics, feature toggles and logged-in users for the public-facing tools site
           </p>
         </div>
         <button className="btn btn-ghost btn-sm" onClick={load} disabled={loading} style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:5}}>
@@ -173,10 +193,10 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
       {/* Stats row */}
       {stats && (
         <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:18}}>
-          <StatCard label="Total Visits" value={stats.total.toLocaleString()} icon={<Globe size={14}/>} color="var(--primary)"/>
-          <StatCard label="Last 24h" value={stats.today.toLocaleString()} icon={<Clock size={14}/>} color="var(--success)"/>
-          <StatCard label="Unique Pages" value={stats.byPage.length} icon={<Hash size={14}/>} color="var(--warning)"/>
-          <StatCard label="Countries" value={stats.byCountry.length} icon={<BarChart2 size={14}/>} color="#c4b5fd"/>
+          <StatCard label="Total Visits"   value={stats.total.toLocaleString()} icon={<Globe size={14}/>}    color="var(--primary)"/>
+          <StatCard label="Last 24h"       value={stats.today.toLocaleString()} icon={<Clock size={14}/>}    color="var(--success)"/>
+          <StatCard label="Unique Pages"   value={stats.byPage.length}          icon={<Hash size={14}/>}     color="var(--warning)"/>
+          <StatCard label="Logged In Now"  value={sessions.length}              icon={<Users size={14}/>}    color="#c4b5fd"/>
         </div>
       )}
 
@@ -212,7 +232,11 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
 
       {/* Sub-tabs */}
       <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',marginBottom:16}}>
-        {([['visitors','📋 Visitor Log'],['toggles','🎛️ Feature Toggles']] as const).map(([id,label])=>(
+        {([
+          ['visitors','📋 Visitor Log'],
+          ['toggles', '🎛️ Feature Toggles'],
+          ['sessions','👤 Logged-In Users'],
+        ] as const).map(([id,label])=>(
           <button key={id} onClick={()=>setTab(id)}
             style={{padding:'8px 18px',background:'none',border:'none',cursor:'pointer',fontFamily:"'Lexend',sans-serif",
               color:tab===id?'var(--text)':'var(--text-muted)',fontSize:13,fontWeight:tab===id?700:400,
@@ -222,7 +246,7 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
         ))}
       </div>
 
-      {/* Visitor log tab */}
+      {/* ── Visitor log tab ─────────────────────────────────────────────────── */}
       {tab === 'visitors' && (
         <div>
           <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
@@ -278,7 +302,7 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
         </div>
       )}
 
-      {/* Feature toggles tab */}
+      {/* ── Feature toggles tab ─────────────────────────────────────────────── */}
       {tab === 'toggles' && (
         <div>
           <div style={{background:'rgba(88,101,242,.07)',border:'1px solid rgba(88,101,242,.2)',borderRadius:9,padding:'10px 14px',marginBottom:14,fontSize:12,color:'var(--text-muted)',lineHeight:1.6}}>
@@ -294,6 +318,62 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
           <div style={{marginTop:16,fontSize:11,color:'var(--text-faint)'}}>
             Client dashboard reads config from: <code style={{background:'rgba(255,255,255,.06)',padding:'2px 6px',borderRadius:4,fontFamily:"'JetBrains Mono',monospace"}}>GET /api/client/config?guild_id={guildId}</code>
           </div>
+        </div>
+      )}
+
+      {/* ── Logged-in users tab ─────────────────────────────────────────────── */}
+      {tab === 'sessions' && (
+        <div>
+          <div style={{background:'rgba(88,101,242,.07)',border:'1px solid rgba(88,101,242,.2)',borderRadius:9,padding:'10px 14px',marginBottom:14,fontSize:12,color:'var(--text-muted)',lineHeight:1.6}}>
+            <strong style={{color:'var(--text)'}}>Users who logged in via Discord DM verification.</strong>
+            {' '}Sessions are valid for 7 days. You can revoke any session immediately.
+          </div>
+
+          {loading ? (
+            <div style={{textAlign:'center',padding:'32px 0',color:'var(--text-muted)',fontSize:13}}>Loading…</div>
+          ) : sessions.length === 0 ? (
+            <div style={{textAlign:'center',padding:'48px 0',color:'var(--text-faint)'}}>
+              <Users size={36} style={{marginBottom:12,opacity:.3}}/>
+              <div style={{fontSize:14,color:'var(--text-muted)',fontWeight:600,marginBottom:4}}>No active sessions</div>
+              <div style={{fontSize:12}}>Users who log in via the client dashboard will appear here</div>
+            </div>
+          ) : (
+            <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,overflow:'hidden'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead>
+                  <tr style={{borderBottom:'1px solid var(--border)',background:'rgba(0,0,0,.2)'}}>
+                    {['User','Discord ID','Last Seen','Login Date','Actions'].map(h=>(
+                      <th key={h} style={{padding:'9px 12px',textAlign:'left',fontWeight:700,color:'var(--text-muted)',fontSize:10,textTransform:'uppercase',letterSpacing:'.06em'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessions.map((s,i) => (
+                    <tr key={s.id} className="data-row" style={{borderBottom:'1px solid rgba(255,255,255,.04)'}}>
+                      <td style={{padding:'10px 12px'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8}}>
+                          <div style={{width:28,height:28,borderRadius:'50%',background:'linear-gradient(135deg,#5865f2,#7c3aed)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:'#fff',flexShrink:0}}>
+                            {(s.username||'?')[0].toUpperCase()}
+                          </div>
+                          <span style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>{s.username || `User ${s.discord_id.slice(-4)}`}</span>
+                        </div>
+                      </td>
+                      <td style={{padding:'10px 12px',fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--text-muted)'}}>{s.discord_id}</td>
+                      <td style={{padding:'10px 12px',color:'var(--text-muted)',fontSize:11}}>{fmtTime(s.last_seen)}</td>
+                      <td style={{padding:'10px 12px',color:'var(--text-faint)',fontSize:11}}>{fmtTime(s.created_at)}</td>
+                      <td style={{padding:'10px 12px'}}>
+                        <button
+                          onClick={() => handleRevoke(s.id)}
+                          style={{display:'flex',alignItems:'center',gap:4,padding:'4px 9px',borderRadius:5,border:'1px solid var(--danger)',background:'var(--danger-subtle)',color:'var(--danger)',cursor:'pointer',fontSize:11,fontWeight:600}}>
+                          <ShieldOff size={10}/> Revoke
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>
