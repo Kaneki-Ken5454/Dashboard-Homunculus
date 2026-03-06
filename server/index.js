@@ -1911,7 +1911,10 @@ app.get('/api/auth/discord', (req, res) => {
   const state       = Buffer.from(JSON.stringify({ returnTo })).toString('base64url');
   const params = new URLSearchParams({
     client_id: DISCORD_CLIENT_ID, redirect_uri: callbackUrl,
-    response_type: 'code', scope: 'identify guilds', state, prompt: 'none',
+    response_type: 'code', scope: 'identify guilds', state,
+    // 'consent' always shows the auth screen — required for first-time users.
+    // 'none' would silently fail if the user hasn't authorized before.
+    prompt: 'consent',
   });
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });

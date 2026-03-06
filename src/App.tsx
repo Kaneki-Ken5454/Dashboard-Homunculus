@@ -61,11 +61,21 @@ const SESSION_KEY = 'hom_session';
 function storedToken()        { try { return localStorage.getItem(SESSION_KEY)||''; } catch { return ''; } }
 function saveToken(t:string)  { try { localStorage.setItem(SESSION_KEY,t); } catch {} }
 function removeToken()        { try { localStorage.removeItem(SESSION_KEY); } catch {} }
-function extractUrlToken():string {
-  const p=new URLSearchParams(window.location.search); const t=p.get('token')||'';
-  if(t){ p.delete('token'); window.history.replaceState({},'',(p.toString()?`?${p}`:window.location.pathname)); }
-  return t;
+
+// Returns { token, authError } from the URL, and strips both params from the address bar
+function extractUrlParams(): { token: string; authError: string } {
+  const p = new URLSearchParams(window.location.search);
+  const token     = p.get('token')      || '';
+  const authError = p.get('auth_error') || '';
+  if (token || authError) {
+    p.delete('token'); p.delete('auth_error');
+    const qs = p.toString();
+    window.history.replaceState({}, '', qs ? `?${qs}` : window.location.pathname);
+  }
+  return { token, authError: authError ? decodeURIComponent(authError) : '' };
 }
+// Kept for backward compat inside App
+function extractUrlToken(): string { return extractUrlParams().token; }
 async function verifySession(token:string):Promise<DiscordUser|null> {
   try {
     const r=await fetch(`/api/auth/me?token=${encodeURIComponent(token)}`,{signal:AbortSignal.timeout(8000)});
@@ -99,9 +109,17 @@ function UserBadge({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
 }
 
 // ── Login Screen ──────────────────────────────────────────────────────────────
-function LoginScreen() {
+function LoginScreen({ initialError }: { initialError?: string }) {
+  const [loading, setLoading] = useState(false);
+  const [error,   setError  ] = useState(initialError || '');
+
   const handleLogin = () => {
-    window.location.href = `/api/auth/discord?return_to=${encodeURIComponent(window.location.origin)}`;
+    setLoading(true);
+    setError('');
+    // Small delay so the spinner renders before navigation
+    setTimeout(() => {
+      window.location.href = `/api/auth/discord?return_to=${encodeURIComponent(window.location.origin)}`;
+    }, 80);
   };
   return (
     <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',padding:24}}>
@@ -122,13 +140,27 @@ function LoginScreen() {
               <span key={f} style={{fontSize:10,padding:'3px 9px',borderRadius:20,background:'var(--elevated)',border:'1px solid var(--border)',color:'var(--text-muted)',fontWeight:500}}>{f}</span>
             ))}
           </div>
-          <button onClick={handleLogin} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:12,padding:'14px 20px',borderRadius:12,background:'#5865f2',border:'none',color:'#fff',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:"'Lexend',sans-serif",boxShadow:'0 4px 20px rgba(88,101,242,0.45)',transition:'all .15s'}}
-            onMouseEnter={e=>{e.currentTarget.style.background='#4752c4';e.currentTarget.style.transform='translateY(-2px)';}}
-            onMouseLeave={e=>{e.currentTarget.style.background='#5865f2';e.currentTarget.style.transform='none';}}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/>
-            </svg>
-            Continue with Discord
+          {error && (
+            <div style={{marginBottom:16,padding:'10px 14px',borderRadius:8,background:'rgba(237,66,69,0.12)',border:'1px solid rgba(237,66,69,0.4)',color:'#f87171',fontSize:12,lineHeight:1.6}}>
+              ⚠️ {error === 'access_denied'
+                ? 'Authorization was cancelled. Please try again and click "Authorise" on the Discord screen.'
+                : `Discord returned an error: ${error}. Please try again.`}
+            </div>
+          )}
+          <button onClick={handleLogin} disabled={loading} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:12,padding:'14px 20px',borderRadius:12,background:loading?'#4752c4':'#5865f2',border:'none',color:'#fff',fontSize:15,fontWeight:700,cursor:loading?'not-allowed':'pointer',fontFamily:"'Lexend',sans-serif",boxShadow:'0 4px 20px rgba(88,101,242,0.45)',transition:'all .15s',opacity:loading?0.8:1}}
+            onMouseEnter={e=>{if(!loading){e.currentTarget.style.background='#4752c4';e.currentTarget.style.transform='translateY(-2px)';}}}
+            onMouseLeave={e=>{if(!loading){e.currentTarget.style.background='#5865f2';e.currentTarget.style.transform='none';}}}>
+            {loading ? (
+              <>
+                <div style={{width:18,height:18,border:'2.5px solid rgba(255,255,255,0.3)',borderTopColor:'#fff',borderRadius:'50%',animation:'spin 0.7s linear infinite',flexShrink:0}}/>
+                Connecting to Discord…
+              </>
+            ) : (
+              <>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
+                Continue with Discord
+              </>
+            )}
           </button>
           <div style={{marginTop:14,fontSize:11,color:'var(--text-faint)',textAlign:'center',lineHeight:1.6}}>
             We request your username, avatar, and server list.<br/>No messages or private data are accessed.
@@ -347,11 +379,14 @@ export default function App() {
   const [user,setUser]        =useState<DiscordUser|null>(null);
   const [token,setToken]      =useState('');
   const [authChecked,setDone] =useState(false);
+  const [loginError,setLoginError] =useState('');
 
   useEffect(()=>{
     let cancelled=false;
     async function init(){
-      const urlToken=extractUrlToken(); const checkToken=urlToken||storedToken();
+      const { token: urlToken, authError } = extractUrlParams();
+      if (authError) { setLoginError(authError); setDone(true); return; }
+      const checkToken = urlToken || storedToken();
       if(checkToken){ saveToken(checkToken); setSessionToken(checkToken);
         const u=await verifySession(checkToken);
         if(!cancelled){if(u){setUser(u);setToken(checkToken);}else{removeToken();clearSession();}}
@@ -364,7 +399,7 @@ export default function App() {
   const handleLogout=async()=>{await logoutSession(token);removeToken();clearSession();setUser(null);setToken('');};
 
   if(!authChecked)return<div style={{display:'flex',height:'100vh',alignItems:'center',justifyContent:'center',background:'var(--bg)'}}><Loader2 size={28} style={{animation:'spin 1s linear infinite',color:'var(--primary)'}}/></div>;
-  if(!user)return<LoginScreen/>;
+  if(!user)return<LoginScreen initialError={loginError}/>;
   if(user.is_admin)return<AdminDashboard user={user} onLogout={handleLogout}/>;
   return<BattleToolsDashboard user={user} onLogout={handleLogout}/>;
 }
