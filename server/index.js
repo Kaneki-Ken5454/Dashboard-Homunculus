@@ -288,8 +288,30 @@ async function safeQuery(res, fn) {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 const app = express();
+
+// CRITICAL: Trust Vercel / any reverse-proxy's X-Forwarded-Proto header so
+// req.protocol returns 'https' instead of always 'http'.
+// Without this, every OAuth callback URL is built as http:// and Discord / Google
+// reject it with "redirect_uri mismatch" (the silent failure users see).
+app.set('trust proxy', true);
+
 app.use(cors());
 app.use(express.json());
+
+// ── siteOrigin — always returns the correct https:// origin ──────────────────
+// Priority:
+//   1. PUBLIC_URL env var  (set this in Vercel → Environment Variables)
+//   2. VERCEL_URL env var  (Vercel sets this automatically, no protocol prefix)
+//   3. x-forwarded-proto + host header  (works after trust proxy is set)
+//   4. req.protocol + host  (local dev fallback)
+function siteOrigin(req) {
+  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  // After app.set('trust proxy', true), req.protocol reads x-forwarded-proto correctly
+  const proto = (req.headers && req.headers['x-forwarded-proto']) || req.protocol || 'https';
+  return `${proto}://${req.get('host')}`;
+}
+
 
 // ── Serve built frontend in production ────────────────────────────────────────
 const distPath = resolve(__dirname, '../dist');
@@ -306,6 +328,41 @@ _sdLoad().then(() => {
 }).catch(e => console.error('⚠️  BossInfo warm-up failed:', e.message));
   res.json({ ok: true, sdReady: _sdReady, sdLoading: _sdLoading });
 });
+
+// ── Auth diagnostic — visit /api/auth/test to instantly see what URLs will be used ──
+// Open this in a browser to debug OAuth redirect_uri mismatches.
+// DELETE or ignore this route in production once login is working.
+app.get('/api/auth/test', (req, res) => {
+  const origin = siteOrigin(req);
+  res.json({
+    computed_site_origin:      origin,
+    discord_callback_will_be:  `${origin}/api/auth/discord/callback`,
+    google_callback_will_be:   `${origin}/api/auth/google/callback`,
+    env: {
+      PUBLIC_URL:   process.env.PUBLIC_URL    || '(not set)',
+      VERCEL_URL:   process.env.VERCEL_URL    || '(not set)',
+      DISCORD_CLIENT_ID:    process.env.DISCORD_CLIENT_ID    ? '✅ set' : '❌ MISSING',
+      DISCORD_CLIENT_SECRET: process.env.DISCORD_CLIENT_SECRET ? '✅ set' : '❌ MISSING',
+      ADMIN_DISCORD_IDS:    process.env.ADMIN_DISCORD_IDS    || '(not set — no admin access)',
+      GOOGLE_CLIENT_ID:     process.env.GOOGLE_CLIENT_ID     ? '✅ set' : '(not set)',
+      GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ? '✅ set' : '(not set)',
+      ADMIN_GOOGLE_EMAILS:  process.env.ADMIN_GOOGLE_EMAILS  || '(not set)',
+    },
+    headers_received: {
+      host:              req.get('host'),
+      'x-forwarded-proto': req.headers['x-forwarded-proto'] || '(none — using req.protocol)',
+      'x-forwarded-for':   req.headers['x-forwarded-for']   || '(none)',
+    },
+    action_required: [
+      !process.env.DISCORD_CLIENT_ID     && '❌ Set DISCORD_CLIENT_ID in Vercel env vars',
+      !process.env.DISCORD_CLIENT_SECRET && '❌ Set DISCORD_CLIENT_SECRET in Vercel env vars',
+      !process.env.ADMIN_DISCORD_IDS     && '⚠️  Set ADMIN_DISCORD_IDS to your Discord user ID for admin access',
+      `📋 Register this exact URI in Discord Developer Portal → OAuth2 → Redirects:\n   ${origin}/api/auth/discord/callback`,
+      process.env.GOOGLE_CLIENT_ID && `📋 Register this exact URI in Google Cloud Console → Credentials:\n   ${origin}/api/auth/google/callback`,
+    ].filter(Boolean),
+  });
+});
+
 
 // ── Guild Discovery ───────────────────────────────────────────────────────────
 // All admin actions require either a valid admin session token (from Discord OAuth)
@@ -1952,8 +2009,8 @@ app.get('/api/auth/discord', (req, res) => {
   if (!DISCORD_CLIENT_ID) {
     return res.status(500).send('DISCORD_CLIENT_ID not set — add it in Vercel → Environment Variables.');
   }
-  const returnTo    = String(req.query.return_to || `${req.protocol}://${req.get('host')}`);
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/discord/callback`;
+  const returnTo    = String(req.query.return_to || siteOrigin(req));
+  const callbackUrl = `${siteOrigin(req)}/api/auth/discord/callback`;
   const state       = Buffer.from(JSON.stringify({ returnTo })).toString('base64url');
   const params = new URLSearchParams({
     client_id: DISCORD_CLIENT_ID, redirect_uri: callbackUrl,
@@ -1971,13 +2028,13 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   await runSessionMigrations().catch(() => {});
 
   const { code, state, error } = req.query;
-  let returnTo = `${req.protocol}://${req.get('host')}`;
+  let returnTo = siteOrigin(req);
   try { const p = JSON.parse(Buffer.from(String(state||''),'base64url').toString('utf8')); if(p.returnTo) returnTo=p.returnTo; } catch {}
 
   if (error) return res.redirect(`${returnTo}?auth_error=${encodeURIComponent(String(error))}`);
   if (!code)  return res.status(400).send('Missing OAuth code from Discord.');
 
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/discord/callback`;
+  const callbackUrl = `${siteOrigin(req)}/api/auth/discord/callback`;
   try {
     // 1. Exchange code for tokens
     const tokenRes  = await fetch('https://discord.com/api/oauth2/token', {
@@ -2133,8 +2190,8 @@ app.get('/api/auth/google', (req, res) => {
   if (!GOOGLE_CLIENT_ID) {
     return res.status(500).send('GOOGLE_CLIENT_ID not set — add it in Vercel → Environment Variables.');
   }
-  const returnTo    = String(req.query.return_to || `${req.protocol}://${req.get('host')}`);
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+  const returnTo    = String(req.query.return_to || siteOrigin(req));
+  const callbackUrl = `${siteOrigin(req)}/api/auth/google/callback`;
   const state       = Buffer.from(JSON.stringify({ returnTo })).toString('base64url');
   const params = new URLSearchParams({
     client_id:     GOOGLE_CLIENT_ID,
@@ -2153,13 +2210,13 @@ app.get('/api/auth/google/callback', async (req, res) => {
   await runSessionMigrations().catch(() => {});
 
   const { code, state, error } = req.query;
-  let returnTo = `${req.protocol}://${req.get('host')}`;
+  let returnTo = siteOrigin(req);
   try { const p = JSON.parse(Buffer.from(String(state || ''), 'base64url').toString('utf8')); if (p.returnTo) returnTo = p.returnTo; } catch {}
 
   if (error) return res.redirect(`${returnTo}?auth_error=${encodeURIComponent(String(error))}`);
   if (!code)  return res.status(400).send('Missing OAuth code from Google.');
 
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+  const callbackUrl = `${siteOrigin(req)}/api/auth/google/callback`;
   try {
     // 1. Exchange code for tokens
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
