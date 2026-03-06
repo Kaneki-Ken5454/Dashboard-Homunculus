@@ -2027,6 +2027,7 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   await ensureTablesOnce().catch(() => {});
   await runSessionMigrations().catch(() => {});
 
+  console.log('[OAuth/discord] callback hit — code present:', !!req.query.code, '| error:', req.query.error || 'none');
   const { code, state, error } = req.query;
   let returnTo = siteOrigin(req);
   try { const p = JSON.parse(Buffer.from(String(state||''),'base64url').toString('utf8')); if(p.returnTo) returnTo=p.returnTo; } catch {}

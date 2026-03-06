@@ -439,16 +439,32 @@ export default function App() {
     const safetyTimer = setTimeout(() => { if (!cancelled) setDone(true); }, 12000);
     async function init(){
       try {
+        console.log('[auth] init() starting');
         const { token: urlToken, authError } = extractUrlParams();
+        console.log('[auth] urlToken present:', !!urlToken, '| authError:', authError || 'none');
         if (authError) { setLoginError(authError); return; }
         const checkToken = urlToken || storedToken();
+        console.log('[auth] checkToken present:', !!checkToken);
         if (checkToken) {
+          const isFromOAuth = !!urlToken; // true when Discord/Google just redirected back
           saveToken(checkToken);
           setSessionToken(checkToken);
+          console.log('[auth] calling verifySession...');
           const u = await verifySession(checkToken);
+          console.log('[auth] verifySession result:', u ? `ok (${u.username}, admin=${u.is_admin})` : 'null/failed');
           if (!cancelled) {
-            if (u) { setUser(u); setToken(checkToken); }
-            else { removeToken(); clearSession(); }
+            if (u) {
+              setUser(u);
+              setToken(checkToken);
+            } else {
+              removeToken();
+              clearSession();
+              // If the token came from the OAuth redirect but is already invalid,
+              // show a helpful message rather than a silent blank login screen.
+              if (isFromOAuth) {
+                setLoginError('Session could not be verified — please try logging in again. (If this keeps happening, check your Vercel logs for a DB error.)');
+              }
+            }
           }
         }
       } catch(e) {
