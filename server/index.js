@@ -308,17 +308,31 @@ _sdLoad().then(() => {
 });
 
 // ── Guild Discovery ───────────────────────────────────────────────────────────
-// All admin actions require a valid x-admin-key header when ADMIN_API_KEY is set.
-// This prevents client-dashboard users (or anyone else) from calling admin endpoints.
+// All admin actions require either a valid admin session token (from Discord OAuth)
+// or a hardcoded ADMIN_API_KEY env var (for legacy/emergency access).
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 
+async function isAdminSessionToken(token: string): Promise<boolean> {
+  if (!token) return false;
+  try {
+    const rows = await sql(
+      `SELECT is_admin FROM client_sessions WHERE session_token = $1 AND expires_at > NOW()`,
+      [token]
+    );
+    return rows[0]?.is_admin === true;
+  } catch { return false; }
+}
+
 app.post('/api/query', async (req, res) => {
-  // Enforce admin key if one is configured on the server
-  if (ADMIN_API_KEY) {
-    const provided = (req.headers['x-admin-key'] || '').toString().trim();
-    if (provided !== ADMIN_API_KEY) {
-      return res.status(401).json({ success: false, error: 'Unauthorized: invalid or missing admin key' });
-    }
+  // Enforce admin auth via session token or legacy API key
+  const sessionToken = (req.headers['x-session-token'] || '').toString().trim();
+  const apiKey       = (req.headers['x-admin-key']      || '').toString().trim();
+
+  const keyOk     = ADMIN_API_KEY && apiKey === ADMIN_API_KEY;
+  const sessionOk = sessionToken ? await isAdminSessionToken(sessionToken) : false;
+
+  if (!keyOk && !sessionOk) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: log in via Discord to access admin features.' });
   }
 
   const { action, params = {} } = req.body;
@@ -1845,179 +1859,204 @@ app.delete('/api/bossinfo/db/calcs/:id', async (req,res) => {
 });
 
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Discord OAuth2 — Client Dashboard Login
-// ═══════════════════════════════════════════════════════════════════════════
-// Required env vars on the admin Vercel project:
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Discord OAuth2 — Unified Login (admin + regular users, single dashboard URL)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Required env vars:
 //   DISCORD_CLIENT_ID     — from discord.com/developers/applications
 //   DISCORD_CLIENT_SECRET — from discord.com/developers/applications
-//   CLIENT_DASHBOARD_URL  — your client Vercel URL, e.g. https://battle-tools.vercel.app
 //
-// In your Discord application, add this Redirect URI:
-//   https://your-admin-dashboard.vercel.app/api/client/auth/discord/callback
+// Add this Redirect URI in Discord Developer Portal → OAuth2 → Redirects:
+//   https://your-dashboard.vercel.app/api/auth/discord/callback
+//
+// Optional:
+//   SUPERADMIN_DISCORD_IDS — comma-separated Discord IDs for unconditional admin
+//
+// Admin detection: users with ADMINISTRATOR (0x8) or MANAGE_GUILD (0x20) in any
+// guild are granted full admin access. Everyone else gets Battle Tools only.
+// ═══════════════════════════════════════════════════════════════════════════════
 
 const DISCORD_CLIENT_ID     = process.env.DISCORD_CLIENT_ID     || '';
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || '';
-const CLIENT_DASHBOARD_URL  = (process.env.CLIENT_DASHBOARD_URL || '').replace(/\/$/, '');
 
-const oauthCors = cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] });
-app.options('/api/client/auth/me',     oauthCors, (_req, res) => res.sendStatus(204));
-app.options('/api/client/auth/logout', oauthCors, (_req, res) => res.sendStatus(204));
+// ── WHITELIST — only these Discord IDs get full admin access ─────────────────
+// Set ADMIN_DISCORD_IDS in your .env or Vercel environment variables.
+// Comma-separated Discord user IDs, e.g.:
+//   ADMIN_DISCORD_IDS=123456789012345678,987654321098765432
+const ADMIN_DISCORD_IDS = (process.env.ADMIN_DISCORD_IDS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
 
-// ── Step 1: Redirect browser → Discord authorization page ────────────────────
-// GET /api/client/auth/discord?guild_id=xxx&return_to=https://...
-app.get('/api/client/auth/discord', (req, res) => {
+// Ensure new session columns exist (idempotent)
+const sessionMigrations = [
+  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS guilds_json JSONB DEFAULT '[]'`,
+  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS access_token TEXT`,
+  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS refresh_token TEXT`,
+  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ`,
+];
+async function runSessionMigrations() {
+  for (const m of sessionMigrations) { try { await sql(m); } catch {} }
+}
+
+const authCors = cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] });
+
+// ── GET /api/auth/discord — start OAuth flow ──────────────────────────────────
+app.get('/api/auth/discord', (req, res) => {
   if (!DISCORD_CLIENT_ID) {
-    return res.status(500).send(
-      'DISCORD_CLIENT_ID is not set on the admin server. ' +
-      'Add it in your Vercel project settings → Environment Variables.'
-    );
+    return res.status(500).send('DISCORD_CLIENT_ID not set — add it in Vercel → Environment Variables.');
   }
-  const guildId  = String(req.query.guild_id  || 'global');
-  const returnTo = String(req.query.return_to || CLIENT_DASHBOARD_URL || req.headers.referer || '/');
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/client/auth/discord/callback`;
-
-  // Pack guildId + returnTo into state so we recover them after OAuth
-  const state = Buffer.from(JSON.stringify({ guildId, returnTo })).toString('base64url');
-
+  const returnTo    = String(req.query.return_to || `${req.protocol}://${req.get('host')}`);
+  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/discord/callback`;
+  const state       = Buffer.from(JSON.stringify({ returnTo })).toString('base64url');
   const params = new URLSearchParams({
-    client_id:     DISCORD_CLIENT_ID,
-    redirect_uri:  callbackUrl,
-    response_type: 'code',
-    scope:         'identify',   // username + avatar only — no server access
-    state,
+    client_id: DISCORD_CLIENT_ID, redirect_uri: callbackUrl,
+    response_type: 'code', scope: 'identify guilds', state, prompt: 'none',
   });
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 
-// ── Step 2: Discord redirects back with ?code= ────────────────────────────────
-// GET /api/client/auth/discord/callback
-app.get('/api/client/auth/discord/callback', async (req, res) => {
+// ── GET /api/auth/discord/callback — exchange code, create session ────────────
+app.get('/api/auth/discord/callback', async (req, res) => {
   await ensureTablesOnce().catch(() => {});
+  await runSessionMigrations().catch(() => {});
+
   const { code, state, error } = req.query;
+  let returnTo = `${req.protocol}://${req.get('host')}`;
+  try { const p = JSON.parse(Buffer.from(String(state||''),'base64url').toString('utf8')); if(p.returnTo) returnTo=p.returnTo; } catch {}
 
-  if (error) {
-    const dest = CLIENT_DASHBOARD_URL || '/';
-    return res.redirect(`${dest}?auth_error=${encodeURIComponent(String(error))}`);
-  }
-  if (!code) return res.status(400).send('Missing code parameter from Discord.');
+  if (error) return res.redirect(`${returnTo}?auth_error=${encodeURIComponent(String(error))}`);
+  if (!code)  return res.status(400).send('Missing OAuth code from Discord.');
 
-  let guildId = 'global';
-  let returnTo = CLIENT_DASHBOARD_URL || '/';
+  const callbackUrl = `${req.protocol}://${req.get('host')}/api/auth/discord/callback`;
   try {
-    const parsed = JSON.parse(Buffer.from(String(state), 'base64url').toString('utf8'));
-    if (parsed.guildId)  guildId  = parsed.guildId;
-    if (parsed.returnTo) returnTo = parsed.returnTo;
-  } catch { /* state decode failed — use defaults */ }
-
-  const callbackUrl = `${req.protocol}://${req.get('host')}/api/client/auth/discord/callback`;
-
-  try {
-    // Exchange authorization code for access token
-    const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    // 1. Exchange code for tokens
+    const tokenRes  = await fetch('https://discord.com/api/oauth2/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        client_id:     DISCORD_CLIENT_ID,
-        client_secret: DISCORD_CLIENT_SECRET,
-        grant_type:    'authorization_code',
-        code:          String(code),
-        redirect_uri:  callbackUrl,
+        client_id: DISCORD_CLIENT_ID, client_secret: DISCORD_CLIENT_SECRET,
+        grant_type: 'authorization_code', code: String(code), redirect_uri: callbackUrl,
       }),
     });
     const tokenData = await tokenRes.json();
     if (!tokenData.access_token) {
-      console.error('[Discord OAuth] Token exchange failed:', tokenData);
-      return res.status(400).send('Discord OAuth failed — invalid code or server credentials. Check server logs.');
+      console.error('[OAuth] Token exchange failed:', JSON.stringify(tokenData));
+      return res.status(400).send('Discord token exchange failed — check DISCORD_CLIENT_ID/SECRET in Vercel env vars and that the Redirect URI is registered in the Discord Developer Portal.');
     }
+    const accessToken  = tokenData.access_token;
+    const refreshToken = tokenData.refresh_token || null;
+    const expiresAt    = new Date(Date.now() + (tokenData.expires_in || 604800) * 1000);
 
-    // Fetch Discord user info
+    // 2. Fetch Discord user
     const userRes = await fetch('https://discord.com/api/users/@me', {
-      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
     const discordUser = await userRes.json();
     if (!discordUser.id) return res.status(400).send('Could not fetch Discord user info.');
 
-    const discordId  = String(discordUser.id);
-    const username   = discordUser.global_name || discordUser.username || `User_${discordId.slice(-4)}`;
-    const avatarHash = discordUser.avatar;
-    const avatarUrl  = avatarHash
-      ? `https://cdn.discordapp.com/avatars/${discordId}/${avatarHash}.png?size=64`
-      : null;
+    const discordId = String(discordUser.id);
+    const username  = discordUser.global_name || discordUser.username || `User_${discordId.slice(-4)}`;
+    const avatar    = discordUser.avatar;
+    const avatarUrl = avatar ? `https://cdn.discordapp.com/avatars/${discordId}/${avatar}.png?size=128` : null;
 
-    // Create session (7-day expiry)
-    const token = `cds_${discordId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    // 3. Fetch user's guilds — find which they have admin in
+    const guildsRes = await fetch('https://discord.com/api/users/@me/guilds', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const allGuilds = guildsRes.ok ? await guildsRes.json() : [];
+
+    // 4. Determine admin status — whitelist only
+    const isAdmin     = ADMIN_DISCORD_IDS.includes(discordId);
+    // Still fetch guilds so we can populate the guild picker for admins
+    const adminGuilds = Array.isArray(allGuilds)
+      ? allGuilds.map(g => ({ id: g.id, name: g.name || g.id, icon: g.icon || null }))
+      : [];
+
+    // 5. Create 14-day session
+    const sessionToken = `hom_${discordId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const firstGuildId = adminGuilds[0]?.id || 'global';
+
     await sql(
-      `INSERT INTO client_sessions (guild_id, discord_id, username, avatar_url, session_token, expires_at)
-       VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days')`,
-      [guildId, discordId, username, avatarUrl, token]
+      `INSERT INTO client_sessions
+         (guild_id, discord_id, username, avatar_url, session_token, expires_at,
+          is_admin, guilds_json, access_token, refresh_token, token_expires_at)
+       VALUES ($1,$2,$3,$4,$5, NOW() + INTERVAL '14 days', $6,$7,$8,$9,$10)
+       ON CONFLICT (session_token) DO NOTHING`,
+      [firstGuildId, discordId, username, avatarUrl, sessionToken,
+       isAdmin, JSON.stringify(adminGuilds), accessToken, refreshToken, expiresAt.toISOString()]
     );
 
-    // Redirect client dashboard with the session token in the URL
-    res.redirect(`${returnTo}?token=${encodeURIComponent(token)}`);
+    // 6. Redirect back to the dashboard with the session token
+    res.redirect(`${returnTo}?token=${encodeURIComponent(sessionToken)}`);
 
   } catch (e) {
-    console.error('[Discord OAuth] Callback error:', e?.message || e);
-    res.status(500).send('Internal error during Discord OAuth. Check server logs.');
+    console.error('[OAuth] Callback error:', e?.message || e);
+    res.status(500).send('Internal OAuth error — check server logs.');
   }
 });
 
-// ── GET /api/client/auth/me?token=…  — verify + refresh session ──────────────
-app.get('/api/client/auth/me', oauthCors, async (req, res) => {
+// ── GET /api/auth/me?token=… — verify session, return user info ───────────────
+app.get('/api/auth/me', authCors, async (req, res) => {
   await ensureTablesOnce().catch(() => {});
   const { token } = req.query;
-  if (!token) return res.status(400).json({ ok: false, error: 'No token provided.' });
+  if (!token) return res.status(400).json({ ok: false, error: 'No token.' });
   try {
     const rows = await sql(
-      `UPDATE client_sessions
-       SET last_seen = NOW()
+      `UPDATE client_sessions SET last_seen = NOW()
        WHERE session_token = $1 AND expires_at > NOW()
-       RETURNING discord_id, username, avatar_url, guild_id`,
+       RETURNING discord_id, username, avatar_url, guild_id, is_admin, guilds_json`,
       [String(token)]
     );
     if (!rows.length) return res.status(401).json({ ok: false, error: 'Session expired — please log in again.' });
-    const { discord_id, username, avatar_url, guild_id } = rows[0];
-    res.json({ ok: true, discord_id, username, avatar_url, guild_id });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
+    const { discord_id, username, avatar_url, guild_id, is_admin, guilds_json } = rows[0];
+    res.json({
+      ok: true, discord_id, username, avatar_url, guild_id,
+      is_admin: !!is_admin,
+      admin_guilds: Array.isArray(guilds_json) ? guilds_json : (guilds_json || []),
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// ── POST /api/client/auth/logout  — delete session ───────────────────────────
-app.post('/api/client/auth/logout', oauthCors, async (req, res) => {
+// ── POST /api/auth/logout — delete session ────────────────────────────────────
+app.post('/api/auth/logout', authCors, async (req, res) => {
   await ensureTablesOnce().catch(() => {});
   const { token } = req.body || {};
-  if (token) {
-    await sql(`DELETE FROM client_sessions WHERE session_token = $1`, [String(token)]).catch(() => {});
-  }
+  if (token) await sql(`DELETE FROM client_sessions WHERE session_token = $1`, [String(token)]).catch(() => {});
   res.json({ ok: true });
 });
 
-// ── GET /api/client/auth/sessions — admin: list active sessions ───────────────
+// ── Legacy /api/client/auth/* aliases (backward compat) ──────────────────────
+app.get('/api/client/auth/discord', (req, res) => {
+  res.redirect(`/api/auth/discord?${new URLSearchParams(req.query)}`);
+});
+app.get('/api/client/auth/discord/callback', (req, res) => {
+  res.redirect(`/api/auth/discord/callback?${new URLSearchParams(req.query)}`);
+});
+app.get('/api/client/auth/me', authCors, (req, res) => {
+  res.redirect(307, `/api/auth/me?${new URLSearchParams(req.query)}`);
+});
+app.post('/api/client/auth/logout', authCors, async (req, res) => {
+  const { token } = req.body || {};
+  if (token) await sql(`DELETE FROM client_sessions WHERE session_token = $1`, [String(token)]).catch(() => {});
+  res.json({ ok: true });
+});
+
+// ── Admin: list / revoke sessions ─────────────────────────────────────────────
 app.get('/api/client/auth/sessions', async (req, res) => {
   await ensureTablesOnce().catch(() => {});
   const { guild_id } = req.query;
   try {
     const rows = guild_id
-      ? await sql(`SELECT id, discord_id, username, avatar_url, guild_id, last_seen, expires_at, created_at FROM client_sessions WHERE guild_id = $1 AND expires_at > NOW() ORDER BY last_seen DESC`, [String(guild_id)])
-      : await sql(`SELECT id, discord_id, username, avatar_url, guild_id, last_seen, expires_at, created_at FROM client_sessions WHERE expires_at > NOW() ORDER BY last_seen DESC`);
+      ? await sql(`SELECT id,discord_id,username,avatar_url,guild_id,last_seen,expires_at,created_at,is_admin FROM client_sessions WHERE guild_id=$1 AND expires_at>NOW() ORDER BY last_seen DESC`,[String(guild_id)])
+      : await sql(`SELECT id,discord_id,username,avatar_url,guild_id,last_seen,expires_at,created_at,is_admin FROM client_sessions WHERE expires_at>NOW() ORDER BY last_seen DESC`);
     res.json({ ok: true, sessions: rows });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
-
-// ── DELETE /api/client/auth/sessions/:id — admin: revoke a session ───────────
 app.delete('/api/client/auth/sessions/:id', async (req, res) => {
   await ensureTablesOnce().catch(() => {});
-  try {
-    await sql(`DELETE FROM client_sessions WHERE id = $1`, [req.params.id]).catch(() => {});
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
+  try { await sql(`DELETE FROM client_sessions WHERE id=$1`,[req.params.id]).catch(()=>{}); res.json({ ok:true }); }
+  catch (e) { res.status(500).json({ ok:false, error:e.message }); }
 });
-
 
 // Export the app for Vercel (serverless) usage.
 // When running locally (node server/index.js), start the HTTP server normally.

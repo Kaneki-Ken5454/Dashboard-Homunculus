@@ -1,28 +1,21 @@
 // All DB calls go through the Express API server at /api/query.
-// This avoids CORS issues — the browser never contacts NeonDB directly.
+// The server uses the session token (from Discord OAuth) to authorise admin requests.
 
-// ── URL storage ────────────────────────────────────────────────────────────────
-export function setDatabaseUrl(url: string) {
-  try { localStorage.setItem('NEON_DB_URL', url); } catch {}
-}
-export function getDatabaseUrl(): string {
-  const fromEnv = import.meta.env.VITE_DATABASE_URL as string | undefined;
-  if (fromEnv?.startsWith('postgresql')) return fromEnv;
-  try {
-    const stored = localStorage.getItem('NEON_DB_URL') || '';
-    if (stored.startsWith('postgresql')) return stored;
-  } catch {}
-  return '';
-}
-export function isConfigured(): boolean { return getDatabaseUrl().length > 0; }
+// ── Session token (set by App.tsx after OAuth login) ─────────────────────────
+let _sessionToken = '';
+export function setSessionToken(token: string) { _sessionToken = token; }
+export function clearSession() { _sessionToken = ''; }
+export function isAdminSession() { return _sessionToken.length > 0; }
+
+// ── Kept for backward compat — no longer needed for setup ─────────────────────
+export function setDatabaseUrl(_url: string) {}
+export function getDatabaseUrl(): string { return 'configured-server-side'; }
+export function isConfigured(): boolean { return true; }
 
 // ── Core API call ─────────────────────────────────────────────────────────────
-// Sends x-admin-key so the server can reject requests from non-admin origins.
-const ADMIN_KEY = (import.meta.env.VITE_ADMIN_KEY as string | undefined) || '';
-
 export async function apiCall<T = unknown>(action: string, params: Record<string, unknown> = {}): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (ADMIN_KEY) headers['x-admin-key'] = ADMIN_KEY;
+  if (_sessionToken) headers['x-session-token'] = _sessionToken;
   const res = await fetch('/api/query', {
     method: 'POST',
     headers,
