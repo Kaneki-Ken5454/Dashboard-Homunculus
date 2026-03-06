@@ -267,7 +267,7 @@ function BattleToolsDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>voi
         <main style={{flex:1,overflowY:'auto',padding:24}}>
           {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
           {page==='weakness'&&<WeaknessLookupTool/>}
-          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}}/>}
+          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id}}/>}
         </main>
       </div>
     </div>
@@ -410,7 +410,7 @@ function AdminDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
           {page==='clienttools'&&<ClientToolsPage guildId={guildId}/>}
           {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
           {page==='weakness'&&<WeaknessLookupTool/>}
-          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}}/>}
+          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id}}/>}
         </main>
       </div>
     </div>
