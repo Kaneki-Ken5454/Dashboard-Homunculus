@@ -312,7 +312,7 @@ _sdLoad().then(() => {
 // or a hardcoded ADMIN_API_KEY env var (for legacy/emergency access).
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 
-async function isAdminSessionToken(token: string): Promise<boolean> {
+async function isAdminSessionToken(token) {
   if (!token) return false;
   try {
     const rows = await sql(
