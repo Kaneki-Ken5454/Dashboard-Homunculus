@@ -17,10 +17,15 @@ export function getDatabaseUrl(): string {
 export function isConfigured(): boolean { return getDatabaseUrl().length > 0; }
 
 // ── Core API call ─────────────────────────────────────────────────────────────
+// Sends x-admin-key so the server can reject requests from non-admin origins.
+const ADMIN_KEY = (import.meta.env.VITE_ADMIN_KEY as string | undefined) || '';
+
 export async function apiCall<T = unknown>(action: string, params: Record<string, unknown> = {}): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (ADMIN_KEY) headers['x-admin-key'] = ADMIN_KEY;
   const res = await fetch('/api/query', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ action, params }),
   });
   // Always parse JSON — the server always returns { success, data|error }

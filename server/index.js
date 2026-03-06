@@ -308,7 +308,19 @@ _sdLoad().then(() => {
 });
 
 // ── Guild Discovery ───────────────────────────────────────────────────────────
+// All admin actions require a valid x-admin-key header when ADMIN_API_KEY is set.
+// This prevents client-dashboard users (or anyone else) from calling admin endpoints.
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
+
 app.post('/api/query', async (req, res) => {
+  // Enforce admin key if one is configured on the server
+  if (ADMIN_API_KEY) {
+    const provided = (req.headers['x-admin-key'] || '').toString().trim();
+    if (provided !== ADMIN_API_KEY) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: invalid or missing admin key' });
+    }
+  }
+
   const { action, params = {} } = req.body;
   if (!action) return err(res, 'Missing action');
 
@@ -1291,6 +1303,32 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { feature, enabled: !!enabled });
       }
 
+      // ── Client Sessions (admin view) ──────────────────────────────────────
+      case 'getClientSessions': {
+        const { guildId = 'global', limit = 100 } = params;
+        const rows = guildId !== 'global'
+          ? await sql(
+              `SELECT id, discord_id, username, avatar_url, guild_id, last_seen, expires_at, created_at
+               FROM client_sessions WHERE guild_id = $1 AND expires_at > NOW()
+               ORDER BY last_seen DESC LIMIT $2`,
+              [String(guildId), Number(limit)]
+            )
+          : await sql(
+              `SELECT id, discord_id, username, avatar_url, guild_id, last_seen, expires_at, created_at
+               FROM client_sessions WHERE expires_at > NOW()
+               ORDER BY last_seen DESC LIMIT $1`,
+              [Number(limit)]
+            );
+        return ok(res, rows);
+      }
+
+      case 'revokeClientSession': {
+        const { id } = params;
+        if (!id) return err(res, 'id required');
+        await sql(`DELETE FROM client_sessions WHERE id = $1`, [Number(id)]);
+        return ok(res, { revoked: true });
+      }
+
       default:
         return err(res, `Unknown action: ${action}`);
     }
@@ -1337,7 +1375,7 @@ app.post('/api/client/visit', clientCors, async (req, res) => {
     await sql(
       `INSERT INTO client_visitors(guild_id, session_id, ip, country, user_agent, page, referrer)
        VALUES($1, $2, $3, $4, $5, $6, $7)`,
-      [guildId, session_id, ip || null, country, ua || null, page, referrer || null]
+      [guild_id, session_id, ip || null, country, ua || null, page, referrer || null]
     );
     res.json({ ok: true });
   } catch (e) {
