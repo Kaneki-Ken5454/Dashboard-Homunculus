@@ -2082,22 +2082,32 @@ app.get('/api/auth/discord/callback', async (req, res) => {
     const sessionToken = `hom_${discordId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const firstGuildId = adminGuilds[0]?.id || 'global';
 
-    await sql(
-      `INSERT INTO client_sessions
-         (guild_id, discord_id, username, avatar_url, session_token, expires_at,
-          is_admin, guilds_json, access_token, refresh_token, token_expires_at)
-       VALUES ($1,$2,$3,$4,$5, NOW() + INTERVAL '14 days', $6,$7,$8,$9,$10)
-       ON CONFLICT (session_token) DO NOTHING`,
-      [firstGuildId, discordId, username, avatarUrl, sessionToken,
-       isAdmin, JSON.stringify(adminGuilds), accessToken, refreshToken, expiresAt.toISOString()]
-    );
+    try {
+      await sql(
+        `INSERT INTO client_sessions
+           (guild_id, discord_id, username, avatar_url, session_token, expires_at,
+            is_admin, guilds_json, access_token, refresh_token, token_expires_at)
+         VALUES ($1,$2,$3,$4,$5, NOW() + INTERVAL '14 days', $6,$7,$8,$9,$10)
+         ON CONFLICT (session_token) DO NOTHING`,
+        [firstGuildId, discordId, username, avatarUrl, sessionToken,
+         isAdmin, JSON.stringify(adminGuilds), accessToken, refreshToken, expiresAt.toISOString()]
+      );
+      console.log(`[OAuth] Session created for ${username} (${discordId}) isAdmin=${isAdmin}`);
+    } catch (dbErr) {
+      // DB insert failed — log it and surface a useful error instead of a silent blank screen
+      console.error('[OAuth] Session INSERT failed:', dbErr?.message || dbErr);
+      return res.status(500).send(
+        `Session could not be saved (DB error): ${dbErr?.message || dbErr}. ` +
+        `Check Vercel logs for details.`
+      );
+    }
 
     // 6. Redirect back to the dashboard with the session token
     res.redirect(`${returnTo}?token=${encodeURIComponent(sessionToken)}`);
 
   } catch (e) {
     console.error('[OAuth] Callback error:', e?.message || e);
-    res.status(500).send('Internal OAuth error — check server logs.');
+    res.status(500).send(`Internal OAuth error: ${e?.message || e} — check Vercel logs.`);
   }
 });
 

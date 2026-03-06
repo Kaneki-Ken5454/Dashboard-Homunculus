@@ -78,8 +78,17 @@ function extractUrlParams(): { token: string; authError: string } {
 function extractUrlToken(): string { return extractUrlParams().token; }
 async function verifySession(token:string):Promise<DiscordUser|null> {
   try {
-    const r=await fetch(`/api/auth/me?token=${encodeURIComponent(token)}`,{signal:AbortSignal.timeout(8000)});
-    const b=await r.json(); if(!b.ok) return null; return b as DiscordUser;
+    // AbortSignal.timeout() has patchy support — use AbortController + setTimeout instead
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 9000);
+    try {
+      const r = await fetch(`/api/auth/me?token=${encodeURIComponent(token)}`, { signal: ctrl.signal });
+      const b = await r.json();
+      if (!b.ok) return null;
+      return b as DiscordUser;
+    } finally {
+      clearTimeout(timer);
+    }
   } catch { return null; }
 }
 async function logoutSession(token:string) {
@@ -267,7 +276,7 @@ function BattleToolsDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>voi
         <main style={{flex:1,overflowY:'auto',padding:24}}>
           {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
           {page==='weakness'&&<WeaknessLookupTool/>}
-          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id}}/>}
+          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}}/>}
         </main>
       </div>
     </div>
@@ -410,7 +419,7 @@ function AdminDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
           {page==='clienttools'&&<ClientToolsPage guildId={guildId}/>}
           {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
           {page==='weakness'&&<WeaknessLookupTool/>}
-          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id}}/>}
+          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}}/>}
         </main>
       </div>
     </div>
@@ -426,22 +435,42 @@ export default function App() {
 
   useEffect(()=>{
     let cancelled=false;
+    // Safety net: if init() hangs for any reason, force the loading screen away after 12 s.
+    const safetyTimer = setTimeout(() => { if (!cancelled) setDone(true); }, 12000);
     async function init(){
-      const { token: urlToken, authError } = extractUrlParams();
-      if (authError) { setLoginError(authError); setDone(true); return; }
-      const checkToken = urlToken || storedToken();
-      if(checkToken){ saveToken(checkToken); setSessionToken(checkToken);
-        const u=await verifySession(checkToken);
-        if(!cancelled){if(u){setUser(u);setToken(checkToken);}else{removeToken();clearSession();}}
+      try {
+        const { token: urlToken, authError } = extractUrlParams();
+        if (authError) { setLoginError(authError); return; }
+        const checkToken = urlToken || storedToken();
+        if (checkToken) {
+          saveToken(checkToken);
+          setSessionToken(checkToken);
+          const u = await verifySession(checkToken);
+          if (!cancelled) {
+            if (u) { setUser(u); setToken(checkToken); }
+            else { removeToken(); clearSession(); }
+          }
+        }
+      } catch(e) {
+        // Never leave users on the blank loading screen because of an unexpected error
+        console.error('[auth init error]', e);
+        try { removeToken(); clearSession(); } catch {}
+      } finally {
+        clearTimeout(safetyTimer);
+        if (!cancelled) setDone(true);
       }
-      if(!cancelled)setDone(true);
     }
-    init(); return()=>{cancelled=true;};
+    init(); return()=>{ cancelled=true; clearTimeout(safetyTimer); };
   },[]);
 
   const handleLogout=async()=>{await logoutSession(token);removeToken();clearSession();setUser(null);setToken('');};
 
-  if(!authChecked)return<div style={{display:'flex',height:'100vh',alignItems:'center',justifyContent:'center',background:'var(--bg)'}}><Loader2 size={28} style={{animation:'spin 1s linear infinite',color:'var(--primary)'}}/></div>;
+  if(!authChecked)return(
+    <div style={{display:'flex',height:'100vh',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'var(--bg)',gap:14}}>
+      <Loader2 size={30} style={{animation:'spin 1s linear infinite',color:'var(--primary)'}}/>
+      <span style={{fontSize:13,color:'var(--text-muted)'}}>Verifying session…</span>
+    </div>
+  );
   if(!user)return<LoginScreen initialError={loginError}/>;
   if(user.is_admin)return<AdminDashboard user={user} onLogout={handleLogout}/>;
   return<BattleToolsDashboard user={user} onLogout={handleLogout}/>;
