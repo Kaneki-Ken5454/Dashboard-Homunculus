@@ -28,7 +28,7 @@ const DATABASE_URL =
   process.env.NEON_DATABASE_URL ||
   process.env.VITE_DATABASE_URL ||
   process.env.DATABASE_URL ||
-  'postgresql://neondb_owner:npg_dJjb8k0EAUGf@ep-floral-resonance-a1spd9bz-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+  'postgresql://neondb_owner:npg_dJjb8k0EAUGf@ep-floral-resonance-a1spd9bz-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require';
 // DATABASE_URL is always set (env var or hardcoded fallback above).
 const sql = neon(DATABASE_URL);
 console.log(`✅  NeonDB connected: ${DATABASE_URL.replace(/:([^:@]+)@/, ':***@')}`);
@@ -1477,8 +1477,8 @@ async function _getLearnsets() {
   return _learnsets;
 }
 
-// Kick off data load on server start
-_sdLoad().catch(() => {});
+// Kick off data load on server start — deferred so module load never crashes
+setTimeout(() => { _sdLoad().catch(() => {}); }, 0);
 
 // ── Analysis helpers (pure JS, mirrors showdown_data.py) ─────────────────────
 function _key(n) { return (n||'').toLowerCase().replace(/[\s\-'.]/g,''); }
@@ -2027,13 +2027,16 @@ app.post('/api/auth/logout', authCors, async (req, res) => {
 
 // ── Legacy /api/client/auth/* aliases (backward compat) ──────────────────────
 app.get('/api/client/auth/discord', (req, res) => {
-  res.redirect(`/api/auth/discord?${new URLSearchParams(req.query)}`);
+  const qs = Object.entries(req.query).map(([k,v]) => `${k}=${encodeURIComponent(String(v))}`).join('&');
+  res.redirect(`/api/auth/discord${qs ? '?' + qs : ''}`);
 });
 app.get('/api/client/auth/discord/callback', (req, res) => {
-  res.redirect(`/api/auth/discord/callback?${new URLSearchParams(req.query)}`);
+  const qs = Object.entries(req.query).map(([k,v]) => `${k}=${encodeURIComponent(String(v))}`).join('&');
+  res.redirect(`/api/auth/discord/callback${qs ? '?' + qs : ''}`);
 });
 app.get('/api/client/auth/me', authCors, (req, res) => {
-  res.redirect(307, `/api/auth/me?${new URLSearchParams(req.query)}`);
+  const qs = Object.entries(req.query).map(([k,v]) => `${k}=${encodeURIComponent(String(v))}`).join('&');
+  res.redirect(307, `/api/auth/me${qs ? '?' + qs : ''}`);
 });
 app.post('/api/client/auth/logout', authCors, async (req, res) => {
   const { token } = req.body || {};
