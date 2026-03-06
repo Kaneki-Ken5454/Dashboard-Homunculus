@@ -238,18 +238,7 @@ async function ensureTables() {
       updated_at  TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(guild_id, feature)
     )`,
-    // ── Discord DM Login ──────────────────────────────────────────────────────
-    `CREATE TABLE IF NOT EXISTS client_auth_requests (
-      id          BIGSERIAL PRIMARY KEY,
-      guild_id    TEXT NOT NULL DEFAULT 'global',
-      discord_id  TEXT NOT NULL,
-      code        TEXT NOT NULL,
-      dm_sent     BOOLEAN DEFAULT FALSE,
-      dm_failed   BOOLEAN DEFAULT FALSE,
-      used        BOOLEAN DEFAULT FALSE,
-      expires_at  TIMESTAMPTZ NOT NULL,
-      created_at  TIMESTAMPTZ DEFAULT NOW()
-    )`,
+    // Discord OAuth sessions for client dashboard login
     `CREATE TABLE IF NOT EXISTS client_sessions (
       id            BIGSERIAL PRIMARY KEY,
       guild_id      TEXT NOT NULL DEFAULT 'global',
@@ -1277,23 +1266,6 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { deleted: true });
       }
 
-      case 'getClientSessions': {
-        const { guildId = 'global', limit = 100 } = params;
-        const rows = await sql(
-          `SELECT id, guild_id, discord_id, username, avatar_url, last_seen, created_at
-           FROM client_sessions
-           WHERE guild_id = $1 AND expires_at > NOW()
-           ORDER BY last_seen DESC LIMIT $2`,
-          [guildId, limit]
-        ).catch(() => []);
-        return ok(res, rows);
-      }
-
-      case 'revokeClientSession': {
-        await sql(`DELETE FROM client_sessions WHERE id = $1`, [params.id]).catch(() => {});
-        return ok(res, { success: true });
-      }
-
       case 'getClientFeatureFlags': {
         const { guildId = 'global' } = params;
         const rows = await sql(
@@ -1835,105 +1807,137 @@ app.delete('/api/bossinfo/db/calcs/:id', async (req,res) => {
 });
 
 
-// ── Discord DM Login API (client dashboard authentication) ────────────────────
-// These endpoints handle the full Discord DM verification login flow.
+// ═══════════════════════════════════════════════════════════════════════════
+// Discord OAuth2 — Client Dashboard Login
+// ═══════════════════════════════════════════════════════════════════════════
+// Required env vars on the admin Vercel project:
+//   DISCORD_CLIENT_ID     — from discord.com/developers/applications
+//   DISCORD_CLIENT_SECRET — from discord.com/developers/applications
+//   CLIENT_DASHBOARD_URL  — your client Vercel URL, e.g. https://battle-tools.vercel.app
+//
+// In your Discord application, add this Redirect URI:
+//   https://your-admin-dashboard.vercel.app/api/client/auth/discord/callback
 
-const authCors = cors({ origin: '*', methods: ['GET','POST','OPTIONS'] });
-app.options('/api/client/auth/request', authCors, (_req, res) => res.sendStatus(204));
-app.options('/api/client/auth/verify',  authCors, (_req, res) => res.sendStatus(204));
-app.options('/api/client/auth/me',      authCors, (_req, res) => res.sendStatus(204));
-app.options('/api/client/auth/logout',  authCors, (_req, res) => res.sendStatus(204));
+const DISCORD_CLIENT_ID     = process.env.DISCORD_CLIENT_ID     || '';
+const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || '';
+const CLIENT_DASHBOARD_URL  = (process.env.CLIENT_DASHBOARD_URL || '').replace(/\/$/, '');
 
-// POST /api/client/auth/request  — user enters Discord ID, bot DMs them a code
-app.post('/api/client/auth/request', authCors, async (req, res) => {
-  await ensureTablesOnce().catch(() => {});
-  const { discord_id, guild_id = 'global' } = req.body || {};
-  if (!discord_id || !/^\d{17,20}$/.test(String(discord_id).trim())) {
-    return res.status(400).json({ ok: false, error: 'Invalid Discord user ID (must be 17–20 digits). Enable Developer Mode in Discord: Settings → Advanced → Developer Mode, then right-click your name → Copy User ID.' });
+const oauthCors = cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] });
+app.options('/api/client/auth/me',     oauthCors, (_req, res) => res.sendStatus(204));
+app.options('/api/client/auth/logout', oauthCors, (_req, res) => res.sendStatus(204));
+
+// ── Step 1: Redirect browser → Discord authorization page ────────────────────
+// GET /api/client/auth/discord?guild_id=xxx&return_to=https://...
+app.get('/api/client/auth/discord', (req, res) => {
+  if (!DISCORD_CLIENT_ID) {
+    return res.status(500).send(
+      'DISCORD_CLIENT_ID is not set on the admin server. ' +
+      'Add it in your Vercel project settings → Environment Variables.'
+    );
   }
-  const id = String(discord_id).trim();
-  // Rate-limit: max 1 active request per user per 60s
-  try {
-    const recent = await sql(
-      `SELECT id FROM client_auth_requests
-       WHERE discord_id = $1 AND guild_id = $2
-         AND created_at > NOW() - INTERVAL '60 seconds'
-         AND used = FALSE AND dm_failed = FALSE
-       LIMIT 1`,
-      [id, guild_id]
-    );
-    if (recent.length > 0) {
-      return res.json({ ok: true, message: 'Code already sent — check your Discord DMs. A new code will be available in 60 seconds.' });
-    }
-  } catch {}
+  const guildId  = String(req.query.guild_id  || 'global');
+  const returnTo = String(req.query.return_to || CLIENT_DASHBOARD_URL || req.headers.referer || '/');
+  const callbackUrl = `${req.protocol}://${req.get('host')}/api/client/auth/discord/callback`;
 
-  // Generate 6-digit code
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  // Pack guildId + returnTo into state so we recover them after OAuth
+  const state = Buffer.from(JSON.stringify({ guildId, returnTo })).toString('base64url');
+
+  const params = new URLSearchParams({
+    client_id:     DISCORD_CLIENT_ID,
+    redirect_uri:  callbackUrl,
+    response_type: 'code',
+    scope:         'identify',   // username + avatar only — no server access
+    state,
+  });
+  res.redirect(`https://discord.com/oauth2/authorize?${params}`);
+});
+
+// ── Step 2: Discord redirects back with ?code= ────────────────────────────────
+// GET /api/client/auth/discord/callback
+app.get('/api/client/auth/discord/callback', async (req, res) => {
+  await ensureTablesOnce().catch(() => {});
+  const { code, state, error } = req.query;
+
+  if (error) {
+    const dest = CLIENT_DASHBOARD_URL || '/';
+    return res.redirect(`${dest}?auth_error=${encodeURIComponent(String(error))}`);
+  }
+  if (!code) return res.status(400).send('Missing code parameter from Discord.');
+
+  let guildId = 'global';
+  let returnTo = CLIENT_DASHBOARD_URL || '/';
   try {
+    const parsed = JSON.parse(Buffer.from(String(state), 'base64url').toString('utf8'));
+    if (parsed.guildId)  guildId  = parsed.guildId;
+    if (parsed.returnTo) returnTo = parsed.returnTo;
+  } catch { /* state decode failed — use defaults */ }
+
+  const callbackUrl = `${req.protocol}://${req.get('host')}/api/client/auth/discord/callback`;
+
+  try {
+    // Exchange authorization code for access token
+    const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id:     DISCORD_CLIENT_ID,
+        client_secret: DISCORD_CLIENT_SECRET,
+        grant_type:    'authorization_code',
+        code:          String(code),
+        redirect_uri:  callbackUrl,
+      }),
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) {
+      console.error('[Discord OAuth] Token exchange failed:', tokenData);
+      return res.status(400).send('Discord OAuth failed — invalid code or server credentials. Check server logs.');
+    }
+
+    // Fetch Discord user info
+    const userRes = await fetch('https://discord.com/api/users/@me', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const discordUser = await userRes.json();
+    if (!discordUser.id) return res.status(400).send('Could not fetch Discord user info.');
+
+    const discordId  = String(discordUser.id);
+    const username   = discordUser.global_name || discordUser.username || `User_${discordId.slice(-4)}`;
+    const avatarHash = discordUser.avatar;
+    const avatarUrl  = avatarHash
+      ? `https://cdn.discordapp.com/avatars/${discordId}/${avatarHash}.png?size=64`
+      : null;
+
+    // Create session (7-day expiry)
+    const token = `cds_${discordId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     await sql(
-      `INSERT INTO client_auth_requests (guild_id, discord_id, code, expires_at)
-       VALUES ($1, $2, $3, NOW() + INTERVAL '10 minutes')`,
-      [guild_id, id, code]
+      `INSERT INTO client_sessions (guild_id, discord_id, username, avatar_url, session_token, expires_at)
+       VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days')`,
+      [guildId, discordId, username, avatarUrl, token]
     );
-    res.json({ ok: true, message: 'Verification code sent to your Discord DMs. Enter it below to log in.' });
+
+    // Redirect client dashboard with the session token in the URL
+    res.redirect(`${returnTo}?token=${encodeURIComponent(token)}`);
+
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    console.error('[Discord OAuth] Callback error:', e?.message || e);
+    res.status(500).send('Internal error during Discord OAuth. Check server logs.');
   }
 });
 
-// POST /api/client/auth/verify  — user enters code, get session token
-app.post('/api/client/auth/verify', authCors, async (req, res) => {
-  await ensureTablesOnce().catch(() => {});
-  const { discord_id, code, guild_id = 'global' } = req.body || {};
-  if (!discord_id || !code) return res.status(400).json({ ok: false, error: 'discord_id and code required' });
-  const id = String(discord_id).trim();
-  const c  = String(code).trim();
-  try {
-    const rows = await sql(
-      `SELECT id FROM client_auth_requests
-       WHERE discord_id = $1 AND guild_id = $2 AND code = $3
-         AND used = FALSE AND expires_at > NOW()
-       ORDER BY created_at DESC LIMIT 1`,
-      [id, guild_id, c]
-    );
-    if (!rows.length) {
-      return res.status(401).json({ ok: false, error: 'Invalid or expired code. Request a new one.' });
-    }
-    // Mark used
-    await sql(`UPDATE client_auth_requests SET used = TRUE WHERE id = $1`, [rows[0].id]);
-    // Get username from sessions/requests
-    const uRows = await sql(
-      `SELECT username FROM client_sessions WHERE discord_id = $1 AND username != '' LIMIT 1`,
-      [id]
-    ).catch(() => []);
-    const username = uRows[0]?.username || `User ${id.slice(-4)}`;
-    // Create session (7 day expiry)
-    const token = `cds_${id}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    await sql(
-      `INSERT INTO client_sessions (guild_id, discord_id, username, session_token, expires_at)
-       VALUES ($1, $2, $3, $4, NOW() + INTERVAL '7 days')
-       ON CONFLICT (session_token) DO NOTHING`,
-      [guild_id, id, username, token]
-    );
-    res.json({ ok: true, token, discord_id: id, username });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-// GET /api/client/auth/me?token=…  — verify session, return user info
-app.get('/api/client/auth/me', authCors, async (req, res) => {
+// ── GET /api/client/auth/me?token=…  — verify + refresh session ──────────────
+app.get('/api/client/auth/me', oauthCors, async (req, res) => {
   await ensureTablesOnce().catch(() => {});
   const { token } = req.query;
-  if (!token) return res.status(400).json({ ok: false });
+  if (!token) return res.status(400).json({ ok: false, error: 'No token provided.' });
   try {
     const rows = await sql(
-      `UPDATE client_sessions SET last_seen = NOW()
+      `UPDATE client_sessions
+       SET last_seen = NOW()
        WHERE session_token = $1 AND expires_at > NOW()
        RETURNING discord_id, username, avatar_url, guild_id`,
-      [token]
+      [String(token)]
     );
-    if (!rows.length) return res.status(401).json({ ok: false, error: 'Session expired' });
+    if (!rows.length) return res.status(401).json({ ok: false, error: 'Session expired — please log in again.' });
     const { discord_id, username, avatar_url, guild_id } = rows[0];
     res.json({ ok: true, discord_id, username, avatar_url, guild_id });
   } catch (e) {
@@ -1941,66 +1945,41 @@ app.get('/api/client/auth/me', authCors, async (req, res) => {
   }
 });
 
-// POST /api/client/auth/logout  — delete session
-app.post('/api/client/auth/logout', authCors, async (req, res) => {
+// ── POST /api/client/auth/logout  — delete session ───────────────────────────
+app.post('/api/client/auth/logout', oauthCors, async (req, res) => {
   await ensureTablesOnce().catch(() => {});
   const { token } = req.body || {};
   if (token) {
-    await sql(`DELETE FROM client_sessions WHERE session_token = $1`, [token]).catch(() => {});
+    await sql(`DELETE FROM client_sessions WHERE session_token = $1`, [String(token)]).catch(() => {});
   }
   res.json({ ok: true });
 });
 
-// ── Bot DM bridge (called by the Python bot cog) ──────────────────────────────
-
-// GET /api/bot/pending-dms  — bot polls for DMs to send
-app.get('/api/bot/pending-dms', async (req, res) => {
+// ── GET /api/client/auth/sessions — admin: list active sessions ───────────────
+app.get('/api/client/auth/sessions', async (req, res) => {
   await ensureTablesOnce().catch(() => {});
-  // Optional simple secret check
-  const secret = process.env.BOT_API_SECRET;
-  if (secret && req.headers['x-bot-secret'] !== secret) {
-    return res.status(403).json({ ok: false, error: 'Forbidden' });
-  }
+  const { guild_id } = req.query;
   try {
-    const rows = await sql(
-      `SELECT id, guild_id, discord_id, code
-       FROM client_auth_requests
-       WHERE dm_sent = FALSE AND dm_failed = FALSE
-         AND used = FALSE AND expires_at > NOW()
-       ORDER BY created_at ASC LIMIT 10`
-    );
-    res.json({ ok: true, requests: rows });
+    const rows = guild_id
+      ? await sql(`SELECT id, discord_id, username, avatar_url, guild_id, last_seen, expires_at, created_at FROM client_sessions WHERE guild_id = $1 AND expires_at > NOW() ORDER BY last_seen DESC`, [String(guild_id)])
+      : await sql(`SELECT id, discord_id, username, avatar_url, guild_id, last_seen, expires_at, created_at FROM client_sessions WHERE expires_at > NOW() ORDER BY last_seen DESC`);
+    res.json({ ok: true, sessions: rows });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// POST /api/bot/dm-sent  — bot confirms DM was sent/failed, provides username
-app.post('/api/bot/dm-sent', async (req, res) => {
+// ── DELETE /api/client/auth/sessions/:id — admin: revoke a session ───────────
+app.delete('/api/client/auth/sessions/:id', async (req, res) => {
   await ensureTablesOnce().catch(() => {});
-  const secret = process.env.BOT_API_SECRET;
-  if (secret && req.headers['x-bot-secret'] !== secret) {
-    return res.status(403).json({ ok: false, error: 'Forbidden' });
-  }
-  const { request_id, discord_id, username, success, guild_id = 'global' } = req.body || {};
-  if (!request_id) return res.status(400).json({ ok: false, error: 'request_id required' });
   try {
-    await sql(
-      `UPDATE client_auth_requests SET dm_sent = $1, dm_failed = $2 WHERE id = $3`,
-      [!!success, !success, request_id]
-    );
-    // Update username in any existing sessions for this user
-    if (username && discord_id) {
-      await sql(
-        `UPDATE client_sessions SET username = $1 WHERE discord_id = $2 AND username = ''`,
-        [username, String(discord_id)]
-      ).catch(() => {});
-    }
+    await sql(`DELETE FROM client_sessions WHERE id = $1`, [req.params.id]).catch(() => {});
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+
 
 // Export the app for Vercel (serverless) usage.
 // When running locally (node server/index.js), start the HTTP server normally.
