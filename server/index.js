@@ -333,13 +333,13 @@ _sdLoad().then(() => {
 // Open this in a browser to debug OAuth redirect_uri mismatches.
 // DELETE or ignore this route in production once login is working.
 app.get('/api/auth/test', (req, res) => {
-  const origin = siteOrigin(req);
+  const origin = publicOrigin(req);
   res.json({
     computed_site_origin:      origin,
     discord_callback_will_be:  `${origin}/api/auth/discord/callback`,
     google_callback_will_be:   `${origin}/api/auth/google/callback`,
     env: {
-      PUBLIC_URL:   process.env.PUBLIC_URL    || '(not set)',
+      PUBLIC_URL:   process.env.PUBLIC_URL    || '⚠️  NOT SET — set this in Vercel env vars to fix redirect_uri mismatches',
       VERCEL_URL:   process.env.VERCEL_URL    || '(not set)',
       DISCORD_CLIENT_ID:    process.env.DISCORD_CLIENT_ID    ? '✅ set' : '❌ MISSING',
       DISCORD_CLIENT_SECRET: process.env.DISCORD_CLIENT_SECRET ? '✅ set' : '❌ MISSING',
@@ -350,15 +350,15 @@ app.get('/api/auth/test', (req, res) => {
     },
     headers_received: {
       host:              req.get('host'),
-      'x-forwarded-proto': req.headers['x-forwarded-proto'] || '(none — using req.protocol)',
+      'x-forwarded-proto': req.headers['x-forwarded-proto'] || '(none)',
       'x-forwarded-for':   req.headers['x-forwarded-for']   || '(none)',
     },
     action_required: [
+      !process.env.PUBLIC_URL            && '❌ Set PUBLIC_URL=https://homunculus-dashboard-kaneki.vercel.app in Vercel env vars',
       !process.env.DISCORD_CLIENT_ID     && '❌ Set DISCORD_CLIENT_ID in Vercel env vars',
       !process.env.DISCORD_CLIENT_SECRET && '❌ Set DISCORD_CLIENT_SECRET in Vercel env vars',
       !process.env.ADMIN_DISCORD_IDS     && '⚠️  Set ADMIN_DISCORD_IDS to your Discord user ID for admin access',
-      `📋 Register this exact URI in Discord Developer Portal → OAuth2 → Redirects:\n   ${origin}/api/auth/discord/callback`,
-      process.env.GOOGLE_CLIENT_ID && `📋 Register this exact URI in Google Cloud Console → Credentials:\n   ${origin}/api/auth/google/callback`,
+      `📋 The ONLY URI you need in Discord Developer Portal → OAuth2 → Redirects:\n   ${origin}/api/auth/discord/callback`,
     ].filter(Boolean),
   });
 });
@@ -2018,27 +2018,31 @@ async function runSessionMigrations() { await ensureSessionTable(); }
 
 const authCors = cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] });
 
+// ── Canonical public origin — used for all OAuth redirect URIs ────────────────
+// Priority: PUBLIC_URL env var (set in Vercel) → siteOrigin(req) fallback
+// Using PUBLIC_URL directly guarantees Discord always gets the same redirect_uri
+// regardless of proxy headers, VERCEL_URL, or request routing quirks.
+function publicOrigin(req) {
+  return (process.env.PUBLIC_URL || '').replace(/\/$/, '') || siteOrigin(req);
+}
+
 // ── GET /api/auth/discord — start OAuth flow ──────────────────────────────────
 app.get('/api/auth/discord', (req, res) => {
   if (!DISCORD_CLIENT_ID) {
     return res.status(500).send('DISCORD_CLIENT_ID not set — add it in Vercel → Environment Variables.');
   }
 
-  // return_to is the full origin the BROWSER is on (e.g. https://yourdomain.vercel.app).
-  // We derive callbackUrl from it — NOT from siteOrigin(req) — so the redirect_uri is
-  // always the real public URL regardless of proxy / host-header rewriting.
-  const returnTo = (() => {
+  // Always use the stable PUBLIC_URL as the base — never derive from request headers.
+  // This is the URL you registered in Discord Developer Portal → OAuth2 → Redirects.
+  const origin      = publicOrigin(req);
+  const callbackUrl = `${origin}/api/auth/discord/callback`;
+  const returnTo    = (() => {
     const raw = String(req.query.return_to || '').trim();
-    if (raw) {
-      try { return new URL(raw).origin; } catch {}
-    }
-    return siteOrigin(req);
+    if (raw) { try { return new URL(raw).origin; } catch {} }
+    return origin;
   })();
 
-  // callbackUrl MUST be registered in Discord Developer Portal → OAuth2 → Redirects
-  const callbackUrl = `${returnTo}/api/auth/discord/callback`;
-
-  // Store both in state so the callback can reconstruct the same callbackUrl
+  // Store both in state so the callback can reconstruct the exact same callbackUrl
   const state = Buffer.from(JSON.stringify({ returnTo, callbackUrl })).toString('base64url');
 
   const params = new URLSearchParams({
