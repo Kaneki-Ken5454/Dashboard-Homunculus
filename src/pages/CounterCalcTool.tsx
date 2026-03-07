@@ -175,11 +175,11 @@ function CounterRow({ slot, onChange, onRemove, rank }: {
       {/* Row 2: level + EVs */}
       <div style={{display:'flex',gap:5,alignItems:'center',flexWrap:'wrap'}}>
         <span style={{fontSize:9,color:'var(--text-faint)',fontWeight:700}}>LV</span>
-        <input style={{...NUM,width:38}} type="number" min={1} max={100} value={slot.level} onChange={e=>upd({level:parseInt(e.target.value)||100,result:null})}/>
+        <input style={{...NUM,width:48,fontSize:12}} type="number" min={1} max={100} value={slot.level} onChange={e=>upd({level:parseInt(e.target.value)||100,result:null})}/>
         {STAT_ORDER.map(([k,l])=>(
           <div key={k} style={{display:'flex',alignItems:'center',gap:2}}>
             <span style={{fontSize:9,color:'var(--text-faint)',fontWeight:700,minWidth:22,textAlign:'right'}}>{l}</span>
-            <input style={{...NUM,width:36}} type="number" min={0} max={252} value={slot.evs[k]} onChange={e=>upd({evs:{...slot.evs,[k]:Math.max(0,Math.min(252,parseInt(e.target.value)||0))},result:null})}/>
+            <input style={{...NUM,width:44,fontSize:12}} type="number" min={0} max={252} value={slot.evs[k]} onChange={e=>upd({evs:{...slot.evs,[k]:Math.max(0,Math.min(252,parseInt(e.target.value)||0))},result:null})}/>
           </div>
         ))}
         <span style={{fontSize:9,color:evTotal>510?'var(--danger)':'var(--text-faint)'}}>({evTotal}/510)</span>
@@ -380,35 +380,49 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
 
           {result&&(
             <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              {/* Plain-English verdict */}
+              <div style={{background: result.pWin>=.8?'rgba(59,165,93,.1)':result.pWin>=.5?'rgba(250,168,26,.1)':'rgba(237,66,69,.1)', border:`1px solid ${result.pWin>=.8?'rgba(59,165,93,.35)':result.pWin>=.5?'rgba(250,168,26,.35)':'rgba(237,66,69,.35)'}`, borderRadius:10, padding:'12px 16px'}}>
+                <div style={{fontSize:13,fontWeight:700,color:result.pWin>=.8?'var(--success)':result.pWin>=.5?'var(--warning)':'var(--danger)',marginBottom:5}}>
+                  {result.pWin>=.8?'✅ Strong team composition':'⚠️ '+( result.pWin>=.5?'Borderline — may need more counters':'High risk — team likely insufficient')}
+                </div>
+                <div style={{fontSize:12,color:'var(--text-muted)',lineHeight:1.7}}>
+                  In <strong style={{color:'var(--text)'}}>{(result.pWin*100).toFixed(0)}%</strong> of {result.trials.toLocaleString()} simulated raids, your counter team defeated the boss.
+                  {' '}On average you need <strong style={{color:'var(--text)'}}>{result.mean.toFixed(1)}</strong> counter{result.mean!==1?'s':''} to finish the raid.
+                  {result.p90<=counters.length?` In the worst 10% of runs, it still only takes ${result.p90} counter${result.p90!==1?'s':''}.`:` Warning: in the worst 10% of runs, your current ${counters.length} counters may not be enough.`}
+                </div>
+              </div>
+
               {/* Summary cards */}
               <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
                 {[
-                  {l:'Win Rate',v:`${(result.pWin*100).toFixed(1)}%`,c:result.pWin>=.8?'var(--success)':result.pWin>=.5?'var(--warning)':'var(--danger)'},
-                  {l:'Mean Attackers',v:result.mean.toFixed(2),c:'var(--text)'},
-                  {l:'Median',v:result.median.toString(),c:'#a5b4fc'},
-                  {l:'P90 (worst 10%)',v:result.p90>counters.length?`>${counters.length}`:result.p90.toString(),c:'var(--warning)'},
-                ].map(({l,v,c})=>(
-                  <div key={l} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:9,padding:'10px 12px',textAlign:'center'}}>
+                  {l:'Win Rate',     v:`${(result.pWin*100).toFixed(1)}%`,      c:result.pWin>=.8?'var(--success)':result.pWin>=.5?'var(--warning)':'var(--danger)', tip:'% of raids your team wins'},
+                  {l:'Avg Counters', v:result.mean.toFixed(2),                  c:'var(--text)',  tip:'Typical number of counters used'},
+                  {l:'Median',       v:result.median.toString(),                 c:'#a5b4fc',     tip:'Most common counters needed'},
+                  {l:'Worst 10%',    v:result.p90>counters.length?`>${counters.length}`:result.p90.toString(), c:'var(--warning)', tip:'Counters needed in unlucky runs'},
+                ].map(({l,v,c,tip})=>(
+                  <div key={l} title={tip} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:9,padding:'10px 12px',textAlign:'center',cursor:'help'}}>
                     <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>{l}</div>
                     <div style={{fontSize:20,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:c}}>{v}</div>
+                    <div style={{fontSize:9,color:'var(--text-faint)',marginTop:3}}>{tip}</div>
                   </div>
                 ))}
               </div>
 
               {/* Histogram */}
               <div style={{background:'rgba(0,0,0,.2)',borderRadius:9,padding:'12px 14px'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:10}}>
-                  Attackers Needed — {result.trials.toLocaleString()} trials
+                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>
+                  How many counters did the raid need?
                 </div>
+                <div style={{fontSize:11,color:'var(--text-faint)',marginBottom:10}}>Each bar = how often that many counters were required. <span style={{color:'var(--danger)'}}>Red = raid failed</span> (ran out of counters).</div>
                 <div style={{display:'flex',gap:6,alignItems:'flex-end',height:80}}>
                   {hkeys.map(k=>{
                     const cnt=result.hist[k]||0; const pct=cnt/result.trials;
                     const bh=Math.max(4,Math.round((cnt/maxH)*72)); const over=k>counters.length;
                     return(
-                      <div key={k} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
+                      <div key={k} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}} title={`${k} counters: ${(pct*100).toFixed(1)}% of raids`}>
                         <div style={{fontSize:9,color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace"}}>{(pct*100).toFixed(0)}%</div>
                         <div style={{width:'100%',height:bh,background:over?'rgba(237,66,69,.45)':'rgba(88,101,242,.65)',borderRadius:'3px 3px 0 0',minHeight:4,transition:'height .3s'}}/>
-                        <div style={{fontSize:10,color:over?'var(--danger)':'#a5b4fc',fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{over?`>${counters.length}`:k}</div>
+                        <div style={{fontSize:10,color:over?'var(--danger)':'#a5b4fc',fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{over?'fail':k}</div>
                       </div>
                     );
                   })}
@@ -417,13 +431,20 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
 
               {/* Per-slot table */}
               <div style={{background:'rgba(0,0,0,.15)',borderRadius:9,padding:'12px 14px'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Per-Counter Survival Stats</div>
+                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:2}}>How did each counter perform?</div>
+                <div style={{fontSize:11,color:'var(--text-faint)',marginBottom:8}}>Averaged across all simulations where that counter was used.</div>
                 <div style={{overflowX:'auto'}}>
                   <table style={{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:420}}>
                     <thead>
                       <tr style={{borderBottom:'1px solid var(--border)'}}>
-                        {['Counter','Avg Hits Dealt','Avg % to Boss','Survived','OHKO Risk'].map(h=>(
-                          <th key={h} style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
+                        {[
+                          {h:'Counter', tip:'Your attacker'},
+                          {h:'Hits Dealt', tip:'Avg times this counter hit the boss'},
+                          {h:'Dmg to Boss', tip:'Avg % of boss HP removed by this counter'},
+                          {h:'Hits Taken', tip:'Avg times boss hit this counter before it fainted or won'},
+                          {h:'OHKO Risk', tip:'Chance of being one-shot by the boss'},
+                        ].map(({h,tip})=>(
+                          <th key={h} title={tip} style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap',cursor:'help'}}>{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -457,7 +478,7 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
                   </table>
                 </div>
                 <div style={{fontSize:10,color:'var(--text-faint)',marginTop:6}}>
-                  Policy: <strong style={{color:'var(--text-muted)'}}>{result.policy==='uniform'?'Uniform random':'BP-weighted random'}</strong> · {result.trials.toLocaleString()} trials
+                  Boss move policy: <strong style={{color:'var(--text-muted)'}}>{result.policy==='uniform'?'Uniform random (each move equally likely)':'BP-weighted (stronger moves preferred)'}</strong> · {result.trials.toLocaleString()} trials
                 </div>
               </div>
             </div>
