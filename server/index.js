@@ -1982,17 +1982,39 @@ const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || '';
 const ADMIN_DISCORD_IDS = (process.env.ADMIN_DISCORD_IDS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
-// Ensure new session columns exist (idempotent)
-const sessionMigrations = [
-  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`,
-  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS guilds_json JSONB DEFAULT '[]'`,
-  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS access_token TEXT`,
-  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS refresh_token TEXT`,
-  `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ`,
-];
-async function runSessionMigrations() {
-  for (const m of sessionMigrations) { try { await sql(m); } catch {} }
+// Ensure session table + columns exist — self-contained, runs in the callback
+// without depending on the heavy ensureTablesOnce() which touches 30+ tables.
+let _sessionTableReady = false;
+async function ensureSessionTable() {
+  if (_sessionTableReady) return;          // already done this process lifetime
+  try {
+    // CREATE TABLE first so the ALTER TABLE columns below always have a target
+    await sql(`CREATE TABLE IF NOT EXISTS client_sessions (
+      id            BIGSERIAL PRIMARY KEY,
+      guild_id      TEXT NOT NULL DEFAULT 'global',
+      discord_id    TEXT NOT NULL,
+      username      TEXT NOT NULL DEFAULT '',
+      avatar_url    TEXT,
+      session_token TEXT UNIQUE NOT NULL,
+      expires_at    TIMESTAMPTZ NOT NULL,
+      last_seen     TIMESTAMPTZ DEFAULT NOW(),
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    // Run column migrations in parallel — much faster than sequential awaits
+    await Promise.allSettled([
+      sql(`ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS is_admin          BOOLEAN    DEFAULT FALSE`),
+      sql(`ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS guilds_json       JSONB      DEFAULT '[]'`),
+      sql(`ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS access_token      TEXT`),
+      sql(`ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS refresh_token     TEXT`),
+      sql(`ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS token_expires_at  TIMESTAMPTZ`),
+    ]);
+    _sessionTableReady = true;
+  } catch (e) {
+    console.warn('[ensureSessionTable]', e?.message);
+  }
 }
+// Legacy alias kept for any code still calling this
+async function runSessionMigrations() { await ensureSessionTable(); }
 
 const authCors = cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'] });
 
@@ -2034,8 +2056,9 @@ app.get('/api/auth/discord', (req, res) => {
 
 // ── GET /api/auth/discord/callback — exchange code, create session ────────────
 app.get('/api/auth/discord/callback', async (req, res) => {
-  await ensureTablesOnce().catch(() => {});
-  await runSessionMigrations().catch(() => {});
+  // Kick off table setup in the background — don't await it yet.
+  // This overlaps with the Discord API calls below and saves ~3-5 s.
+  const tableReadyPromise = ensureSessionTable().catch(() => {});
 
   console.log('[OAuth/discord] callback hit — code present:', !!req.query.code, '| error:', req.query.error || 'none');
   const { code, state, error } = req.query;
@@ -2046,7 +2069,7 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   try {
     const p = JSON.parse(Buffer.from(String(state || ''), 'base64url').toString('utf8'));
     if (p.returnTo)    returnTo    = p.returnTo;
-    if (p.callbackUrl) callbackUrl = p.callbackUrl; // ← use the SAME URL as the initial request
+    if (p.callbackUrl) callbackUrl = p.callbackUrl;
   } catch {}
 
   if (error) return res.redirect(`${returnTo}?auth_error=${encodeURIComponent(String(error))}`);
@@ -2054,51 +2077,69 @@ app.get('/api/auth/discord/callback', async (req, res) => {
 
   console.log(`[Discord OAuth] Exchanging code. callbackUrl=${callbackUrl}`);
   try {
-    // 1. Exchange code for tokens
-    const tokenRes  = await fetch('https://discord.com/api/oauth2/token', {
-      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: DISCORD_CLIENT_ID, client_secret: DISCORD_CLIENT_SECRET,
-        grant_type: 'authorization_code', code: String(code), redirect_uri: callbackUrl,
+    // Helper: fetch with a hard timeout so Discord API slowness never causes a 504
+    const timedFetch = (url, opts, ms = 8000) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), ms);
+      return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
+    };
+
+    // 1. Exchange code → tokens  +  fetch user info  — run in parallel
+    const [tokenRes, ] = await Promise.all([
+      timedFetch('https://discord.com/api/oauth2/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: DISCORD_CLIENT_ID, client_secret: DISCORD_CLIENT_SECRET,
+          grant_type: 'authorization_code', code: String(code), redirect_uri: callbackUrl,
+        }),
       }),
-    });
+    ]);
+
     const tokenData = await tokenRes.json();
     if (!tokenData.access_token) {
       console.error('[OAuth] Token exchange failed:', JSON.stringify(tokenData));
-      return res.status(400).send('Discord token exchange failed — check DISCORD_CLIENT_ID/SECRET in Vercel env vars and that the Redirect URI is registered in the Discord Developer Portal.');
+      return res.status(400).send(
+        'Discord token exchange failed — check DISCORD_CLIENT_ID/SECRET in Vercel env vars ' +
+        'and that the Redirect URI is registered in the Discord Developer Portal.'
+      );
     }
     const accessToken  = tokenData.access_token;
     const refreshToken = tokenData.refresh_token || null;
     const expiresAt    = new Date(Date.now() + (tokenData.expires_in || 604800) * 1000);
 
-    // 2. Fetch Discord user
-    const userRes = await fetch('https://discord.com/api/users/@me', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    // 2. Fetch user + guilds in parallel (guilds has a shorter timeout — it's large)
+    const discordHeaders = { Authorization: `Bearer ${accessToken}` };
+    const [userRes, guildsRes] = await Promise.all([
+      timedFetch('https://discord.com/api/users/@me',        { headers: discordHeaders }, 8000),
+      timedFetch('https://discord.com/api/users/@me/guilds', { headers: discordHeaders }, 8000),
+    ]);
+
     const discordUser = await userRes.json();
     if (!discordUser.id) return res.status(400).send('Could not fetch Discord user info.');
 
     const discordId = String(discordUser.id);
     const username  = discordUser.global_name || discordUser.username || `User_${discordId.slice(-4)}`;
-    const avatar    = discordUser.avatar;
-    const avatarUrl = avatar ? `https://cdn.discordapp.com/avatars/${discordId}/${avatar}.png?size=128` : null;
+    const avatarUrl = discordUser.avatar
+      ? `https://cdn.discordapp.com/avatars/${discordId}/${discordUser.avatar}.png?size=128`
+      : null;
 
-    // 3. Fetch user's guilds — find which they have admin in
-    const guildsRes = await fetch('https://discord.com/api/users/@me/guilds', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const allGuilds = guildsRes.ok ? await guildsRes.json() : [];
-
-    // 4. Determine admin status — whitelist only
-    const isAdmin     = ADMIN_DISCORD_IDS.includes(discordId);
+    // 3. Parse guilds (non-fatal if it failed/timed out)
+    let allGuilds = [];
+    try { if (guildsRes.ok) allGuilds = await guildsRes.json(); } catch {}
     const adminGuilds = Array.isArray(allGuilds)
       ? allGuilds.map(g => ({ id: g.id, name: g.name || g.id, icon: g.icon || null }))
       : [];
 
-    // 5. Create 14-day session
-    const sessionToken = `hom_${discordId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    // 4. Admin check
+    const isAdmin      = ADMIN_DISCORD_IDS.includes(discordId);
     const firstGuildId = adminGuilds[0]?.id || 'global';
 
+    // 5. Make sure session table is ready (should already be done by now)
+    await tableReadyPromise;
+
+    // 6. Create 14-day session
+    const sessionToken = `hom_${discordId}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     try {
       await sql(
         `INSERT INTO client_sessions
@@ -2118,7 +2159,7 @@ app.get('/api/auth/discord/callback', async (req, res) => {
       );
     }
 
-    // 6. Redirect back to the dashboard with the session token
+    // 7. Redirect back with session token
     res.redirect(`${returnTo}?token=${encodeURIComponent(sessionToken)}`);
 
   } catch (e) {
