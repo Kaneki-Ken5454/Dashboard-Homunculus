@@ -1501,14 +1501,6 @@ app.post('/api/client/visit', clientCors, async (req, res) => {
 });
 
 // ── Fallback: serve index.html for SPA routes in production ──────────────────
-app.get('*', (_req, res) => {
-  try {
-    res.sendFile(resolve(distPath, 'index.html'));
-  } catch {
-    res.status(404).send('Not found');
-  }
-});
-
 // ═══════════════════════════════════════════════════════════════════
 // ══════════════════════════════════════════════════════════════════════════════
 // BOSSINFO — Competitive Pokémon analysis (self-contained, DB-backed)
@@ -2349,6 +2341,17 @@ app.post('/api/bot/log_command', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── Fallback: serve index.html for all remaining SPA routes ──────────────────
+// ⚠️  This MUST be the last route defined — any route added after this
+//     line will be unreachable because * matches everything.
+app.get('*', (_req, res) => {
+  try {
+    res.sendFile(resolve(distPath, 'index.html'));
+  } catch {
+    res.status(404).send('Not found');
   }
 });
 
