@@ -2009,16 +2009,34 @@ app.get('/api/auth/discord', (req, res) => {
   if (!DISCORD_CLIENT_ID) {
     return res.status(500).send('DISCORD_CLIENT_ID not set — add it in Vercel → Environment Variables.');
   }
-  const returnTo    = String(req.query.return_to || siteOrigin(req));
-  const callbackUrl = `${siteOrigin(req)}/api/auth/discord/callback`;
-  const state       = Buffer.from(JSON.stringify({ returnTo })).toString('base64url');
+
+  // return_to is the full origin the BROWSER is on (e.g. https://yourdomain.vercel.app).
+  // We derive callbackUrl from it — NOT from siteOrigin(req) — so the redirect_uri is
+  // always the real public URL regardless of proxy / host-header rewriting.
+  const returnTo = (() => {
+    const raw = String(req.query.return_to || '').trim();
+    if (raw) {
+      try { return new URL(raw).origin; } catch {}
+    }
+    return siteOrigin(req);
+  })();
+
+  // callbackUrl MUST be registered in Discord Developer Portal → OAuth2 → Redirects
+  const callbackUrl = `${returnTo}/api/auth/discord/callback`;
+
+  // Store both in state so the callback can reconstruct the same callbackUrl
+  const state = Buffer.from(JSON.stringify({ returnTo, callbackUrl })).toString('base64url');
+
   const params = new URLSearchParams({
-    client_id: DISCORD_CLIENT_ID, redirect_uri: callbackUrl,
-    response_type: 'code', scope: 'identify guilds', state,
-    // 'consent' always shows the auth screen — required for first-time users.
-    // 'none' would silently fail if the user hasn't authorized before.
-    prompt: 'consent',
+    client_id:     DISCORD_CLIENT_ID,
+    redirect_uri:  callbackUrl,
+    response_type: 'code',
+    scope:         'identify guilds',
+    state,
+    prompt:        'consent',
   });
+
+  console.log(`[Discord OAuth] Redirecting → Discord. callbackUrl=${callbackUrl}`);
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 
@@ -2029,13 +2047,20 @@ app.get('/api/auth/discord/callback', async (req, res) => {
 
   console.log('[OAuth/discord] callback hit — code present:', !!req.query.code, '| error:', req.query.error || 'none');
   const { code, state, error } = req.query;
-  let returnTo = siteOrigin(req);
-  try { const p = JSON.parse(Buffer.from(String(state||''),'base64url').toString('utf8')); if(p.returnTo) returnTo=p.returnTo; } catch {}
+
+  // Decode state — we stored { returnTo, callbackUrl } when the flow started
+  let returnTo    = siteOrigin(req);
+  let callbackUrl = `${returnTo}/api/auth/discord/callback`;
+  try {
+    const p = JSON.parse(Buffer.from(String(state || ''), 'base64url').toString('utf8'));
+    if (p.returnTo)    returnTo    = p.returnTo;
+    if (p.callbackUrl) callbackUrl = p.callbackUrl; // ← use the SAME URL as the initial request
+  } catch {}
 
   if (error) return res.redirect(`${returnTo}?auth_error=${encodeURIComponent(String(error))}`);
   if (!code)  return res.status(400).send('Missing OAuth code from Discord.');
 
-  const callbackUrl = `${siteOrigin(req)}/api/auth/discord/callback`;
+  console.log(`[Discord OAuth] Exchanging code. callbackUrl=${callbackUrl}`);
   try {
     // 1. Exchange code for tokens
     const tokenRes  = await fetch('https://discord.com/api/oauth2/token', {
@@ -2074,7 +2099,6 @@ app.get('/api/auth/discord/callback', async (req, res) => {
 
     // 4. Determine admin status — whitelist only
     const isAdmin     = ADMIN_DISCORD_IDS.includes(discordId);
-    // Still fetch guilds so we can populate the guild picker for admins
     const adminGuilds = Array.isArray(allGuilds)
       ? allGuilds.map(g => ({ id: g.id, name: g.name || g.id, icon: g.icon || null }))
       : [];
@@ -2095,7 +2119,6 @@ app.get('/api/auth/discord/callback', async (req, res) => {
       );
       console.log(`[OAuth] Session created for ${username} (${discordId}) isAdmin=${isAdmin}`);
     } catch (dbErr) {
-      // DB insert failed — log it and surface a useful error instead of a silent blank screen
       console.error('[OAuth] Session INSERT failed:', dbErr?.message || dbErr);
       return res.status(500).send(
         `Session could not be saved (DB error): ${dbErr?.message || dbErr}. ` +
