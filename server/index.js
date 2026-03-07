@@ -2170,7 +2170,7 @@ app.get('/api/auth/discord/callback', async (req, res) => {
 
 // ── GET /api/auth/me?token=… — verify session, return user info ───────────────
 app.get('/api/auth/me', authCors, async (req, res) => {
-  await ensureTablesOnce().catch(() => {});
+  await ensureSessionTable().catch(() => {});
   const { token } = req.query;
   if (!token) return res.status(400).json({ ok: false, error: 'No token.' });
   try {
@@ -2192,7 +2192,7 @@ app.get('/api/auth/me', authCors, async (req, res) => {
 
 // ── POST /api/auth/logout — delete session ────────────────────────────────────
 app.post('/api/auth/logout', authCors, async (req, res) => {
-  await ensureTablesOnce().catch(() => {});
+  await ensureSessionTable().catch(() => {});
   const { token } = req.body || {};
   if (token) await sql(`DELETE FROM client_sessions WHERE session_token = $1`, [String(token)]).catch(() => {});
   res.json({ ok: true });
@@ -2219,7 +2219,7 @@ app.post('/api/client/auth/logout', authCors, async (req, res) => {
 
 // ── Admin: list / revoke sessions ─────────────────────────────────────────────
 app.get('/api/client/auth/sessions', async (req, res) => {
-  await ensureTablesOnce().catch(() => {});
+  await ensureSessionTable().catch(() => {});
   const { guild_id } = req.query;
   try {
     const rows = guild_id
@@ -2229,7 +2229,7 @@ app.get('/api/client/auth/sessions', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 app.delete('/api/client/auth/sessions/:id', async (req, res) => {
-  await ensureTablesOnce().catch(() => {});
+  await ensureSessionTable().catch(() => {});
   try { await sql(`DELETE FROM client_sessions WHERE id=$1`,[req.params.id]).catch(()=>{}); res.json({ ok:true }); }
   catch (e) { res.status(500).json({ ok:false, error:e.message }); }
 });
@@ -2273,8 +2273,7 @@ app.get('/api/auth/google', (req, res) => {
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {
-  await ensureTablesOnce().catch(() => {});
-  await runSessionMigrations().catch(() => {});
+  const tableReadyPromise = ensureSessionTable().catch(() => {});
 
   const { code, state, error } = req.query;
   let returnTo = siteOrigin(req);
@@ -2319,6 +2318,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
     // 4. Create 14-day session
     const sessionToken = `hom_g_${gUser.id}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    await tableReadyPromise;
     await sql(
       `INSERT INTO client_sessions
          (guild_id, discord_id, username, avatar_url, session_token, expires_at,
