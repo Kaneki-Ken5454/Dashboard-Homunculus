@@ -1,11 +1,25 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Monitor, RefreshCw, Trash2, Globe, Hash, Clock, BarChart2, Users, ShieldOff } from 'lucide-react';
+import { Monitor, RefreshCw, Trash2, Globe, Hash, Clock, BarChart2, Users, ShieldOff, Ban, ShieldCheck, Terminal, ChevronDown, ChevronUp, LogIn, Shield } from 'lucide-react';
 import {
   getClientVisitors, getClientVisitorStats, clearClientVisitors,
   getClientFeatureFlags, setClientFeatureFlag,
   getClientSessions, revokeClientSession,
+  apiCall as query,
   type ClientVisitor, type ClientVisitorStats, type ClientFeatureFlags, type ClientSession,
 } from '../lib/db';
+
+// ── Extra interfaces ──────────────────────────────────────────────────────────
+interface LoginSession { id: number; discord_id: string; username: string; avatar_url: string | null; guild_id: string; is_admin: boolean; created_at: string; last_seen: string; expires_at: string; }
+interface DashboardBan { id: number; discord_id: string; username: string; reason: string; banned_by: string; banned_at: string; }
+interface CmdUsageLog { id: number; user_id: string; username: string; command: string; metadata: Record<string, unknown>; used_at: string; }
+interface CmdStats {
+  byCommand: { command: string; total_uses: number; unique_users: number }[];
+  topUsers:  { user_id: string; username: string; uses: number }[];
+}
+const CMD_ICONS: Record<string, string> = { infoview: '📚', bossinfo: '👹', weakness: '🛡️', damage: '⚡' };
+function fmtFull(ts: string): string {
+  try { return new Date(ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); } catch { return '—'; }
+}
 
 // ── Feature definitions ───────────────────────────────────────────────────────
 const FEATURES: Array<{ id: string; label: string; desc: string; icon: string }> = [
@@ -121,7 +135,16 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
   const [loading,    setLoading]    = useState(true);
   const [clearing,   setClearing]   = useState(false);
   const [error,      setError]      = useState('');
-  const [tab,        setTab]        = useState<'visitors'|'toggles'|'sessions'>('visitors');
+  const [tab,        setTab]        = useState<'visitors'|'toggles'|'sessions'|'logins'|'bans'|'cmdlogs'>('visitors');
+  const [loginSessions, setLoginSessions] = useState<LoginSession[]>([]);
+  const [dashBans,    setDashBans]     = useState<DashboardBan[]>([]);
+  const [banReason,   setBanReason]    = useState<Record<string,string>>({});
+  const [cmdLogs,     setCmdLogs]     = useState<CmdUsageLog[]>([]);
+  const [cmdStats,    setCmdStats]    = useState<CmdStats | null>(null);
+  const [cmdFilter,   setCmdFilter]   = useState('all');
+  const [cmdLoading,  setCmdLoading]  = useState(false);
+  const [sessLoading, setSessLoading] = useState(false);
+  const [banLoading,  setBanLoading]  = useState(false);
   const [search,     setSearch]     = useState('');
 
   const load = useCallback(async () => {
@@ -141,6 +164,47 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
   }, [guildId]);
 
   useEffect(() => { load(); }, [load]);
+
+  const loadLoginSessions = useCallback(async () => {
+    setSessLoading(true);
+    try { const rows = await query('getLoginSessions', {}); setLoginSessions(Array.isArray(rows)?rows:[]); } catch {}
+    setSessLoading(false);
+  }, []);
+
+  const loadBans = useCallback(async () => {
+    setBanLoading(true);
+    try { const rows = await query('getDashboardBans', {}); setDashBans(Array.isArray(rows)?rows:[]); } catch {}
+    setBanLoading(false);
+  }, []);
+
+  const loadCmdUsage = useCallback(async (filter = cmdFilter) => {
+    setCmdLoading(true);
+    try {
+      const [logs, statsData] = await Promise.all([
+        query('getCommandUsageLog', { guildId, command: filter === 'all' ? undefined : filter, limit: 100 }),
+        query('getCommandUsageStats', { guildId }),
+      ]);
+      setCmdLogs(Array.isArray(logs) ? logs : []);
+      setCmdStats(statsData as CmdStats);
+    } catch {}
+    setCmdLoading(false);
+  }, [guildId, cmdFilter]);
+
+  useEffect(() => { loadLoginSessions(); loadBans(); loadCmdUsage(); }, [guildId]);
+
+  const handleBan = async (discordId: string, username: string) => {
+    const reason = banReason[discordId] || '';
+    if (!window.confirm(`Ban ${username} from the dashboard?`)) return;
+    try {
+      await query('banFromDashboard', { discordId, username, reason, bannedBy: 'admin' });
+      await Promise.all([loadLoginSessions(), loadBans()]);
+    } catch (e: any) { setError(e.message); }
+  };
+
+  const handleUnban = async (discordId: string) => {
+    try { await query('unbanFromDashboard', { discordId }); await loadBans(); }
+    catch (e: any) { setError(e.message); }
+  };
 
   const handleClear = async () => {
     if (!window.confirm('Clear all visitor logs for this guild?')) return;
@@ -231,15 +295,18 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
       )}
 
       {/* Sub-tabs */}
-      <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',marginBottom:16}}>
+      <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',marginBottom:16,flexWrap:'wrap'}}>
         {([
           ['visitors','📋 Visitor Log'],
           ['toggles', '🎛️ Feature Toggles'],
-          ['sessions','👤 Logged-In Users'],
+          ['sessions','👤 Client Sessions'],
+          ['logins',  '🔐 Login Log'],
+          ['bans',    '🚫 Banned Users'],
+          ['cmdlogs', '⚡ Command Usage'],
         ] as const).map(([id,label])=>(
-          <button key={id} onClick={()=>setTab(id)}
-            style={{padding:'8px 18px',background:'none',border:'none',cursor:'pointer',fontFamily:"'Lexend',sans-serif",
-              color:tab===id?'var(--text)':'var(--text-muted)',fontSize:13,fontWeight:tab===id?700:400,
+          <button key={id} onClick={()=>setTab(id as any)}
+            style={{padding:'8px 16px',background:'none',border:'none',cursor:'pointer',fontFamily:"'Lexend',sans-serif",
+              color:tab===id?'var(--text)':'var(--text-muted)',fontSize:12,fontWeight:tab===id?700:400,
               borderBottom:tab===id?'2px solid var(--primary)':'2px solid transparent',transition:'all .15s'}}>
             {label}
           </button>
@@ -367,6 +434,189 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
                           style={{display:'flex',alignItems:'center',gap:4,padding:'4px 9px',borderRadius:5,border:'1px solid var(--danger)',background:'var(--danger-subtle)',color:'var(--danger)',cursor:'pointer',fontSize:11,fontWeight:600}}>
                           <ShieldOff size={10}/> Revoke
                         </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Login Log tab ───────────────────────────────────────────────────── */}
+      {tab === 'logins' && (
+        <div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <div style={{fontSize:12,color:'var(--text-muted)'}}>All users who have authenticated via Discord OAuth. Sessions expire after 14 days.</div>
+            <button className="btn btn-ghost btn-sm" onClick={loadLoginSessions} style={{display:'flex',alignItems:'center',gap:5}}><RefreshCw size={11}/> Refresh</button>
+          </div>
+          {sessLoading ? (
+            <div style={{textAlign:'center',padding:'32px 0',color:'var(--text-muted)'}}>Loading…</div>
+          ) : loginSessions.length === 0 ? (
+            <div style={{textAlign:'center',padding:'48px 0',color:'var(--text-faint)'}}><LogIn size={32} style={{marginBottom:10,opacity:.3}}/><div>No active sessions</div></div>
+          ) : (
+            <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,overflow:'hidden'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead>
+                  <tr style={{borderBottom:'1px solid var(--border)',background:'rgba(0,0,0,.2)'}}>
+                    {['User','Discord ID','Access','Logged In','Last Seen','Expires','Actions'].map(h=>(
+                      <th key={h} style={{padding:'9px 12px',textAlign:'left',fontWeight:700,color:'var(--text-muted)',fontSize:10,textTransform:'uppercase',letterSpacing:'.06em',whiteSpace:'nowrap'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {loginSessions.map(s=>(
+                    <tr key={s.id} className="data-row" style={{borderBottom:'1px solid rgba(255,255,255,.04)'}}>
+                      <td style={{padding:'9px 12px'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:7}}>
+                          {s.avatar_url?<img src={s.avatar_url} alt="" style={{width:24,height:24,borderRadius:'50%',objectFit:'cover'}}/>:<div style={{width:24,height:24,borderRadius:'50%',background:'linear-gradient(135deg,#5865f2,#7c3aed)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#fff',fontWeight:700}}>{(s.username||'?')[0].toUpperCase()}</div>}
+                          <span style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>{s.username}</span>
+                        </div>
+                      </td>
+                      <td style={{padding:'9px 12px',fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--text-faint)'}}>{s.discord_id}</td>
+                      <td style={{padding:'9px 12px'}}>
+                        <span style={{padding:'2px 7px',borderRadius:5,fontSize:11,fontWeight:700,background:s.is_admin?'rgba(88,101,242,.18)':'rgba(59,165,93,.14)',color:s.is_admin?'#818cf8':'var(--success)',display:'flex',alignItems:'center',gap:3,width:'fit-content'}}>
+                          {s.is_admin&&<Shield size={9}/>}{s.is_admin?'Admin':'Raider'}
+                        </span>
+                      </td>
+                      <td style={{padding:'9px 12px',color:'var(--text-muted)',fontSize:11}}>{fmtFull(s.created_at)}</td>
+                      <td style={{padding:'9px 12px',color:'var(--text-muted)',fontSize:11}}>{fmtFull(s.last_seen)}</td>
+                      <td style={{padding:'9px 12px',color:'var(--text-faint)',fontSize:11}}>{fmtFull(s.expires_at)}</td>
+                      <td style={{padding:'9px 12px'}}>
+                        <div style={{display:'flex',gap:4}}>
+                          {!s.is_admin&&(
+                            <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                              <input className="inp" style={{width:120,fontSize:11,padding:'3px 7px'}} placeholder="Ban reason…"
+                                value={banReason[s.discord_id]||''} onChange={e=>setBanReason(p=>({...p,[s.discord_id]:e.target.value}))}/>
+                              <button onClick={()=>handleBan(s.discord_id,s.username)}
+                                style={{display:'flex',alignItems:'center',gap:3,padding:'4px 9px',borderRadius:5,border:'1px solid var(--danger)',background:'var(--danger-subtle)',color:'var(--danger)',cursor:'pointer',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}}>
+                                <Ban size={10}/> Ban
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Banned Users tab ────────────────────────────────────────────────── */}
+      {tab === 'bans' && (
+        <div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <div style={{fontSize:12,color:'var(--text-muted)'}}>Banned users cannot log in to the dashboard. Their sessions are immediately revoked.</div>
+            <button className="btn btn-ghost btn-sm" onClick={loadBans} style={{display:'flex',alignItems:'center',gap:5}}><RefreshCw size={11}/> Refresh</button>
+          </div>
+          {banLoading ? (
+            <div style={{textAlign:'center',padding:'32px 0',color:'var(--text-muted)'}}>Loading…</div>
+          ) : dashBans.length === 0 ? (
+            <div style={{textAlign:'center',padding:'48px 0',color:'var(--text-faint)'}}><ShieldCheck size={32} style={{marginBottom:10,opacity:.4}}/><div>No users banned</div></div>
+          ) : (
+            <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,overflow:'hidden'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead>
+                  <tr style={{borderBottom:'1px solid var(--border)',background:'rgba(0,0,0,.2)'}}>
+                    {['User','Discord ID','Reason','Banned By','Banned At','Actions'].map(h=>(
+                      <th key={h} style={{padding:'9px 12px',textAlign:'left',fontWeight:700,color:'var(--text-muted)',fontSize:10,textTransform:'uppercase',letterSpacing:'.06em',whiteSpace:'nowrap'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashBans.map(b=>(
+                    <tr key={b.id} className="data-row" style={{borderBottom:'1px solid rgba(255,255,255,.04)'}}>
+                      <td style={{padding:'9px 12px',fontSize:13,fontWeight:600,color:'var(--text)'}}>{b.username||'—'}</td>
+                      <td style={{padding:'9px 12px',fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:'var(--text-faint)'}}>{b.discord_id}</td>
+                      <td style={{padding:'9px 12px',color:'var(--text-muted)',fontSize:12}}>{b.reason||'No reason given'}</td>
+                      <td style={{padding:'9px 12px',color:'var(--text-faint)',fontSize:11}}>{b.banned_by||'—'}</td>
+                      <td style={{padding:'9px 12px',color:'var(--text-faint)',fontSize:11}}>{fmtFull(b.banned_at)}</td>
+                      <td style={{padding:'9px 12px'}}>
+                        <button onClick={()=>handleUnban(b.discord_id)}
+                          style={{display:'flex',alignItems:'center',gap:3,padding:'4px 9px',borderRadius:5,border:'1px solid var(--success)',background:'rgba(59,165,93,.1)',color:'var(--success)',cursor:'pointer',fontSize:11,fontWeight:600}}>
+                          <ShieldCheck size={10}/> Unban
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Command Usage tab ───────────────────────────────────────────────── */}
+      {tab === 'cmdlogs' && (
+        <div>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
+            <Terminal size={14} style={{color:'var(--primary)'}}/>
+            <span style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>Bot Command Usage</span>
+            <div style={{marginLeft:'auto',display:'flex',gap:6}}>
+              {['all',...(cmdStats?.byCommand.map(r=>r.command)||[])].map(cmd=>(
+                <button key={cmd} onClick={()=>{setCmdFilter(cmd);loadCmdUsage(cmd);}} style={{padding:'4px 10px',borderRadius:6,border:'1px solid var(--border)',background:cmdFilter===cmd?'rgba(88,101,242,.25)':'transparent',color:cmdFilter===cmd?'var(--primary)':'var(--text-muted)',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>
+                  {cmd==='all'?'All':`${CMD_ICONS[cmd]||'⚡'} ${cmd}`}
+                </button>
+              ))}
+              <button className="btn btn-ghost btn-sm" onClick={()=>loadCmdUsage()} style={{display:'flex',alignItems:'center',gap:4}}><RefreshCw size={11}/></button>
+            </div>
+          </div>
+          {cmdStats && (
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
+              <div style={{background:'var(--elevated)',border:'1px solid var(--border)',borderRadius:10,padding:'12px 14px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:8}}>By Command</div>
+                {cmdStats.byCommand.map(r=>(
+                  <div key={r.command} style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
+                    <span style={{fontSize:12,color:'var(--text)',flex:1}}>{CMD_ICONS[r.command]||'⚡'} {r.command}</span>
+                    <div style={{width:80,height:5,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden'}}>
+                      <div style={{width:`${(r.total_uses/(cmdStats.byCommand[0]?.total_uses||1))*100}%`,height:'100%',background:'var(--primary)',borderRadius:3}}/>
+                    </div>
+                    <span style={{fontSize:11,color:'var(--text-muted)',minWidth:28,textAlign:'right',fontFamily:"'JetBrains Mono',monospace"}}>{r.total_uses}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{background:'var(--elevated)',border:'1px solid var(--border)',borderRadius:10,padding:'12px 14px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:8}}>Top Users</div>
+                {cmdStats.topUsers.map(u=>(
+                  <div key={u.user_id} style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
+                    <span style={{fontSize:12,color:'var(--text)',flex:1}}>{u.username}</span>
+                    <span style={{fontSize:11,color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace"}}>{u.uses}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {cmdLoading ? (
+            <div style={{textAlign:'center',padding:'24px',color:'var(--text-muted)'}}>Loading…</div>
+          ) : cmdLogs.length === 0 ? (
+            <div style={{textAlign:'center',padding:'40px',color:'var(--text-faint)'}}><Terminal size={28} style={{marginBottom:10,opacity:.3}}/><div>No command logs yet</div><div style={{fontSize:11,marginTop:4}}>Make sure ADMIN_API_URL is set in your bot .env</div></div>
+          ) : (
+            <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,overflow:'hidden'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead>
+                  <tr style={{borderBottom:'1px solid var(--border)',background:'rgba(0,0,0,.2)'}}>
+                    {['Time','User','Command','Details'].map(h=>(
+                      <th key={h} style={{padding:'9px 12px',textAlign:'left',fontWeight:700,color:'var(--text-muted)',fontSize:10,textTransform:'uppercase',letterSpacing:'.06em',whiteSpace:'nowrap'}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {cmdLogs.map((log,i)=>(
+                    <tr key={log.id} className="data-row" style={{borderBottom:'1px solid rgba(255,255,255,.04)',background:i===0?'rgba(88,101,242,.03)':'transparent'}}>
+                      <td style={{padding:'8px 12px',color:'var(--text-muted)',fontSize:11,fontFamily:"'JetBrains Mono',monospace",whiteSpace:'nowrap'}}>{fmtFull(log.used_at)}</td>
+                      <td style={{padding:'8px 12px'}}>
+                        <span style={{fontSize:12,color:'var(--text)',fontWeight:500}}>{log.username||log.user_id}</span>
+                        <span style={{fontSize:10,color:'var(--text-faint)',display:'block',fontFamily:"'JetBrains Mono',monospace"}}>{log.user_id}</span>
+                      </td>
+                      <td style={{padding:'8px 12px'}}>
+                        <span style={{background:'var(--primary-subtle)',color:'var(--primary)',borderRadius:5,padding:'2px 8px',fontSize:11,fontWeight:600}}>{CMD_ICONS[log.command]||'⚡'} {log.command}</span>
+                      </td>
+                      <td style={{padding:'8px 12px',color:'var(--text-muted)',fontSize:11,maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                        {Object.entries(log.metadata||{}).map(([k,v])=>`${k}: ${v}`).join(' · ')||'—'}
                       </td>
                     </tr>
                   ))}

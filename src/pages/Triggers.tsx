@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { Plus, Pencil, Trash2, Zap, Search, ToggleLeft, ToggleRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Pencil, Trash2, Zap, Search, ToggleLeft, ToggleRight, ChevronDown, ChevronUp, LayoutTemplate } from 'lucide-react';
 import {
   getTriggers, createTrigger, updateTrigger, deleteTrigger, type Trigger,
 } from '../lib/db';
@@ -29,6 +29,59 @@ const EMPTY: Partial<Trigger> = {
   embed_color: '#5865F2', embed_title: '', channel_id: '',
 };
 
+// ── Built-in trigger templates ────────────────────────────────────────────────
+interface TriggerTemplate {
+  name: string; icon: string; desc: string;
+  data: Partial<Trigger>;
+}
+const TEMPLATES: TriggerTemplate[] = [
+  {
+    name: 'Welcome Message', icon: '👋', desc: 'Greet new members when they type hello',
+    data: { trigger_text: 'hello', match_type: 'contains', response_type: 'embed',
+            response: 'Welcome to the server! Feel free to ask any questions.',
+            embed_title: '👋 Welcome!', embed_color: '#57F287',
+            permission_level: 'everyone', cooldown_seconds: 30 },
+  },
+  {
+    name: 'Rules Reminder', icon: '📜', desc: 'Post server rules on demand',
+    data: { trigger_text: '!rules', match_type: 'exact', response_type: 'embed',
+            response: '1. Be respectful\n2. No spam\n3. Follow Discord ToS\n4. Listen to staff',
+            embed_title: '📜 Server Rules', embed_color: '#5865F2',
+            permission_level: 'everyone', cooldown_seconds: 10 },
+  },
+  {
+    name: 'Support Ping', icon: '🎫', desc: 'Direct users to open a ticket',
+    data: { trigger_text: 'help', match_type: 'contains', response_type: 'reply',
+            response: '🎫 Need help? Open a support ticket by typing `/ticket` and our team will assist you shortly!',
+            permission_level: 'everyone', cooldown_seconds: 60 },
+  },
+  {
+    name: 'Raid Schedule', icon: '⚔️', desc: 'Share raid times when asked',
+    data: { trigger_text: 'raid time', match_type: 'contains', response_type: 'embed',
+            response: 'Our raids run **every Saturday at 8 PM UTC**.\nCheck #announcements for updates!',
+            embed_title: '⚔️ Raid Schedule', embed_color: '#E67E22',
+            permission_level: 'everyone', cooldown_seconds: 30 },
+  },
+  {
+    name: 'Bot Dashboard Link', icon: '🖥️', desc: 'Share the dashboard URL',
+    data: { trigger_text: '!dashboard', match_type: 'exact', response_type: 'reply',
+            response: '🖥️ Access the Homunculus dashboard here: [Dashboard Link]\nLog in with Discord to view your stats!',
+            permission_level: 'everyone', cooldown_seconds: 15 },
+  },
+  {
+    name: 'Auto-Mod Warning', icon: '⚠️', desc: 'Warn users about a topic (mod-only trigger)',
+    data: { trigger_text: 'buy', match_type: 'contains', response_type: 'reply',
+            response: '⚠️ Advertising or selling is not permitted in this server.',
+            permission_level: 'everyone', cooldown_seconds: 0, delete_message: true },
+  },
+  {
+    name: 'Secret Admin Reply', icon: '🔒', desc: 'DM-only response visible only to the user',
+    data: { trigger_text: '!admin', match_type: 'exact', response_type: 'dm',
+            response: 'Admin contact: reach out to a staff member via the ticket system.',
+            permission_level: 'everyone', cooldown_seconds: 60 },
+  },
+];
+
 function matchVariant(mt: string): 'primary' | 'muted' | 'success' | 'danger' {
   if (mt === 'regex') return 'danger';
   if (mt === 'exact') return 'success';
@@ -39,7 +92,7 @@ export default function Triggers({ guildId }: Props) {
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [loading, setLoading]   = useState(true);
   const [search, setSearch]     = useState('');
-  const [modal, setModal]       = useState<'create' | 'edit' | null>(null);
+  const [modal, setModal]       = useState<'create' | 'edit' | 'templates' | null>(null);
   const [form, setForm]         = useState<Partial<Trigger>>(EMPTY);
   const [saving, setSaving]     = useState(false);
   const [error, setError]       = useState('');
@@ -66,6 +119,11 @@ export default function Triggers({ guildId }: Props) {
 
   function openCreate() { setForm({ ...EMPTY, guild_id: guildId }); setShowAdv(false); setModal('create'); }
   function openEdit(t: Trigger) { setForm({ ...t }); setShowAdv(false); setModal('edit'); }
+  function applyTemplate(tpl: TriggerTemplate) {
+    setForm({ ...EMPTY, ...tpl.data, guild_id: guildId });
+    setShowAdv(false);
+    setModal('create');
+  }
 
   async function submit() {
     setSaving(true); setError('');
@@ -114,6 +172,7 @@ export default function Triggers({ guildId }: Props) {
           <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-faint)' }} />
           <input className="inp" style={{ paddingLeft: 32 }} placeholder="Search triggers…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
+        <button className="btn btn-ghost" onClick={() => setModal('templates')} style={{display:'flex',alignItems:'center',gap:6}}><LayoutTemplate size={14}/> Templates</button>
         <button className="btn btn-primary" onClick={openCreate}><Plus size={14} /> Add Trigger</button>
       </div>
 
@@ -215,7 +274,35 @@ export default function Triggers({ guildId }: Props) {
       </div>
 
       {/* Modal */}
-      {modal && (
+      {/* Templates Modal */}
+      {modal === 'templates' && (
+        <Modal title="⚡ Trigger Templates" onClose={() => setModal(null)} width="max-w-2xl">
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+            Choose a template to pre-fill the trigger form. You can edit everything after.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {TEMPLATES.map(tpl => (
+              <button key={tpl.name} onClick={() => applyTemplate(tpl)}
+                style={{ textAlign: 'left', background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '12px 14px', cursor: 'pointer', transition: 'border-color .15s' }}
+                onMouseEnter={e => (e.currentTarget.style.borderColor = 'rgba(88,101,242,.5)')}
+                onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}>
+                <div style={{ fontSize: 20, marginBottom: 4 }}>{tpl.icon}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 3 }}>{tpl.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tpl.desc}</div>
+                <div style={{ marginTop: 8, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  <span style={{ background: 'var(--primary-subtle)', color: 'var(--primary)', borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 600 }}>{tpl.data.match_type}</span>
+                  <span style={{ background: 'rgba(255,255,255,.06)', color: 'var(--text-muted)', borderRadius: 4, padding: '1px 7px', fontSize: 10 }}>{tpl.data.response_type}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div style={{ marginTop: 16, fontSize: 11, color: 'var(--text-faint)', textAlign: 'center' }}>
+            You can also start from scratch using the <strong style={{ color: 'var(--text)' }}>Add Trigger</strong> button.
+          </div>
+        </Modal>
+      )}
+
+      {modal && modal !== 'templates' && (
         <Modal title={modal === 'create' ? '⚡ New Trigger' : '✏️ Edit Trigger'} onClose={() => setModal(null)} width="max-w-2xl">
           <F label="Trigger Phrase *">
             <input className="inp mono" placeholder="e.g. hello world" value={form.trigger_text ?? ''} onChange={e => setForm(p => ({ ...p, trigger_text: e.target.value }))} />

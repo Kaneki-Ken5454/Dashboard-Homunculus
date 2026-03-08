@@ -291,7 +291,7 @@ const app = express();
 
 // CRITICAL: Trust Vercel / any reverse-proxy's X-Forwarded-Proto header so
 // req.protocol returns 'https' instead of always 'http'.
-// Without this, every OAuth callback URL is built as http:// and Discord
+// Without this, every OAuth callback URL is built as http:// and Discord / Google
 // reject it with "redirect_uri mismatch" (the silent failure users see).
 app.set('trust proxy', true);
 
@@ -337,12 +337,16 @@ app.get('/api/auth/test', (req, res) => {
   res.json({
     computed_site_origin:      origin,
     discord_callback_will_be:  `${origin}/api/auth/discord/callback`,
+    google_callback_will_be:   `${origin}/api/auth/google/callback`,
     env: {
       PUBLIC_URL:   process.env.PUBLIC_URL    || '⚠️  NOT SET — set this in Vercel env vars to fix redirect_uri mismatches',
       VERCEL_URL:   process.env.VERCEL_URL    || '(not set)',
       DISCORD_CLIENT_ID:    process.env.DISCORD_CLIENT_ID    ? '✅ set' : '❌ MISSING',
       DISCORD_CLIENT_SECRET: process.env.DISCORD_CLIENT_SECRET ? '✅ set' : '❌ MISSING',
       ADMIN_DISCORD_IDS:    process.env.ADMIN_DISCORD_IDS    || '(not set — no admin access)',
+      GOOGLE_CLIENT_ID:     process.env.GOOGLE_CLIENT_ID     ? '✅ set' : '(not set)',
+      GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ? '✅ set' : '(not set)',
+      ADMIN_GOOGLE_EMAILS:  process.env.ADMIN_GOOGLE_EMAILS  || '(not set)',
     },
     headers_received: {
       host:              req.get('host'),
@@ -998,6 +1002,78 @@ app.post('/api/query', async (req, res) => {
         return ok(res, rows);
       }
 
+      // ── Dashboard Appearance ──
+      case 'getDashboardAppearance': {
+        await sql(`CREATE TABLE IF NOT EXISTS dashboard_appearance (
+          id          SERIAL PRIMARY KEY,
+          guild_id    TEXT NOT NULL DEFAULT 'global',
+          wallpaper_url TEXT,
+          favicon_url   TEXT,
+          site_name     TEXT,
+          updated_at    TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(guild_id)
+        )`).catch(() => {});
+        const rows = await sql(
+          `SELECT wallpaper_url, favicon_url, site_name FROM dashboard_appearance WHERE guild_id = $1`,
+          [params.guildId || 'global']
+        ).catch(() => []);
+        return ok(res, rows[0] || { wallpaper_url: null, favicon_url: null, site_name: null });
+      }
+
+      case 'setDashboardAppearance': {
+        await sql(`CREATE TABLE IF NOT EXISTS dashboard_appearance (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL DEFAULT 'global',
+          wallpaper_url TEXT, favicon_url TEXT, site_name TEXT,
+          updated_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(guild_id)
+        )`).catch(() => {});
+        await sql(
+          `INSERT INTO dashboard_appearance (guild_id, wallpaper_url, favicon_url, site_name, updated_at)
+           VALUES ($1, $2, $3, $4, NOW())
+           ON CONFLICT (guild_id) DO UPDATE
+           SET wallpaper_url=$2, favicon_url=$3, site_name=$4, updated_at=NOW()`,
+          [params.guildId || 'global',
+           params.wallpaper_url || null,
+           params.favicon_url   || null,
+           params.site_name     || null]
+        );
+        return ok(res, { success: true });
+      }
+
+      // ── Dashboard Bans ──
+      case 'getDashboardBans': {
+        await sql(`CREATE TABLE IF NOT EXISTS dashboard_bans (
+          id SERIAL PRIMARY KEY, discord_id TEXT NOT NULL UNIQUE,
+          username TEXT, reason TEXT, banned_by TEXT,
+          banned_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(() => {});
+        const rows = await sql(`SELECT * FROM dashboard_bans ORDER BY banned_at DESC`).catch(() => []);
+        return ok(res, rows);
+      }
+
+      case 'banFromDashboard': {
+        await sql(`CREATE TABLE IF NOT EXISTS dashboard_bans (
+          id SERIAL PRIMARY KEY, discord_id TEXT NOT NULL UNIQUE,
+          username TEXT, reason TEXT, banned_by TEXT,
+          banned_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(() => {});
+        const discordId = String(params.discordId || '');
+        if (!discordId) return err(res, 'discordId required');
+        await sql(
+          `INSERT INTO dashboard_bans (discord_id, username, reason, banned_by)
+           VALUES ($1, $2, $3, $4) ON CONFLICT (discord_id) DO UPDATE
+           SET username=$2, reason=$3, banned_by=$4, banned_at=NOW()`,
+          [discordId, params.username || '', params.reason || '', params.bannedBy || '']
+        );
+        // Also revoke all their sessions
+        await sql(`DELETE FROM client_sessions WHERE discord_id = $1`, [discordId]).catch(() => {});
+        return ok(res, { success: true });
+      }
+
+      case 'unbanFromDashboard': {
+        await sql(`DELETE FROM dashboard_bans WHERE discord_id = $1`, [String(params.discordId || '')]);
+        return ok(res, { success: true });
+      }
+
       // ── Info Topics ──
       case 'getInfoTopics': {
         const rows = await sql(
@@ -1522,6 +1598,31 @@ app.get('/api/client/config', clientCors, async (req, res) => {
     res.json({ ok: true, features: map });
   } catch (e) {
     res.json({ ok: false, features: { damage_calc:true, weakness_lookup:true, counter_calc:true } });
+  }
+});
+
+// GET /api/appearance?guild_id=…  → public: wallpaper/favicon/site_name
+app.get('/api/appearance', clientCors, async (req, res) => {
+  const guildId = req.query.guild_id || 'global';
+  try {
+    await sql(`CREATE TABLE IF NOT EXISTS dashboard_appearance (
+      id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL DEFAULT 'global',
+      wallpaper_url TEXT, favicon_url TEXT, site_name TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(guild_id)
+    )`).catch(() => {});
+    const rows = await sql(
+      `SELECT wallpaper_url, favicon_url, site_name FROM dashboard_appearance WHERE guild_id = $1`,
+      [guildId]
+    ).catch(() => []);
+    // Also check global fallback
+    const globalRows = guildId !== 'global'
+      ? await sql(`SELECT wallpaper_url, favicon_url, site_name FROM dashboard_appearance WHERE guild_id = 'global'`).catch(() => [])
+      : [];
+    const base = globalRows[0] || {};
+    const specific = rows[0] || {};
+    res.json({ ok: true, ...base, ...specific });
+  } catch (e) {
+    res.json({ ok: true, wallpaper_url: null, favicon_url: null, site_name: null });
   }
 });
 
@@ -2185,6 +2286,12 @@ app.get('/api/auth/discord/callback', async (req, res) => {
     const isAdmin      = ADMIN_DISCORD_IDS.includes(discordId);
     const firstGuildId = adminGuilds[0]?.id || 'global';
 
+    // 4b. Check if banned from dashboard
+    const bans = await sql(`SELECT id FROM dashboard_bans WHERE discord_id = $1`, [discordId]).catch(() => []);
+    if (bans.length) {
+      return res.status(403).send('Your access to this dashboard has been revoked by an administrator.');
+    }
+
     // 5. Make sure session table is ready (should already be done by now)
     await tableReadyPromise;
 
@@ -2232,6 +2339,12 @@ app.get('/api/auth/me', authCors, async (req, res) => {
     );
     if (!rows.length) return res.status(401).json({ ok: false, error: 'Session expired — please log in again.' });
     const { discord_id, username, avatar_url, guild_id, is_admin, guilds_json } = rows[0];
+    // Check if banned
+    const bans = await sql(`SELECT id FROM dashboard_bans WHERE discord_id = $1`, [discord_id]).catch(() => []);
+    if (bans.length) {
+      await sql(`DELETE FROM client_sessions WHERE discord_id = $1`, [discord_id]).catch(() => {});
+      return res.status(403).json({ ok: false, error: 'Your access to this dashboard has been revoked.' });
+    }
     res.json({
       ok: true, discord_id, username, avatar_url, guild_id,
       is_admin: !!is_admin,

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Save, Hash, CheckCircle, AlertCircle } from 'lucide-react';
-import { getGuildSetting, upsertGuildSetting, type GuildSetting, getLogChannels, setLogChannels, type LogChannelConfig } from '../lib/db';
+import { Save, Hash, CheckCircle, AlertCircle, Image, Globe, Type } from 'lucide-react';
+import { getGuildSetting, upsertGuildSetting, type GuildSetting, getLogChannels, setLogChannels, type LogChannelConfig, apiCall as query } from '../lib/db';
 
 interface Props { guildId: string; }
 
@@ -139,6 +139,97 @@ function LogChannelSection({ guildId }: { guildId: string }) {
   );
 }
 
+// ── Appearance Section ────────────────────────────────────────────────────────
+function AppearanceSection({ guildId }: { guildId: string }) {
+  const [wallpaper, setWallpaper] = useState('');
+  const [favicon,   setFavicon]   = useState('');
+  const [siteName,  setSiteName]  = useState('');
+  const [loading,   setLoading]   = useState(true);
+  const [saving,    setSaving]    = useState(false);
+  const [saved,     setSaved]     = useState(false);
+  const [error,     setError]     = useState('');
+
+  useEffect(() => {
+    if (!guildId) return;
+    setLoading(true);
+    query('getDashboardAppearance', { guildId })
+      .then((d: any) => {
+        setWallpaper(d?.wallpaper_url || '');
+        setFavicon(d?.favicon_url || '');
+        setSiteName(d?.site_name || '');
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [guildId]);
+
+  const save = async () => {
+    setSaving(true); setError(''); setSaved(false);
+    try {
+      await query('setDashboardAppearance', {
+        guildId,
+        wallpaper_url: wallpaper.trim() || null,
+        favicon_url:   favicon.trim()   || null,
+        site_name:     siteName.trim()  || null,
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
+  };
+
+  const inp = (label: string, value: string, onChange: (v: string) => void, icon: React.ReactNode, hint: string) => (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
+        <span style={{ color: 'var(--primary)' }}>{icon}</span>
+        <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{label}</label>
+      </div>
+      <input className="inp" style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}
+        placeholder={hint} value={value} onChange={e => onChange(e.target.value)} />
+    </div>
+  );
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px 24px', marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <Image size={16} style={{ color: 'var(--primary)' }} />
+        <div style={{ fontWeight: 600, fontSize: 15 }}>Dashboard Appearance</div>
+        <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, background: 'rgba(88,101,242,.15)', color: 'var(--primary)', borderRadius: 5, padding: '2px 8px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Admin only</span>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 18 }}>
+        Customize the look of both the Admin and Raider dashboards. Changes apply immediately on next page load.
+      </div>
+
+      {loading ? (
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading…</div>
+      ) : (
+        <>
+          {inp('Site Name', siteName, setSiteName, <Type size={13}/>, 'e.g. Raid HQ — replaces "Bot Dashboard" / "Homunculus"')}
+          {inp('Favicon URL', favicon, setFavicon, <Globe size={13}/>, 'https://… (PNG/ICO, shown in browser tab & sidebar)')}
+          {inp('Wallpaper URL', wallpaper, setWallpaper, <Image size={13}/>, 'https://… (full-width background image for both dashboards)')}
+
+          {/* Preview strip */}
+          {(wallpaper || favicon || siteName) && (
+            <div style={{ marginBottom: 14, padding: '10px 14px', borderRadius: 9, background: 'rgba(88,101,242,.07)', border: '1px solid rgba(88,101,242,.2)', display: 'flex', alignItems: 'center', gap: 10 }}>
+              {favicon && <img src={favicon} alt="" style={{ width: 28, height: 28, borderRadius: 7, objectFit: 'cover', border: '1px solid var(--border)' }} onError={e => { (e.target as HTMLImageElement).style.display='none'; }}/>}
+              {wallpaper && <div style={{ width: 60, height: 28, borderRadius: 6, backgroundImage: `url(${wallpaper})`, backgroundSize: 'cover', backgroundPosition: 'center', border: '1px solid var(--border)', flexShrink: 0 }}/>}
+              <div style={{ fontSize: 12, color: 'var(--text)' }}>
+                {siteName && <strong>{siteName}</strong>}
+                {!siteName && <span style={{ color: 'var(--text-muted)' }}>Preview</span>}
+              </div>
+            </div>
+          )}
+
+          {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 10 }}>{error}</div>}
+          <button className={`btn ${saved ? 'btn-success' : 'btn-primary'}`} onClick={save} disabled={saving}>
+            <Save size={13} /> {saving ? 'Saving…' : saved ? '✓ Saved!' : 'Save Appearance'}
+          </button>
+          {saved && <span style={{ marginLeft: 12, fontSize: 12, color: '#4ade80' }}>Applied to all users on next load</span>}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Settings({ guildId }: Props) {
   const [settings, setSettings] = useState<GuildSetting | null>(null);
   const [loading, setLoading]   = useState(true);
@@ -186,6 +277,7 @@ export default function Settings({ guildId }: Props) {
           {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 10 }}>{error}</div>}
         </div>
         <LogChannelSection guildId={guildId} />
+        <AppearanceSection guildId={guildId} />
       </div>
     );
   }
@@ -227,6 +319,7 @@ export default function Settings({ guildId }: Props) {
       </button>
 
       <LogChannelSection guildId={guildId} />
+      <AppearanceSection guildId={guildId} />
     </div>
   );
 }

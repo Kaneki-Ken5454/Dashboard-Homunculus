@@ -30,8 +30,13 @@ export interface DiscordUser {
   guild_id: string; is_admin: boolean;
   admin_guilds: { id: string; name: string; icon: string | null }[];
 }
+interface AppearanceConfig {
+  wallpaper_url: string | null;
+  favicon_url:   string | null;
+  site_name:     string | null;
+}
 type AdminPage = 'overview'|'members'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'help'|'bossinfo'|'clienttools';
-type ToolPage  = 'damage'|'weakness'|'counter';
+type ToolPage  = 'damage'|'weakness'|'counter'|'activity';
 type Page      = AdminPage | ToolPage;
 
 const ADMIN_NAV: { id: AdminPage; label: string; icon: LucideIcon }[] = [
@@ -54,6 +59,7 @@ const TOOL_NAV: { id: ToolPage; label: string; icon: LucideIcon; desc: string }[
   { id:'damage',   label:'Damage Calc',     icon:Zap,         desc:'Gen 9 damage formula' },
   { id:'weakness', label:'Weakness Lookup', icon:ShieldCheck, desc:'Type chart + stats'   },
   { id:'counter',  label:'Counter Calc',    icon:Swords,      desc:'Raid sim + Monte-Carlo' },
+  { id:'activity', label:'Activity',          icon:Activity,    desc:'VC time & server stats' },
 ];
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -109,7 +115,7 @@ function UserBadge({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:12,fontWeight:600,color:'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{user.username}</div>
         <div style={{fontSize:9,color:user.is_admin?'var(--success)':'var(--text-faint)',fontWeight:600,letterSpacing:'.04em'}}>
-          {user.is_admin?'✓ SERVER ADMIN':'Battle Tools Access'}
+          {user.is_admin?'✓ SERVER ADMIN':'Raider Dashboard Access'}
         </div>
       </div>
       <button onClick={onLogout} title="Sign out" style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-faint)',padding:4,display:'flex',borderRadius:6}}><LogOut size={13}/></button>
@@ -123,7 +129,7 @@ function LoginScreen({ initialError }: { initialError?: string }) {
   
   const [error,         setError        ] = useState(initialError || '');
 
-  // Fix: when user clicks back from Discord OAuth page the browser may
+  // Fix: when user clicks back from Discord/Google OAuth page the browser may
   // restore this page from the back-forward cache (bfcache) with loading=true.
   // Reset the spinner whenever the page becomes visible again.
   useEffect(() => {
@@ -156,7 +162,7 @@ function LoginScreen({ initialError }: { initialError?: string }) {
         <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:20,padding:'32px 28px',boxShadow:'0 24px 64px rgba(0,0,0,0.5)'}}>
           <div style={{fontSize:15,fontWeight:700,color:'var(--text)',marginBottom:10}}>Sign in to continue</div>
           <div style={{fontSize:13,color:'var(--text-muted)',lineHeight:1.75,marginBottom:22}}>
-            Log in with Discord. <strong style={{color:'var(--text)'}}>Server admins</strong> (Manage Server permission) get full bot management. Everyone else accesses the <strong style={{color:'var(--text)'}}>Battle Tools</strong>.
+            Log in with Discord. <strong style={{color:'var(--text)'}}>Server admins</strong> (Manage Server permission) get full bot management. Everyone else accesses the <strong style={{color:'var(--text)'}}>Raider Dashboard</strong>.
           </div>
           <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:22}}>
             {['⚙️ Guild Management','🛡️ Moderation','🎟️ Tickets','⚡ Damage Calc','🛡 Weakness Lookup','👹 Counter Calc'].map(f=>(
@@ -196,25 +202,31 @@ function LoginScreen({ initialError }: { initialError?: string }) {
   );
 }
 
-// ── Battle Tools View (regular users) ─────────────────────────────────────────
-function BattleToolsDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
+// ── Raider Dashboard View (regular users) ────────────────────────────────────────
+function BattleToolsDashboard({user,onLogout,guildId,appearance}:{user:DiscordUser;onLogout:()=>void;guildId:string;appearance:AppearanceConfig}) {
   const sdState=useShowdownData();
   const [page,setPage]=useState<ToolPage>('damage');
-  const cur=TOOL_NAV.find(t=>t.id===page)!;
+  const cur=TOOL_NAV.find(t=>t.id===page)||TOOL_NAV[0];
+  const bgStyle = appearance.wallpaper_url
+    ? {backgroundImage:`url(${appearance.wallpaper_url})`,backgroundSize:'cover',backgroundPosition:'center',backgroundAttachment:'fixed'}
+    : {};
   return (
-    <div style={{display:'flex',height:'100vh',overflow:'hidden'}}>
-      <aside style={{width:220,flexShrink:0,background:'#090a14',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column'}}>
+    <div style={{display:'flex',height:'100vh',overflow:'hidden',...bgStyle}}>
+      <aside style={{width:220,flexShrink:0,background:appearance.wallpaper_url?'rgba(9,10,20,0.94)':'#090a14',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column'}}>
         <div style={{padding:'18px 16px 14px',borderBottom:'1px solid var(--border)'}}>
           <div style={{display:'flex',alignItems:'center',gap:10}}>
-            <div style={{width:36,height:36,borderRadius:10,background:'linear-gradient(135deg,#5865f2,#7983f5)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:18}}>⚔️</div>
+            {appearance.favicon_url
+              ? <img src={appearance.favicon_url} alt="" style={{width:36,height:36,borderRadius:10,objectFit:'cover',flexShrink:0}}/>
+              : <div style={{width:36,height:36,borderRadius:10,background:'linear-gradient(135deg,#5865f2,#7983f5)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:18}}>⚔️</div>
+            }
             <div>
-              <div style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>Homunculus</div>
-              <div style={{fontSize:10,color:'var(--text-muted)'}}>Battle Tools</div>
+              <div style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>{appearance.site_name||'Homunculus'}</div>
+              <div style={{fontSize:10,color:'var(--text-muted)'}}>Raider Tools</div>
             </div>
           </div>
         </div>
-        <nav style={{flex:1,padding:'10px 8px'}}>
-          <div style={{fontSize:9,fontWeight:700,color:'var(--text-faint)',textTransform:'uppercase',letterSpacing:'.08em',padding:'6px 8px',marginBottom:4}}>Tools</div>
+        <nav style={{flex:1,padding:'10px 8px',overflowY:'auto'}}>
+          <div style={{fontSize:9,fontWeight:700,color:'var(--text-faint)',textTransform:'uppercase',letterSpacing:'.08em',padding:'6px 8px',marginBottom:4}}>Raider Tools</div>
           {TOOL_NAV.map(({id,label,icon:Icon,desc})=>{
             const active=page===id;
             return (
@@ -238,17 +250,18 @@ function BattleToolsDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>voi
         </div>
         <UserBadge user={user} onLogout={onLogout}/>
       </aside>
-      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
-        <header style={{height:52,display:'flex',alignItems:'center',gap:12,padding:'0 24px',borderBottom:'1px solid var(--border)',background:'var(--surface)',flexShrink:0}}>
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:appearance.wallpaper_url?'rgba(15,16,28,0.85)':'transparent'}}>
+        <header style={{height:52,display:'flex',alignItems:'center',gap:12,padding:'0 24px',borderBottom:'1px solid var(--border)',background:appearance.wallpaper_url?'rgba(15,16,28,0.9)':'var(--surface)',flexShrink:0}}>
           <cur.icon size={15} style={{color:'var(--primary)'}}/>
           <span style={{fontSize:14,fontWeight:700,color:'var(--text)'}}>{cur.label}</span>
           {sdState==='loading'&&<div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:6,fontSize:11,color:'var(--text-muted)'}}><Loader2 size={11} style={{animation:'spin 1s linear infinite'}}/>Loading…</div>}
-          {sdState==='ready'&&<div style={{marginLeft:'auto',fontSize:10,color:'var(--success)',display:'flex',alignItems:'center',gap:5}}><div style={{width:6,height:6,borderRadius:'50%',background:'var(--success)'}}/>Data ready</div>}
+          {sdState==='ready'&&page!=='activity'&&<div style={{marginLeft:'auto',fontSize:10,color:'var(--success)',display:'flex',alignItems:'center',gap:5}}><div style={{width:6,height:6,borderRadius:'50%',background:'var(--success)'}}/>Data ready</div>}
         </header>
         <main style={{flex:1,overflowY:'auto',padding:24}}>
           {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
           {page==='weakness'&&<WeaknessLookupTool/>}
           {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}}/>}
+          {page==='activity'&&<ActivityPage guildId={guildId}/>}
         </main>
       </div>
     </div>
@@ -256,7 +269,7 @@ function BattleToolsDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>voi
 }
 
 // ── Admin Dashboard ────────────────────────────────────────────────────────────
-function AdminDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
+function AdminDashboard({user,onLogout,appearance}:{user:DiscordUser;onLogout:()=>void;appearance:AppearanceConfig}) {
   const [page,setPage]=useState<Page>('overview');
   const [guildId,setGuildId]=useState(user.admin_guilds?.[0]?.id||'');
   const [dbGuilds,setDbGuilds]=useState<DiscoveredGuild[]>([]);
@@ -289,14 +302,14 @@ function AdminDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
   const isAdminPage=!!curAdminNav;
 
   return (
-    <div style={{display:'flex',height:'100vh',overflow:'hidden'}}>
+    <div style={{display:'flex',height:'100vh',overflow:'hidden',...(appearance.wallpaper_url?{backgroundImage:`url(${appearance.wallpaper_url})`,backgroundSize:'cover',backgroundPosition:'center',backgroundAttachment:'fixed'}:{})}}>
       {/* Sidebar */}
-      <aside style={{width:224,flexShrink:0,background:'#090a14',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <aside style={{width:224,flexShrink:0,background:appearance.wallpaper_url?'rgba(9,10,20,0.94)':'#090a14',borderRight:'1px solid var(--border)',display:'flex',flexDirection:'column',overflow:'hidden'}}>
         <div style={{padding:'18px 16px 14px',borderBottom:'1px solid var(--border)'}}>
           <div style={{display:'flex',alignItems:'center',gap:10}}>
-            <div style={{width:36,height:36,borderRadius:10,background:'linear-gradient(135deg,#5865f2,#7983f5)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Server size={17} color="white"/></div>
+            {appearance.favicon_url?<img src={appearance.favicon_url} alt="" style={{width:36,height:36,borderRadius:10,objectFit:'cover',flexShrink:0}}/>:<div style={{width:36,height:36,borderRadius:10,background:'linear-gradient(135deg,#5865f2,#7983f5)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Server size={17} color="white"/></div>}
             <div>
-              <div style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>Bot Dashboard</div>
+              <div style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>{appearance.site_name||'Bot Dashboard'}</div>
               <div style={{fontSize:10,color:'var(--text-muted)'}}>Admin Console</div>
             </div>
           </div>
@@ -308,7 +321,7 @@ function AdminDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
               onMouseEnter={e=>{if(page!==id)(e.currentTarget as HTMLElement).style.background='rgba(255,255,255,0.04)';}}
               onMouseLeave={e=>{if(page!==id)(e.currentTarget as HTMLElement).style.background='none';}}><Icon size={13}/>{label}</button>
           ))}
-          <div style={{fontSize:9,fontWeight:700,color:'var(--text-faint)',textTransform:'uppercase',letterSpacing:'.08em',padding:'10px 10px 4px'}}>Battle Tools</div>
+          <div style={{fontSize:9,fontWeight:700,color:'var(--text-faint)',textTransform:'uppercase',letterSpacing:'.08em',padding:'10px 10px 4px'}}>Raider Tools</div>
           {TOOL_NAV.map(({id,label,icon:Icon})=>(
             <button key={id} onClick={()=>setPage(id)} className={page===id?'nav-active':''} style={{width:'100%',display:'flex',alignItems:'center',gap:9,padding:'8px 10px',borderRadius:8,border:'none',cursor:'pointer',background:'none',color:page===id?undefined:'var(--text-muted)',fontSize:12,fontFamily:'Lexend,sans-serif',fontWeight:500,marginBottom:1,textAlign:'left',transition:'background 0.1s'}}
               onMouseEnter={e=>{if(page!==id)(e.currentTarget as HTMLElement).style.background='rgba(255,255,255,0.04)';}}
@@ -367,7 +380,7 @@ function AdminDashboard({user,onLogout}:{user:DiscordUser;onLogout:()=>void}) {
         <UserBadge user={user} onLogout={onLogout}/>
       </aside>
       {/* Main */}
-      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:appearance.wallpaper_url?'rgba(15,16,28,0.88)':'undefined'}}>
         <header style={{height:52,flexShrink:0,borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 24px',background:'var(--bg)'}}>
           <div style={{display:'flex',alignItems:'center',gap:10}}>
             {isAdminPage?(()=>{const Icon=curAdminNav!.icon;return<Icon size={14} style={{color:'var(--text-muted)'}}/>;})():(()=>{const Icon=curToolNav?.icon||Layers;return<Icon size={14} style={{color:'var(--primary)'}}/>;})()}
@@ -408,6 +421,24 @@ export default function App() {
   const [token,setToken]      =useState('');
   const [authChecked,setDone] =useState(false);
   const [loginError,setLoginError] =useState('');
+  const [appearance,setAppearance] =useState<AppearanceConfig>({wallpaper_url:null,favicon_url:null,site_name:null});
+  const [clientGuildId,setClientGuildId] =useState('');
+
+  // Load appearance (public endpoint, no auth needed)
+  useEffect(()=>{
+    fetch('/api/appearance?guild_id=global')
+      .then(r=>r.ok?r.json():null)
+      .then(d=>{
+        if(!d) return;
+        setAppearance({wallpaper_url:d.wallpaper_url||null,favicon_url:d.favicon_url||null,site_name:d.site_name||null});
+        if(d.favicon_url){
+          let link=document.querySelector<HTMLLinkElement>("link[rel~='icon']");
+          if(!link){link=document.createElement('link');(link as any).rel='icon';document.head.appendChild(link);}
+          link.href=d.favicon_url;
+        }
+        if(d.site_name) document.title=d.site_name;
+      }).catch(()=>{});
+  },[]);
 
   useEffect(()=>{
     let cancelled=false;
@@ -422,7 +453,7 @@ export default function App() {
         const checkToken = urlToken || storedToken();
         console.log('[auth] checkToken present:', !!checkToken);
         if (checkToken) {
-          const isFromOAuth = !!urlToken; // true when Discord just redirected back
+          const isFromOAuth = !!urlToken; // true when Discord/Google just redirected back
           saveToken(checkToken);
           setSessionToken(checkToken);
           console.log('[auth] calling verifySession...');
@@ -432,6 +463,12 @@ export default function App() {
             if (u) {
               setUser(u);
               setToken(checkToken);
+              // For client users: auto-discover top guild for Activity page
+              if(!u.is_admin){
+                import('./lib/db').then(({discoverAllGuildIds})=>{
+                  discoverAllGuildIds().then(list=>{if(list.length&&!cancelled)setClientGuildId(list[0].guild_id);}).catch(()=>{});
+                });
+              }
             } else {
               removeToken();
               clearSession();
@@ -464,6 +501,6 @@ export default function App() {
     </div>
   );
   if(!user)return<LoginScreen initialError={loginError}/>;
-  if(user.is_admin)return<AdminDashboard user={user} onLogout={handleLogout}/>;
-  return<BattleToolsDashboard user={user} onLogout={handleLogout}/>;
+  if(user.is_admin)return<AdminDashboard user={user} onLogout={handleLogout} appearance={appearance}/>;
+  return<BattleToolsDashboard user={user} onLogout={handleLogout} guildId={clientGuildId} appearance={appearance}/>;
 }
