@@ -215,7 +215,6 @@ async function ensureTables() {
       updated_at  TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(guild_id, pokemon_key)
     )`,
-    // Migrate guild_id BIGINT → TEXT for blacklist_data.
     // Plain ALTER with USING works if column is BIGINT; if already TEXT Postgres errors
     // and the catch below silently ignores it — so this is safe either way.
     `ALTER TABLE blacklist_data ALTER COLUMN guild_id TYPE TEXT USING guild_id::text`,
@@ -249,6 +248,91 @@ async function ensureTables() {
       expires_at    TIMESTAMPTZ NOT NULL,
       last_seen     TIMESTAMPTZ DEFAULT NOW(),
       created_at    TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS is_admin          BOOLEAN    DEFAULT FALSE`,
+    `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS guilds_json       JSONB      DEFAULT '[]'`,
+    `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS access_token      TEXT`,
+    `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS refresh_token     TEXT`,
+    `ALTER TABLE client_sessions ADD COLUMN IF NOT EXISTS token_expires_at  TIMESTAMPTZ`,
+    // Dashboard appearance / bans
+    `CREATE TABLE IF NOT EXISTS dashboard_appearance (
+      id          BIGSERIAL PRIMARY KEY,
+      guild_id    TEXT NOT NULL DEFAULT 'global',
+      wallpaper_url TEXT,
+      favicon_url TEXT,
+      site_name   TEXT DEFAULT 'Homunculus Dashboard',
+      updated_at  TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(guild_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS dashboard_bans (
+      id          BIGSERIAL PRIMARY KEY,
+      discord_id  TEXT NOT NULL UNIQUE,
+      username    TEXT,
+      reason      TEXT,
+      banned_by   TEXT,
+      banned_at   TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    // ModMail tables
+    `CREATE TABLE IF NOT EXISTS modmail_config (
+      id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL UNIQUE,
+      enabled BOOLEAN DEFAULT false,
+      inbox_channel_id TEXT, log_channel_id TEXT, staff_role_id TEXT,
+      greeting TEXT DEFAULT '', auto_close_hours INT DEFAULT 72,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS modmail_threads (
+      id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      username TEXT, thread_channel_id TEXT, status TEXT DEFAULT 'open',
+      subject TEXT, priority TEXT DEFAULT 'normal',
+      opened_at TIMESTAMPTZ DEFAULT NOW(), closed_at TIMESTAMPTZ,
+      closed_by TEXT, last_message_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS modmail_messages (
+      id SERIAL PRIMARY KEY, thread_id INT NOT NULL, guild_id TEXT,
+      author_id TEXT, author_name TEXT, author_is_staff BOOLEAN DEFAULT false,
+      content TEXT, attachments JSONB DEFAULT '[]',
+      sent_at TIMESTAMPTZ DEFAULT NOW(), delivered BOOLEAN DEFAULT false
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_modmail_threads_guild ON modmail_threads(guild_id, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_modmail_messages_thread ON modmail_messages(thread_id, sent_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_modmail_undelivered ON modmail_messages(author_is_staff, delivered) WHERE author_is_staff = true AND delivered = false`,
+    // Scheduled events
+    `CREATE TABLE IF NOT EXISTS scheduled_events (
+      id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, title TEXT NOT NULL,
+      description TEXT, channel_id TEXT, role_ping_id TEXT,
+      event_type TEXT DEFAULT 'raid', starts_at TIMESTAMPTZ NOT NULL,
+      ends_at TIMESTAMPTZ, recurrence TEXT DEFAULT 'none',
+      recurrence_days TEXT[] DEFAULT '{}',
+      image_url TEXT, announced BOOLEAN DEFAULT false,
+      reminder_sent BOOLEAN DEFAULT false, created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_scheduled_events_guild ON scheduled_events(guild_id, starts_at)`,
+    // Announcements
+    `CREATE TABLE IF NOT EXISTS announcements (
+      id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL,
+      title TEXT, content TEXT NOT NULL, channel_id TEXT,
+      role_ping_id TEXT, embed BOOLEAN DEFAULT true,
+      embed_color TEXT DEFAULT '#5865f2', image_url TEXT,
+      thumbnail_url TEXT, footer TEXT,
+      status TEXT DEFAULT 'draft', sent_at TIMESTAMPTZ,
+      scheduled_at TIMESTAMPTZ, sent_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_announcements_guild ON announcements(guild_id, status)`,
+    // Member notes
+    `CREATE TABLE IF NOT EXISTS member_notes (
+      id SERIAL PRIMARY KEY, guild_id TEXT, user_id TEXT,
+      note TEXT, author_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    // VC Activity (also created by bot, ensure exists for dashboard queries)
+    `CREATE TABLE IF NOT EXISTS vc_activity (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      username TEXT DEFAULT '', avatar_url TEXT,
+      total_seconds BIGINT DEFAULT 0, session_count INT DEFAULT 0,
+      last_active TIMESTAMPTZ, last_left TIMESTAMPTZ,
+      UNIQUE(guild_id, user_id)
     )`,
   ];
   for (const m of migrations) {
@@ -1587,22 +1671,12 @@ app.post('/api/query', async (req, res) => {
 
       // ── ModMail ──────────────────────────────────────────────────────────────
       case 'getModmailConfig': {
-        await sql(`CREATE TABLE IF NOT EXISTS modmail_config (
-          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL UNIQUE,
-          enabled BOOLEAN DEFAULT true, inbox_channel_id TEXT,
-          log_channel_id TEXT, staff_role_id TEXT, greeting TEXT,
-          auto_close_hours INT DEFAULT 72, updated_at TIMESTAMPTZ DEFAULT NOW()
-        )`).catch(()=>{});
+        await ensureTablesOnce().catch(()=>{});
         const rows = await sql(`SELECT * FROM modmail_config WHERE guild_id=$1`,[params.guildId]).catch(()=>[]);
         return ok(res, rows[0] || { enabled:false, inbox_channel_id:null, log_channel_id:null, staff_role_id:null, greeting:'', auto_close_hours:72 });
       }
       case 'setModmailConfig': {
-        await sql(`CREATE TABLE IF NOT EXISTS modmail_config (
-          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL UNIQUE,
-          enabled BOOLEAN DEFAULT true, inbox_channel_id TEXT,
-          log_channel_id TEXT, staff_role_id TEXT, greeting TEXT,
-          auto_close_hours INT DEFAULT 72, updated_at TIMESTAMPTZ DEFAULT NOW()
-        )`).catch(()=>{});
+        await ensureTablesOnce().catch(()=>{});
         await sql(`INSERT INTO modmail_config (guild_id,enabled,inbox_channel_id,log_channel_id,staff_role_id,greeting,auto_close_hours,updated_at)
           VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
           ON CONFLICT(guild_id) DO UPDATE SET enabled=$2,inbox_channel_id=$3,log_channel_id=$4,
@@ -1612,27 +1686,14 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { success:true });
       }
       case 'getModmailThreads': {
-        await sql(`CREATE TABLE IF NOT EXISTS modmail_threads (
-          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
-          username TEXT, thread_channel_id TEXT, status TEXT DEFAULT 'open',
-          subject TEXT, priority TEXT DEFAULT 'normal',
-          opened_at TIMESTAMPTZ DEFAULT NOW(), closed_at TIMESTAMPTZ,
-          closed_by TEXT, last_message_at TIMESTAMPTZ DEFAULT NOW()
-        )`).catch(()=>{});
+        await ensureTablesOnce().catch(()=>{});
         const where = params.status && params.status !== 'all' ? `AND status=$2` : '';
         const args = params.status && params.status !== 'all' ? [params.guildId, params.status] : [params.guildId];
         const rows = await sql(`SELECT * FROM modmail_threads WHERE guild_id=$1 ${where} ORDER BY last_message_at DESC LIMIT 100`, args).catch(()=>[]);
         return ok(res, rows);
       }
       case 'getModmailMessages': {
-        await sql(`CREATE TABLE IF NOT EXISTS modmail_messages (
-          id SERIAL PRIMARY KEY, thread_id INT NOT NULL, guild_id TEXT,
-          author_id TEXT, author_name TEXT, author_is_staff BOOLEAN DEFAULT false,
-          content TEXT, attachments JSONB DEFAULT '[]', sent_at TIMESTAMPTZ DEFAULT NOW(),
-          delivered BOOLEAN DEFAULT false
-        )`).catch(()=>{});
-        // Add delivered column if missing (migration for existing tables)
-        await sql(`ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS delivered BOOLEAN DEFAULT false`).catch(()=>{});
+        await ensureTablesOnce().catch(()=>{});
         const rows = await sql(`SELECT * FROM modmail_messages WHERE thread_id=$1 ORDER BY sent_at ASC`,[params.threadId]).catch(()=>[]);
         return ok(res, rows);
       }
@@ -1643,7 +1704,6 @@ app.post('/api/query', async (req, res) => {
       case 'replyModmailThread': {
         // authorIsStaff: true = staff reply (from dashboard), false = user message (from bot DM handler)
         const isStaff = params.authorIsStaff !== undefined ? !!params.authorIsStaff : true;
-        await sql(`ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS delivered BOOLEAN DEFAULT false`).catch(()=>{});
         await sql(`INSERT INTO modmail_messages(thread_id,guild_id,author_id,author_name,author_is_staff,content,sent_at,delivered)
           VALUES($1,$2,$3,$4,$5,$6,NOW(),$7)`,
           [params.threadId,params.guildId,params.authorId,params.authorName,isStaff,params.content,!isStaff]);
@@ -1727,30 +1787,12 @@ app.post('/api/query', async (req, res) => {
 
       // ── Events / Scheduler ────────────────────────────────────────────────────
       case 'getEvents': {
-        await sql(`CREATE TABLE IF NOT EXISTS scheduled_events (
-          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, title TEXT NOT NULL,
-          description TEXT, channel_id TEXT, role_ping_id TEXT,
-          event_type TEXT DEFAULT 'raid', starts_at TIMESTAMPTZ NOT NULL,
-          ends_at TIMESTAMPTZ, recurrence TEXT DEFAULT 'none',
-          recurrence_days TEXT[] DEFAULT '{}',
-          image_url TEXT, announced BOOLEAN DEFAULT false,
-          reminder_sent BOOLEAN DEFAULT false, created_by TEXT,
-          created_at TIMESTAMPTZ DEFAULT NOW()
-        )`).catch(()=>{});
+        await ensureTablesOnce().catch(()=>{});
         const rows = await sql(`SELECT * FROM scheduled_events WHERE guild_id=$1 ORDER BY starts_at ASC`,[params.guildId]).catch(()=>[]);
         return ok(res, rows);
       }
       case 'createEvent': {
-        await sql(`CREATE TABLE IF NOT EXISTS scheduled_events (
-          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, title TEXT NOT NULL,
-          description TEXT, channel_id TEXT, role_ping_id TEXT,
-          event_type TEXT DEFAULT 'raid', starts_at TIMESTAMPTZ NOT NULL,
-          ends_at TIMESTAMPTZ, recurrence TEXT DEFAULT 'none',
-          recurrence_days TEXT[] DEFAULT '{}',
-          image_url TEXT, announced BOOLEAN DEFAULT false,
-          reminder_sent BOOLEAN DEFAULT false, created_by TEXT,
-          created_at TIMESTAMPTZ DEFAULT NOW()
-        )`).catch(()=>{});
+        await ensureTablesOnce().catch(()=>{});
         const r = await sql(`INSERT INTO scheduled_events(guild_id,title,description,channel_id,role_ping_id,event_type,starts_at,ends_at,recurrence,recurrence_days,image_url,created_by)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
           [params.guildId,params.title,params.description||'',params.channel_id||null,
@@ -1779,42 +1821,25 @@ app.post('/api/query', async (req, res) => {
       }
       case 'getPendingEvents': {
         // Bot polls this — returns events that need announcing/reminders
+        await ensureTablesOnce().catch(()=>{});
         const now = new Date().toISOString();
         const rows = await sql(
           `SELECT * FROM scheduled_events
-           WHERE guild_id=$1 AND starts_at > $2 AND announced=false
+           WHERE guild_id=$1 AND announced=false
            ORDER BY starts_at ASC`,
-          [params.guildId, now]
+          [params.guildId]
         ).catch(()=>[]);
         return ok(res, rows);
       }
 
       // ── Announcements ────────────────────────────────────────────────────────
       case 'getAnnouncements': {
-        await sql(`CREATE TABLE IF NOT EXISTS announcements (
-          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL,
-          title TEXT, content TEXT NOT NULL, channel_id TEXT,
-          role_ping_id TEXT, embed BOOLEAN DEFAULT true,
-          embed_color TEXT DEFAULT '#5865f2', image_url TEXT,
-          thumbnail_url TEXT, footer TEXT,
-          status TEXT DEFAULT 'draft', sent_at TIMESTAMPTZ,
-          scheduled_at TIMESTAMPTZ, sent_by TEXT,
-          created_at TIMESTAMPTZ DEFAULT NOW()
-        )`).catch(()=>{});
+        await ensureTablesOnce().catch(()=>{});
         const rows = await sql(`SELECT * FROM announcements WHERE guild_id=$1 ORDER BY created_at DESC LIMIT 100`,[params.guildId]).catch(()=>[]);
         return ok(res, rows);
       }
       case 'createAnnouncement': {
-        await sql(`CREATE TABLE IF NOT EXISTS announcements (
-          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL,
-          title TEXT, content TEXT NOT NULL, channel_id TEXT,
-          role_ping_id TEXT, embed BOOLEAN DEFAULT true,
-          embed_color TEXT DEFAULT '#5865f2', image_url TEXT,
-          thumbnail_url TEXT, footer TEXT,
-          status TEXT DEFAULT 'draft', sent_at TIMESTAMPTZ,
-          scheduled_at TIMESTAMPTZ, sent_by TEXT,
-          created_at TIMESTAMPTZ DEFAULT NOW()
-        )`).catch(()=>{});
+        await ensureTablesOnce().catch(()=>{});
         const r = await sql(`INSERT INTO announcements(guild_id,title,content,channel_id,role_ping_id,embed,embed_color,image_url,thumbnail_url,footer,status,scheduled_at,sent_by)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
           [params.guildId,params.title||null,params.content,params.channel_id||null,
@@ -1844,7 +1869,8 @@ app.post('/api/query', async (req, res) => {
       }
       case 'getPendingAnnouncements': {
         // Bot polls this endpoint to pick up announcements to send
-        const rows = await sql(`SELECT * FROM announcements WHERE guild_id=$1 AND status='pending'`,[params.guildId]).catch(()=>[]);
+        await ensureTablesOnce().catch(()=>{});
+        const rows = await sql(`SELECT * FROM announcements WHERE guild_id=$1 AND status='pending' ORDER BY created_at ASC`,[params.guildId]).catch(()=>[]);
         return ok(res, rows);
       }
       case 'markAnnouncementSent': {
