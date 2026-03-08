@@ -241,7 +241,7 @@ export async function getAllWarns(guildId: string): Promise<WarnEntry[]> {
 }
 
 // ── Activity ───────────────────────────────────────────────────────────────────
-export interface ActivityStats { activeAll: number; active7d: number; active24h: number; totalMsgs: number; }
+export interface ActivityStats { activeAll: number; active7d: number; active24h: number; totalMsgs: number; totalMembers: number; }
 export interface ActivityMember { user_id: string; username: string; message_count: number; last_active: string; }
 
 export async function getLeaderboard(guildId: string, limit = 25): Promise<ActivityMember[]> {

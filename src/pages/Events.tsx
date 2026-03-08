@@ -85,13 +85,19 @@ export default function EventsPage({ guildId }: Props): JSX.Element {
   const save = async () => {
     if (!form.title.trim()||!form.starts_at) return;
     setSaving(true);
-    const payload = { guildId, ...form,
-      starts_at: new Date(form.starts_at).toISOString(),
-      ends_at:   form.ends_at ? new Date(form.ends_at).toISOString() : null,
-    };
-    if (editing) await apiCall('updateEvent',{...payload,id:editing.id});
-    else         await apiCall('createEvent',payload);
-    await load(); setShowForm(false); setSaving(false);
+    try {
+      const payload = { guildId, ...form,
+        starts_at: new Date(form.starts_at).toISOString(),
+        ends_at:   form.ends_at ? new Date(form.ends_at).toISOString() : null,
+      };
+      if (editing) await apiCall('updateEvent',{...payload,id:editing.id});
+      else         await apiCall('createEvent',payload);
+      await load(); setShowForm(false);
+    } catch(e) {
+      alert('Failed to save event: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const del = async (id:number) => {
@@ -136,7 +142,8 @@ export default function EventsPage({ guildId }: Props): JSX.Element {
       {showForm&&(
         <>
           <div onClick={()=>setShowForm(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:40}}/>
-          <div style={{position:'fixed',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:560,maxWidth:'95vw',maxHeight:'90vh',overflow:'auto',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:14,zIndex:50,padding:24}}>
+          <div style={{position:'fixed',inset:0,zIndex:50,overflowY:'auto',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'20px 10px'}}>
+          <div style={{width:560,maxWidth:'95vw',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:14,padding:24,marginTop:'auto',marginBottom:'auto'}} onClick={e=>e.stopPropagation()}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
               <div style={{fontSize:15,fontWeight:700,color:'var(--text)'}}>{editing?'Edit Event':'New Event'}</div>
               <button onClick={()=>setShowForm(false)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-faint)'}}><X size={16}/></button>
@@ -199,6 +206,7 @@ export default function EventsPage({ guildId }: Props): JSX.Element {
                 </button>
               </div>
             </div>
+          </div>
           </div>
         </>
       )}

@@ -73,15 +73,21 @@ export default function AnnouncementsPage({ guildId }: Props): JSX.Element {
   const save = async () => {
     if (!form.content.trim()) return;
     setSaving(true);
-    const payload = { guildId, ...form,
-      title:form.title||null, channel_id:form.channel_id||null,
-      role_ping_id:form.role_ping_id||null, image_url:form.image_url||null,
-      thumbnail_url:form.thumbnail_url||null, footer:form.footer||null,
-      scheduled_at:form.scheduled_at||null,
-    };
-    if (editing) await apiCall('updateAnnouncement',{...payload,id:editing.id});
-    else         await apiCall('createAnnouncement',payload);
-    await load(); setShowForm(false); setSaving(false);
+    try {
+      const payload = { guildId, ...form,
+        title:form.title||null, channel_id:form.channel_id||null,
+        role_ping_id:form.role_ping_id||null, image_url:form.image_url||null,
+        thumbnail_url:form.thumbnail_url||null, footer:form.footer||null,
+        scheduled_at:form.scheduled_at||null,
+      };
+      if (editing) await apiCall('updateAnnouncement',{...payload,id:editing.id});
+      else         await apiCall('createAnnouncement',payload);
+      await load(); setShowForm(false);
+    } catch(e) {
+      alert('Failed to save: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const send = async (id:number) => {
@@ -126,7 +132,8 @@ export default function AnnouncementsPage({ guildId }: Props): JSX.Element {
       {showForm&&(
         <>
           <div onClick={()=>setShowForm(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:40}}/>
-          <div style={{position:'fixed',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:preview?860:560,maxWidth:'97vw',maxHeight:'92vh',overflow:'auto',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:14,zIndex:50,padding:24,display:'flex',gap:24}}>
+          <div style={{position:'fixed',inset:0,zIndex:50,overflowY:'auto',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'20px 10px'}}>
+          <div style={{width:preview?860:560,maxWidth:'97vw',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:14,padding:24,display:'flex',gap:24,marginTop:'auto',marginBottom:'auto'}} onClick={e=>e.stopPropagation()}>
             {/* Form */}
             <div style={{flex:1,display:'flex',flexDirection:'column',gap:12,minWidth:280}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -196,6 +203,7 @@ export default function AnnouncementsPage({ guildId }: Props): JSX.Element {
                 )}
               </div>
             )}
+          </div>
           </div>
         </>
       )}

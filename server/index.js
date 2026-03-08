@@ -381,14 +381,17 @@ async function isAdminSessionToken(token) {
 }
 
 app.post('/api/query', async (req, res) => {
-  // Enforce admin auth via session token or legacy API key
+  // Enforce admin auth via session token, legacy API key, or bot secret
   const sessionToken = (req.headers['x-session-token'] || '').toString().trim();
   const apiKey       = (req.headers['x-admin-key']      || '').toString().trim();
+  const botSecret    = (req.headers['x-bot-secret']     || '').toString().trim();
 
+  const BOT_API_SECRET_VAL = process.env.BOT_API_SECRET || '';
   const keyOk     = ADMIN_API_KEY && apiKey === ADMIN_API_KEY;
   const sessionOk = sessionToken ? await isAdminSessionToken(sessionToken) : false;
+  const botOk     = BOT_API_SECRET_VAL && botSecret === BOT_API_SECRET_VAL;
 
-  if (!keyOk && !sessionOk) {
+  if (!keyOk && !sessionOk && !botOk) {
     return res.status(401).json({ success: false, error: 'Unauthorized: log in via Discord to access admin features.' });
   }
 
@@ -643,13 +646,14 @@ app.post('/api/query', async (req, res) => {
 
 
       case 'getActivityStats': {
-        const [activeAll, active7d, active24h, totalMsgs] = await Promise.all([
+        const [activeAll, active7d, active24h, totalMsgs, totalMembers] = await Promise.all([
           sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND message_count > 0`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
           sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND last_active >= NOW() - INTERVAL '7 days'`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
           sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND last_active >= NOW() - INTERVAL '24 hours'`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
           sql(`SELECT COALESCE(SUM(message_count),0)::int AS tot FROM guild_members WHERE guild_id=$1`, [params.guildId]).then(r => r[0]?.tot ?? 0),
+          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
         ]);
-        return ok(res, { activeAll, active7d, active24h, totalMsgs });
+        return ok(res, { activeAll, active7d, active24h, totalMsgs, totalMembers });
       }
 
 
@@ -1624,8 +1628,11 @@ app.post('/api/query', async (req, res) => {
         await sql(`CREATE TABLE IF NOT EXISTS modmail_messages (
           id SERIAL PRIMARY KEY, thread_id INT NOT NULL, guild_id TEXT,
           author_id TEXT, author_name TEXT, author_is_staff BOOLEAN DEFAULT false,
-          content TEXT, attachments JSONB DEFAULT '[]', sent_at TIMESTAMPTZ DEFAULT NOW()
+          content TEXT, attachments JSONB DEFAULT '[]', sent_at TIMESTAMPTZ DEFAULT NOW(),
+          delivered BOOLEAN DEFAULT false
         )`).catch(()=>{});
+        // Add delivered column if missing (migration for existing tables)
+        await sql(`ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS delivered BOOLEAN DEFAULT false`).catch(()=>{});
         const rows = await sql(`SELECT * FROM modmail_messages WHERE thread_id=$1 ORDER BY sent_at ASC`,[params.threadId]).catch(()=>[]);
         return ok(res, rows);
       }
@@ -1634,11 +1641,29 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { success:true });
       }
       case 'replyModmailThread': {
-        await sql(`INSERT INTO modmail_messages(thread_id,guild_id,author_id,author_name,author_is_staff,content,sent_at)
-          VALUES($1,$2,$3,$4,true,$5,NOW())`,
-          [params.threadId,params.guildId,params.authorId,params.authorName,params.content]);
+        // authorIsStaff: true = staff reply (from dashboard), false = user message (from bot DM handler)
+        const isStaff = params.authorIsStaff !== undefined ? !!params.authorIsStaff : true;
+        await sql(`ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS delivered BOOLEAN DEFAULT false`).catch(()=>{});
+        await sql(`INSERT INTO modmail_messages(thread_id,guild_id,author_id,author_name,author_is_staff,content,sent_at,delivered)
+          VALUES($1,$2,$3,$4,$5,$6,NOW(),$7)`,
+          [params.threadId,params.guildId,params.authorId,params.authorName,isStaff,params.content,!isStaff]);
         await sql(`UPDATE modmail_threads SET last_message_at=NOW() WHERE id=$1`,[params.threadId]);
-        // Bot will poll this and DM the user
+        return ok(res, { success:true });
+      }
+      case 'getUndeliveredModmailReplies': {
+        // Bot polls this to find staff replies not yet DM'd to the user
+        await sql(`ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS delivered BOOLEAN DEFAULT false`).catch(()=>{});
+        const rows = await sql(
+          `SELECT mm.*, mt.user_id FROM modmail_messages mm
+           JOIN modmail_threads mt ON mt.id = mm.thread_id
+           WHERE mt.guild_id=$1 AND mm.author_is_staff=true AND mm.delivered=false
+           ORDER BY mm.sent_at ASC`,
+          [params.guildId]
+        ).catch(()=>[]);
+        return ok(res, rows);
+      }
+      case 'markModmailMessageDelivered': {
+        await sql(`UPDATE modmail_messages SET delivered=true WHERE id=$1`,[params.messageId]);
         return ok(res, { success:true });
       }
       case 'createModmailThread': {
