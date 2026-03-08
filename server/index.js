@@ -1581,6 +1581,252 @@ app.post('/api/query', async (req, res) => {
         return ok(res, { byCommand, topUsers, daily });
       }
 
+      // ── ModMail ──────────────────────────────────────────────────────────────
+      case 'getModmailConfig': {
+        await sql(`CREATE TABLE IF NOT EXISTS modmail_config (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL UNIQUE,
+          enabled BOOLEAN DEFAULT true, inbox_channel_id TEXT,
+          log_channel_id TEXT, staff_role_id TEXT, greeting TEXT,
+          auto_close_hours INT DEFAULT 72, updated_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const rows = await sql(`SELECT * FROM modmail_config WHERE guild_id=$1`,[params.guildId]).catch(()=>[]);
+        return ok(res, rows[0] || { enabled:false, inbox_channel_id:null, log_channel_id:null, staff_role_id:null, greeting:'', auto_close_hours:72 });
+      }
+      case 'setModmailConfig': {
+        await sql(`CREATE TABLE IF NOT EXISTS modmail_config (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL UNIQUE,
+          enabled BOOLEAN DEFAULT true, inbox_channel_id TEXT,
+          log_channel_id TEXT, staff_role_id TEXT, greeting TEXT,
+          auto_close_hours INT DEFAULT 72, updated_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        await sql(`INSERT INTO modmail_config (guild_id,enabled,inbox_channel_id,log_channel_id,staff_role_id,greeting,auto_close_hours,updated_at)
+          VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
+          ON CONFLICT(guild_id) DO UPDATE SET enabled=$2,inbox_channel_id=$3,log_channel_id=$4,
+          staff_role_id=$5,greeting=$6,auto_close_hours=$7,updated_at=NOW()`,
+          [params.guildId,params.enabled??true,params.inbox_channel_id||null,params.log_channel_id||null,
+           params.staff_role_id||null,params.greeting||'',params.auto_close_hours||72]);
+        return ok(res, { success:true });
+      }
+      case 'getModmailThreads': {
+        await sql(`CREATE TABLE IF NOT EXISTS modmail_threads (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
+          username TEXT, thread_channel_id TEXT, status TEXT DEFAULT 'open',
+          subject TEXT, priority TEXT DEFAULT 'normal',
+          opened_at TIMESTAMPTZ DEFAULT NOW(), closed_at TIMESTAMPTZ,
+          closed_by TEXT, last_message_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const where = params.status && params.status !== 'all' ? `AND status=$2` : '';
+        const args = params.status && params.status !== 'all' ? [params.guildId, params.status] : [params.guildId];
+        const rows = await sql(`SELECT * FROM modmail_threads WHERE guild_id=$1 ${where} ORDER BY last_message_at DESC LIMIT 100`, args).catch(()=>[]);
+        return ok(res, rows);
+      }
+      case 'getModmailMessages': {
+        await sql(`CREATE TABLE IF NOT EXISTS modmail_messages (
+          id SERIAL PRIMARY KEY, thread_id INT NOT NULL, guild_id TEXT,
+          author_id TEXT, author_name TEXT, author_is_staff BOOLEAN DEFAULT false,
+          content TEXT, attachments JSONB DEFAULT '[]', sent_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const rows = await sql(`SELECT * FROM modmail_messages WHERE thread_id=$1 ORDER BY sent_at ASC`,[params.threadId]).catch(()=>[]);
+        return ok(res, rows);
+      }
+      case 'closeModmailThread': {
+        await sql(`UPDATE modmail_threads SET status='closed', closed_at=NOW(), closed_by=$2 WHERE id=$1`,[params.threadId, params.closedBy||'admin']).catch(()=>{});
+        return ok(res, { success:true });
+      }
+      case 'replyModmailThread': {
+        await sql(`INSERT INTO modmail_messages(thread_id,guild_id,author_id,author_name,author_is_staff,content,sent_at)
+          VALUES($1,$2,$3,$4,true,$5,NOW())`,
+          [params.threadId,params.guildId,params.authorId,params.authorName,params.content]);
+        await sql(`UPDATE modmail_threads SET last_message_at=NOW() WHERE id=$1`,[params.threadId]);
+        // Bot will poll this and DM the user
+        return ok(res, { success:true });
+      }
+      case 'createModmailThread': {
+        await sql(`CREATE TABLE IF NOT EXISTS modmail_threads (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
+          username TEXT, thread_channel_id TEXT, status TEXT DEFAULT 'open',
+          subject TEXT, priority TEXT DEFAULT 'normal',
+          opened_at TIMESTAMPTZ DEFAULT NOW(), closed_at TIMESTAMPTZ,
+          closed_by TEXT, last_message_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const r = await sql(`INSERT INTO modmail_threads(guild_id,user_id,username,subject,priority,status)
+          VALUES($1,$2,$3,$4,$5,'open') RETURNING id`,
+          [params.guildId,params.userId,params.username||'Unknown',params.subject||'No subject',params.priority||'normal']);
+        return ok(res, { id: r[0]?.id });
+      }
+      case 'setModmailPriority': {
+        await sql(`UPDATE modmail_threads SET priority=$2 WHERE id=$1`,[params.threadId,params.priority]);
+        return ok(res, { success:true });
+      }
+
+      // ── Member Profile ────────────────────────────────────────────────────────
+      case 'getMemberProfile': {
+        const { guildId, userId } = params;
+        const [member, vcRow, warnRows, auditRows, cmdRows] = await Promise.all([
+          sql(`SELECT user_id,username,avatar_url,message_count,xp,level,last_active,joined_at
+               FROM guild_members WHERE guild_id=$1 AND user_id=$2 LIMIT 1`,[guildId,userId]).catch(()=>[]),
+          sql(`SELECT total_seconds,session_count,last_active,last_left FROM vc_activity WHERE guild_id=$1 AND user_id=$2 LIMIT 1`,[guildId,userId]).catch(()=>[]),
+          sql(`SELECT severity,reason,moderator_id,created_at FROM warns_data WHERE guild_id=$1 AND user_id=$2 ORDER BY created_at DESC`,[guildId,userId]).catch(()=>[]),
+          sql(`SELECT action_type,reason,moderator_id,created_at FROM audit_logs WHERE guild_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 20`,[guildId,userId]).catch(()=>[]),
+          sql(`SELECT command,COUNT(*)::int AS uses FROM command_usage_log WHERE guild_id=$1 AND user_id=$2 GROUP BY command ORDER BY uses DESC LIMIT 10`,[guildId,userId]).catch(()=>[]),
+        ]);
+        return ok(res, {
+          member: member[0] || null,
+          vc: vcRow[0] || null,
+          warns: warnRows,
+          auditLogs: auditRows,
+          topCommands: cmdRows,
+        });
+      }
+      case 'addMemberNote': {
+        await sql(`CREATE TABLE IF NOT EXISTS member_notes (
+          id SERIAL PRIMARY KEY, guild_id TEXT, user_id TEXT,
+          note TEXT, author_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        await sql(`INSERT INTO member_notes(guild_id,user_id,note,author_id) VALUES($1,$2,$3,$4)`,
+          [params.guildId,params.userId,params.note,params.authorId||'admin']);
+        return ok(res, { success:true });
+      }
+      case 'getMemberNotes': {
+        await sql(`CREATE TABLE IF NOT EXISTS member_notes (
+          id SERIAL PRIMARY KEY, guild_id TEXT, user_id TEXT,
+          note TEXT, author_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const rows = await sql(`SELECT * FROM member_notes WHERE guild_id=$1 AND user_id=$2 ORDER BY created_at DESC`,[params.guildId,params.userId]).catch(()=>[]);
+        return ok(res, rows);
+      }
+      case 'deleteMemberNote': {
+        await sql(`DELETE FROM member_notes WHERE id=$1 AND guild_id=$2`,[params.noteId,params.guildId]);
+        return ok(res, { success:true });
+      }
+
+      // ── Events / Scheduler ────────────────────────────────────────────────────
+      case 'getEvents': {
+        await sql(`CREATE TABLE IF NOT EXISTS scheduled_events (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, title TEXT NOT NULL,
+          description TEXT, channel_id TEXT, role_ping_id TEXT,
+          event_type TEXT DEFAULT 'raid', starts_at TIMESTAMPTZ NOT NULL,
+          ends_at TIMESTAMPTZ, recurrence TEXT DEFAULT 'none',
+          recurrence_days TEXT[] DEFAULT '{}',
+          image_url TEXT, announced BOOLEAN DEFAULT false,
+          reminder_sent BOOLEAN DEFAULT false, created_by TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const rows = await sql(`SELECT * FROM scheduled_events WHERE guild_id=$1 ORDER BY starts_at ASC`,[params.guildId]).catch(()=>[]);
+        return ok(res, rows);
+      }
+      case 'createEvent': {
+        await sql(`CREATE TABLE IF NOT EXISTS scheduled_events (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, title TEXT NOT NULL,
+          description TEXT, channel_id TEXT, role_ping_id TEXT,
+          event_type TEXT DEFAULT 'raid', starts_at TIMESTAMPTZ NOT NULL,
+          ends_at TIMESTAMPTZ, recurrence TEXT DEFAULT 'none',
+          recurrence_days TEXT[] DEFAULT '{}',
+          image_url TEXT, announced BOOLEAN DEFAULT false,
+          reminder_sent BOOLEAN DEFAULT false, created_by TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const r = await sql(`INSERT INTO scheduled_events(guild_id,title,description,channel_id,role_ping_id,event_type,starts_at,ends_at,recurrence,recurrence_days,image_url,created_by)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+          [params.guildId,params.title,params.description||'',params.channel_id||null,
+           params.role_ping_id||null,params.event_type||'raid',params.starts_at,
+           params.ends_at||null,params.recurrence||'none',
+           params.recurrence_days||[],params.image_url||null,params.created_by||'admin']);
+        return ok(res, { id: r[0]?.id });
+      }
+      case 'updateEvent': {
+        await sql(`UPDATE scheduled_events SET title=$2,description=$3,channel_id=$4,role_ping_id=$5,
+          event_type=$6,starts_at=$7,ends_at=$8,recurrence=$9,recurrence_days=$10,image_url=$11
+          WHERE id=$1 AND guild_id=$12`,
+          [params.id,params.title,params.description||'',params.channel_id||null,
+           params.role_ping_id||null,params.event_type||'raid',params.starts_at,
+           params.ends_at||null,params.recurrence||'none',
+           params.recurrence_days||[],params.image_url||null,params.guildId]);
+        return ok(res, { success:true });
+      }
+      case 'deleteEvent': {
+        await sql(`DELETE FROM scheduled_events WHERE id=$1 AND guild_id=$2`,[params.id,params.guildId]);
+        return ok(res, { success:true });
+      }
+      case 'markEventAnnounced': {
+        await sql(`UPDATE scheduled_events SET announced=true WHERE id=$1`,[params.id]);
+        return ok(res, { success:true });
+      }
+      case 'getPendingEvents': {
+        // Bot polls this — returns events that need announcing/reminders
+        const now = new Date().toISOString();
+        const rows = await sql(
+          `SELECT * FROM scheduled_events
+           WHERE guild_id=$1 AND starts_at > $2 AND announced=false
+           ORDER BY starts_at ASC`,
+          [params.guildId, now]
+        ).catch(()=>[]);
+        return ok(res, rows);
+      }
+
+      // ── Announcements ────────────────────────────────────────────────────────
+      case 'getAnnouncements': {
+        await sql(`CREATE TABLE IF NOT EXISTS announcements (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL,
+          title TEXT, content TEXT NOT NULL, channel_id TEXT,
+          role_ping_id TEXT, embed BOOLEAN DEFAULT true,
+          embed_color TEXT DEFAULT '#5865f2', image_url TEXT,
+          thumbnail_url TEXT, footer TEXT,
+          status TEXT DEFAULT 'draft', sent_at TIMESTAMPTZ,
+          scheduled_at TIMESTAMPTZ, sent_by TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const rows = await sql(`SELECT * FROM announcements WHERE guild_id=$1 ORDER BY created_at DESC LIMIT 100`,[params.guildId]).catch(()=>[]);
+        return ok(res, rows);
+      }
+      case 'createAnnouncement': {
+        await sql(`CREATE TABLE IF NOT EXISTS announcements (
+          id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL,
+          title TEXT, content TEXT NOT NULL, channel_id TEXT,
+          role_ping_id TEXT, embed BOOLEAN DEFAULT true,
+          embed_color TEXT DEFAULT '#5865f2', image_url TEXT,
+          thumbnail_url TEXT, footer TEXT,
+          status TEXT DEFAULT 'draft', sent_at TIMESTAMPTZ,
+          scheduled_at TIMESTAMPTZ, sent_by TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        )`).catch(()=>{});
+        const r = await sql(`INSERT INTO announcements(guild_id,title,content,channel_id,role_ping_id,embed,embed_color,image_url,thumbnail_url,footer,status,scheduled_at,sent_by)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+          [params.guildId,params.title||null,params.content,params.channel_id||null,
+           params.role_ping_id||null,params.embed??true,params.embed_color||'#5865f2',
+           params.image_url||null,params.thumbnail_url||null,params.footer||null,
+           'draft',params.scheduled_at||null,params.sent_by||'admin']);
+        return ok(res, { id: r[0]?.id });
+      }
+      case 'updateAnnouncement': {
+        await sql(`UPDATE announcements SET title=$2,content=$3,channel_id=$4,role_ping_id=$5,embed=$6,
+          embed_color=$7,image_url=$8,thumbnail_url=$9,footer=$10,scheduled_at=$11
+          WHERE id=$1 AND guild_id=$12`,
+          [params.id,params.title||null,params.content,params.channel_id||null,
+           params.role_ping_id||null,params.embed??true,params.embed_color||'#5865f2',
+           params.image_url||null,params.thumbnail_url||null,params.footer||null,
+           params.scheduled_at||null,params.guildId]);
+        return ok(res, { success:true });
+      }
+      case 'sendAnnouncement': {
+        // Mark as pending for bot to pick up and post
+        await sql(`UPDATE announcements SET status='pending', sent_by=$2 WHERE id=$1 AND guild_id=$3`,[params.id,params.sentBy||'admin',params.guildId]);
+        return ok(res, { success:true });
+      }
+      case 'deleteAnnouncement': {
+        await sql(`DELETE FROM announcements WHERE id=$1 AND guild_id=$2`,[params.id,params.guildId]);
+        return ok(res, { success:true });
+      }
+      case 'getPendingAnnouncements': {
+        // Bot polls this endpoint to pick up announcements to send
+        const rows = await sql(`SELECT * FROM announcements WHERE guild_id=$1 AND status='pending'`,[params.guildId]).catch(()=>[]);
+        return ok(res, rows);
+      }
+      case 'markAnnouncementSent': {
+        await sql(`UPDATE announcements SET status='sent', sent_at=NOW() WHERE id=$1`,[params.id]);
+        return ok(res, { success:true });
+      }
+
       default:
         return err(res, `Unknown action: ${action}`);
     }

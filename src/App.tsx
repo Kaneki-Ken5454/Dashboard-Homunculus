@@ -3,6 +3,7 @@ import {
   LayoutDashboard, Settings, Zap, Ticket, Shield, Tag, BarChart2, BookOpen,
   RefreshCw, Server, Search, ChevronDown, Database, Loader2, LogOut, Activity,
   ShieldBan, HelpCircle, Users, Swords, Monitor, ShieldCheck, Layers,
+  Mail, Megaphone, CalendarDays,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { discoverAllGuildIds, setSessionToken, clearSession, type DiscoveredGuild } from './lib/db';
@@ -18,6 +19,9 @@ import HelpPage      from './pages/Help';
 import MembersPage   from './pages/Members';
 import BossInfoPage  from './pages/BossInfo';
 import ClientToolsPage from './pages/ClientTools';
+import ModMailPage   from './pages/ModMail';
+import EventsPage    from './pages/Events';
+import AnnouncementsPage from './pages/Announcements';
 import DamageCalcTool    from './pages/DamageCalcTool';
 import WeaknessLookupTool from './pages/WeaknessLookupTool';
 import CounterCalcTool   from './pages/CounterCalcTool';
@@ -32,21 +36,24 @@ interface AppearanceConfig {
   favicon_url:   string | null;
   site_name:     string | null;
 }
-type AdminPage = 'overview'|'members'|'settings'|'triggers'|'community'|'moderation'|'info'|'help'|'bossinfo'|'clienttools';
+type AdminPage = 'overview'|'members'|'settings'|'triggers'|'community'|'moderation'|'modmail'|'events'|'announcements'|'info'|'help'|'bossinfo'|'clienttools';
 type ToolPage  = 'damage'|'weakness'|'counter'|'activity';
 type Page      = AdminPage | ToolPage;
 
 const ADMIN_NAV: { id: AdminPage; label: string; icon: LucideIcon }[] = [
-  { id:'overview',    label:'Overview',     icon:LayoutDashboard },
-  { id:'members',     label:'Members',      icon:Users           },
-  { id:'settings',    label:'Settings',     icon:Settings        },
-  { id:'triggers',    label:'Triggers',     icon:Zap             },
-  { id:'moderation',  label:'Moderation',   icon:Shield          },
-  { id:'community',   label:'Community',    icon:Tag             },
-  { id:'info',        label:'Info Topics',  icon:BookOpen        },
-  { id:'bossinfo',    label:'BossInfo',     icon:Swords          },
-  { id:'clienttools', label:'Client Tools', icon:Monitor         },
-  { id:'help',        label:'Help',         icon:HelpCircle      },
+  { id:'overview',       label:'Overview',       icon:LayoutDashboard },
+  { id:'members',        label:'Members',        icon:Users           },
+  { id:'settings',       label:'Settings',       icon:Settings        },
+  { id:'triggers',       label:'Triggers',       icon:Zap             },
+  { id:'moderation',     label:'Moderation',     icon:Shield          },
+  { id:'modmail',        label:'ModMail',        icon:Mail            },
+  { id:'community',      label:'Community',      icon:Tag             },
+  { id:'announcements',  label:'Announcements',  icon:Megaphone       },
+  { id:'events',         label:'Events',         icon:CalendarDays    },
+  { id:'info',           label:'Info Topics',    icon:BookOpen        },
+  { id:'bossinfo',       label:'BossInfo',       icon:Swords          },
+  { id:'clienttools',    label:'Client Tools',   icon:Monitor         },
+  { id:'help',           label:'Help',           icon:HelpCircle      },
 ];
 const TOOL_NAV: { id: ToolPage; label: string; icon: LucideIcon; desc: string }[] = [
   { id:'damage',   label:'Damage Calc',     icon:Zap,         desc:'Gen 9 damage formula' },
@@ -390,7 +397,10 @@ function AdminDashboard({user,onLogout,appearance}:{user:DiscordUser;onLogout:()
           {page==='settings'   &&<SettingsPage guildId={guildId}/>}
           {page==='triggers'   &&<Triggers     guildId={guildId}/>}
           {page==='moderation' &&<ModerationPage guildId={guildId}/>}
+          {page==='modmail'    &&<ModMailPage  guildId={guildId}/>}
           {page==='community'  &&<CommunityPage  guildId={guildId}/>}
+          {page==='announcements'&&<AnnouncementsPage guildId={guildId}/>}
+          {page==='events'     &&<EventsPage   guildId={guildId}/>}
           {page==='info'       &&<InfoTopics   guildId={guildId}/>}
           {page==='help'       &&<HelpPage     guildId={guildId}/>}
           {page==='bossinfo'   &&<BossInfoPage  guildId={guildId}/>}
