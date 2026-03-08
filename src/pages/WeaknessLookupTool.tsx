@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   lookupPoke,
   searchPokemon,
@@ -9,6 +9,11 @@ import {
   SEL,
 } from '../lib/engine_pokemon';
 import { TypeBadge, AutoInput } from '../lib/pokemon_components';
+import { apiCall } from '../lib/db';
+
+interface AssignedCounter { pokemon: string; moves: string; notes: string; is_preferred: boolean; }
+
+function _key(n: string) { return n.toLowerCase().replace(/[^a-z0-9]/g, '-'); }
 
 const MULTIPLIER_SECTIONS = [
   { k:'quad',    label:'4× Weak',     color:'#f87171', bg:'rgba(248,113,113,0.08)', border:'rgba(248,113,113,0.18)' },
@@ -18,17 +23,34 @@ const MULTIPLIER_SECTIONS = [
   { k:'immune',  label:'Immune (0×)', color:'#6b7280', bg:'rgba(107,114,128,0.06)', border:'rgba(107,114,128,0.15)' },
 ];
 
-export default function WeaknessLookup() {
+export default function WeaknessLookup({ guildId }: { guildId?: string }) {
   const [poke, setPoke]  = useState('');
   const [tera, setTera]  = useState('');
   const [data, setData]  = useState<any>(null);
   const [err,  setErr]   = useState('');
+  const [ctrs, setCtrs]  = useState<AssignedCounter[]>([]);
+  const [ctrsLoading, setCtrsLoading] = useState(false);
+
+  const loadCounters = async (pokeName: string) => {
+    if (!guildId) return;
+    setCtrsLoading(true);
+    try {
+      const bosses = await apiCall<any[]>('getRaidBosses', { guildId });
+      const hit = (bosses || []).find((b: any) =>
+        b.pokemon_key === _key(pokeName) || b.display_name?.toLowerCase() === pokeName.toLowerCase()
+      );
+      setCtrs(hit?.counters || []);
+    } catch { setCtrs([]); }
+    setCtrsLoading(false);
+  };
 
   const onPokeChange = (v: string) => {
     setPoke(v);
     const p = lookupPoke(v);
     setData(p);
+    setCtrs([]);
     setErr(v && !p ? `"${v}" not found — try spelling it differently` : '');
+    if (p) loadCounters(v);
   };
 
   const types = tera ? [tera] : (data?.types || []);
@@ -113,6 +135,33 @@ export default function WeaknessLookup() {
               </div>
             );
           })()}
+
+          {/* Assigned Counters (read-only) */}
+          {guildId && (
+            <div style={{marginTop:10,background:'rgba(88,101,242,0.06)',border:'1px solid rgba(88,101,242,0.22)',borderRadius:9,padding:'12px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                <span style={{fontSize:10,fontWeight:800,color:'#818cf8',textTransform:'uppercase',letterSpacing:'.08em'}}>⭐ Assigned Counters</span>
+                {ctrsLoading && <span style={{fontSize:10,color:'var(--text-faint)'}}>Loading…</span>}
+                <span style={{fontSize:10,color:'var(--text-faint)',marginLeft:'auto'}}>Saved to /bossinfo</span>
+              </div>
+              {ctrs.length === 0 && !ctrsLoading ? (
+                <div style={{fontSize:12,color:'var(--text-faint)',textAlign:'center',padding:'12px 0'}}>No counters assigned for this boss yet.</div>
+              ) : (
+                <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                  {ctrs.map((c,i) => (
+                    <div key={i} style={{display:'flex',alignItems:'flex-start',gap:10,padding:'8px 10px',borderRadius:7,background:'rgba(0,0,0,.2)',border:`1px solid ${c.is_preferred?'rgba(251,191,36,.25)':'rgba(255,255,255,.05)'}`}}>
+                      {c.is_preferred && <span style={{fontSize:13,flexShrink:0}}>⭐</span>}
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:700,color:'var(--text)'}}>{c.pokemon}</div>
+                        {c.moves && <div style={{fontSize:11,color:'#818cf8',marginTop:2}}>{c.moves}</div>}
+                        {c.notes && <div style={{fontSize:11,color:'var(--text-muted)',marginTop:1}}>{c.notes}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Base stats quick glance */}
           <div style={{marginTop:10,background:'var(--elevated)',border:'1px solid var(--border)',borderRadius:9,padding:'12px 14px'}}>

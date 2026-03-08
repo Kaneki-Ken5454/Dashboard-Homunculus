@@ -135,7 +135,7 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
   const [loading,    setLoading]    = useState(true);
   const [clearing,   setClearing]   = useState(false);
   const [error,      setError]      = useState('');
-  const [tab,        setTab]        = useState<'visitors'|'toggles'|'sessions'|'logins'|'bans'|'cmdlogs'>('visitors');
+  const [tab,        setTab]        = useState<'toggles'|'sessions'|'logins'|'bans'|'cmdlogs'>('toggles');
   const [loginSessions, setLoginSessions] = useState<LoginSession[]>([]);
   const [dashBans,    setDashBans]     = useState<DashboardBan[]>([]);
   const [banReason,   setBanReason]    = useState<Record<string,string>>({});
@@ -297,7 +297,6 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
       {/* Sub-tabs */}
       <div style={{display:'flex',gap:0,borderBottom:'1px solid var(--border)',marginBottom:16,flexWrap:'wrap'}}>
         {([
-          ['visitors','📋 Visitor Log'],
           ['toggles', '🎛️ Feature Toggles'],
           ['sessions','👤 Client Sessions'],
           ['logins',  '🔐 Login Log'],
@@ -314,62 +313,6 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
       </div>
 
       {/* ── Visitor log tab ─────────────────────────────────────────────────── */}
-      {tab === 'visitors' && (
-        <div>
-          <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
-            <input className="inp" style={{flex:1,minWidth:200,maxWidth:340}} placeholder="Search by IP, country, browser, page…"
-              value={search} onChange={e=>setSearch(e.target.value)}/>
-            <span style={{fontSize:11,color:'var(--text-faint)'}}>{filtered.length} of {visitors.length} rows</span>
-            <button className="btn btn-danger btn-sm" onClick={handleClear} disabled={clearing||visitors.length===0}
-              style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:5}}>
-              <Trash2 size={12}/> {clearing?'Clearing…':'Clear All'}
-            </button>
-          </div>
-
-          {loading ? (
-            <div style={{textAlign:'center',padding:'32px 0',color:'var(--text-muted)',fontSize:13}}>Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div style={{textAlign:'center',padding:'48px 0',color:'var(--text-faint)'}}>
-              <Globe size={36} style={{marginBottom:12,opacity:.3}}/>
-              <div style={{fontSize:14,color:'var(--text-muted)',fontWeight:600,marginBottom:4}}>No visitor data yet</div>
-              <div style={{fontSize:12}}>Visits from the public client dashboard will appear here automatically</div>
-            </div>
-          ) : (
-            <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:10,overflow:'hidden'}}>
-              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-                <thead>
-                  <tr style={{borderBottom:'1px solid var(--border)',background:'rgba(0,0,0,.2)'}}>
-                    {['Time','IP','Country','Page','Browser','Referrer'].map(h=>(
-                      <th key={h} style={{padding:'9px 12px',textAlign:'left',fontWeight:700,color:'var(--text-muted)',fontSize:10,textTransform:'uppercase',letterSpacing:'.06em',whiteSpace:'nowrap'}}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.slice(0,150).map((v,i)=>(
-                    <tr key={v.id} className="data-row" style={{borderBottom:'1px solid rgba(255,255,255,.04)',background:i===0?'rgba(88,101,242,.04)':'transparent'}}>
-                      <td style={{padding:'8px 12px',color:'var(--text-muted)',whiteSpace:'nowrap',fontFamily:"'JetBrains Mono',monospace",fontSize:11}}>{fmtTime(v.visited_at)}</td>
-                      <td style={{padding:'8px 12px',fontFamily:"'JetBrains Mono',monospace",color:'var(--text)',fontSize:11}}>{v.ip||'—'}</td>
-                      <td style={{padding:'8px 12px',color:'var(--text)'}}>{v.country||'—'}</td>
-                      <td style={{padding:'8px 12px'}}>
-                        <span style={{background:'var(--primary-subtle)',color:'var(--primary)',borderRadius:5,padding:'2px 8px',fontSize:11,fontWeight:600}}>{pageLabel(v.page)}</span>
-                      </td>
-                      <td style={{padding:'8px 12px',color:'var(--text-muted)',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{uaShort(v.user_agent)}</td>
-                      <td style={{padding:'8px 12px',color:'var(--text-faint)',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{v.referrer||'direct'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {filtered.length > 150 && (
-                <div style={{padding:'8px 12px',fontSize:11,color:'var(--text-faint)',borderTop:'1px solid var(--border)',textAlign:'center'}}>
-                  Showing 150 of {filtered.length} results — refine your search to see more
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Feature toggles tab ─────────────────────────────────────────────── */}
       {tab === 'toggles' && (
         <div>
           <div style={{background:'rgba(88,101,242,.07)',border:'1px solid rgba(88,101,242,.2)',borderRadius:9,padding:'10px 14px',marginBottom:14,fontSize:12,color:'var(--text-muted)',lineHeight:1.6}}>
@@ -392,8 +335,8 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
       {tab === 'sessions' && (
         <div>
           <div style={{background:'rgba(88,101,242,.07)',border:'1px solid rgba(88,101,242,.2)',borderRadius:9,padding:'10px 14px',marginBottom:14,fontSize:12,color:'var(--text-muted)',lineHeight:1.6}}>
-            <strong style={{color:'var(--text)'}}>Users who logged in via Discord DM verification.</strong>
-            {' '}Sessions are valid for 7 days. You can revoke any session immediately.
+            <strong style={{color:'var(--text)'}}>Active user sessions</strong> — logged in via Discord OAuth.
+            {' '}Sessions last 14 days. Revoke any session immediately.
           </div>
 
           {loading ? (

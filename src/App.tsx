@@ -10,13 +10,10 @@ import { useShowdownData } from './lib/engine_pokemon';
 import Overview      from './pages/Overview';
 import SettingsPage  from './pages/Settings';
 import Triggers      from './pages/Triggers';
-import Tickets       from './pages/Tickets';
-import Moderation    from './pages/Moderation';
-import Roles         from './pages/Roles';
-import Votes         from './pages/Votes';
+import ModerationPage from './pages/ModerationBlacklist';
+import CommunityPage  from './pages/RolesTicketsVotes';
 import InfoTopics    from './pages/InfoTopics';
 import ActivityPage  from './pages/Activity';
-import BlacklistPage from './pages/Blacklist';
 import HelpPage      from './pages/Help';
 import MembersPage   from './pages/Members';
 import BossInfoPage  from './pages/BossInfo';
@@ -35,7 +32,7 @@ interface AppearanceConfig {
   favicon_url:   string | null;
   site_name:     string | null;
 }
-type AdminPage = 'overview'|'members'|'settings'|'triggers'|'tickets'|'moderation'|'roles'|'votes'|'info'|'activity'|'blacklist'|'help'|'bossinfo'|'clienttools';
+type AdminPage = 'overview'|'members'|'settings'|'triggers'|'community'|'moderation'|'info'|'help'|'bossinfo'|'clienttools';
 type ToolPage  = 'damage'|'weakness'|'counter'|'activity';
 type Page      = AdminPage | ToolPage;
 
@@ -44,16 +41,12 @@ const ADMIN_NAV: { id: AdminPage; label: string; icon: LucideIcon }[] = [
   { id:'members',     label:'Members',      icon:Users           },
   { id:'settings',    label:'Settings',     icon:Settings        },
   { id:'triggers',    label:'Triggers',     icon:Zap             },
-  { id:'tickets',     label:'Tickets',      icon:Ticket          },
   { id:'moderation',  label:'Moderation',   icon:Shield          },
-  { id:'roles',       label:'Roles',        icon:Tag             },
-  { id:'votes',       label:'Votes',        icon:BarChart2       },
+  { id:'community',   label:'Community',    icon:Tag             },
   { id:'info',        label:'Info Topics',  icon:BookOpen        },
-  { id:'activity',    label:'Activity',     icon:Activity        },
-  { id:'blacklist',   label:'Blacklist',    icon:ShieldBan       },
-  { id:'help',        label:'Help',         icon:HelpCircle      },
   { id:'bossinfo',    label:'BossInfo',     icon:Swords          },
   { id:'clienttools', label:'Client Tools', icon:Monitor         },
+  { id:'help',        label:'Help',         icon:HelpCircle      },
 ];
 const TOOL_NAV: { id: ToolPage; label: string; icon: LucideIcon; desc: string }[] = [
   { id:'damage',   label:'Damage Calc',     icon:Zap,         desc:'Gen 9 damage formula' },
@@ -259,7 +252,7 @@ function BattleToolsDashboard({user,onLogout,guildId,appearance}:{user:DiscordUs
         </header>
         <main style={{flex:1,overflowY:'auto',padding:24}}>
           {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
-          {page==='weakness'&&<WeaknessLookupTool/>}
+          {page==='weakness'&&<WeaknessLookupTool guildId={guildId}/>}
           {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}}/>}
           {page==='activity'&&<ActivityPage guildId={guildId}/>}
         </main>
@@ -396,18 +389,14 @@ function AdminDashboard({user,onLogout,appearance}:{user:DiscordUser;onLogout:()
           {page==='members'    &&<MembersPage  guildId={guildId}/>}
           {page==='settings'   &&<SettingsPage guildId={guildId}/>}
           {page==='triggers'   &&<Triggers     guildId={guildId}/>}
-          {page==='tickets'    &&<Tickets      guildId={guildId}/>}
-          {page==='moderation' &&<Moderation   guildId={guildId}/>}
-          {page==='roles'      &&<Roles        guildId={guildId}/>}
-          {page==='votes'      &&<Votes        guildId={guildId}/>}
+          {page==='moderation' &&<ModerationPage guildId={guildId}/>}
+          {page==='community'  &&<CommunityPage  guildId={guildId}/>}
           {page==='info'       &&<InfoTopics   guildId={guildId}/>}
-          {page==='activity'   &&<ActivityPage guildId={guildId}/>}
-          {page==='blacklist'  &&<BlacklistPage guildId={guildId}/>}
           {page==='help'       &&<HelpPage     guildId={guildId}/>}
           {page==='bossinfo'   &&<BossInfoPage  guildId={guildId}/>}
           {page==='clienttools'&&<ClientToolsPage guildId={guildId}/>}
           {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
-          {page==='weakness'&&<WeaknessLookupTool/>}
+          {page==='weakness'&&<WeaknessLookupTool guildId={guildId}/>}
           {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}}/>}
         </main>
       </div>

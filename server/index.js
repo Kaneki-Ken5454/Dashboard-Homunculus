@@ -1013,9 +1013,9 @@ app.post('/api/query', async (req, res) => {
           updated_at    TIMESTAMPTZ DEFAULT NOW(),
           UNIQUE(guild_id)
         )`).catch(() => {});
+        // Always read the global record
         const rows = await sql(
-          `SELECT wallpaper_url, favicon_url, site_name FROM dashboard_appearance WHERE guild_id = $1`,
-          [params.guildId || 'global']
+          `SELECT wallpaper_url, favicon_url, site_name FROM dashboard_appearance WHERE guild_id = 'global'`
         ).catch(() => []);
         return ok(res, rows[0] || { wallpaper_url: null, favicon_url: null, site_name: null });
       }
@@ -1026,16 +1026,29 @@ app.post('/api/query', async (req, res) => {
           wallpaper_url TEXT, favicon_url TEXT, site_name TEXT,
           updated_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(guild_id)
         )`).catch(() => {});
+        // Always save as 'global' so it applies to ALL users (both admin & client dashboards)
         await sql(
           `INSERT INTO dashboard_appearance (guild_id, wallpaper_url, favicon_url, site_name, updated_at)
-           VALUES ($1, $2, $3, $4, NOW())
+           VALUES ('global', $1, $2, $3, NOW())
            ON CONFLICT (guild_id) DO UPDATE
-           SET wallpaper_url=$2, favicon_url=$3, site_name=$4, updated_at=NOW()`,
-          [params.guildId || 'global',
-           params.wallpaper_url || null,
+           SET wallpaper_url=$1, favicon_url=$2, site_name=$3, updated_at=NOW()`,
+          [params.wallpaper_url || null,
            params.favicon_url   || null,
            params.site_name     || null]
         );
+        // Also upsert with the specific guild_id if provided (for future per-guild support)
+        if (params.guildId && params.guildId !== 'global') {
+          await sql(
+            `INSERT INTO dashboard_appearance (guild_id, wallpaper_url, favicon_url, site_name, updated_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (guild_id) DO UPDATE
+             SET wallpaper_url=$2, favicon_url=$3, site_name=$4, updated_at=NOW()`,
+            [params.guildId,
+             params.wallpaper_url || null,
+             params.favicon_url   || null,
+             params.site_name     || null]
+          ).catch(() => {});
+        }
         return ok(res, { success: true });
       }
 
