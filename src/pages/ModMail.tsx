@@ -141,10 +141,20 @@ export default function ModMail({ guildId }: Props): JSX.Element {
     if(activeThread?.id===id) setActiveThread(t=>t?{...t,priority:priority as any}:null);
   };
 
+  const [saveMsg, setSaveMsg] = useState<{ok:boolean;text:string}|null>(null);
+
   const saveConfig = async () => {
     setSaving(true);
-    await apiCall('setModmailConfig',{guildId,...config});
-    setSaving(false);
+    setSaveMsg(null);
+    try {
+      await apiCall('setModmailConfig', {guildId, ...config});
+      setSaveMsg({ok:true, text:'Config saved!'});
+    } catch (e: any) {
+      setSaveMsg({ok:false, text: e?.message ?? 'Save failed'});
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSaveMsg(null), 4000);
+    }
   };
 
   const createThread = async () => {
@@ -202,7 +212,12 @@ export default function ModMail({ guildId }: Props): JSX.Element {
             <label style={LBL}>Greeting Message</label>
             <textarea style={{...INP,minHeight:80,resize:'vertical'}} placeholder="Message sent to users when they open a modmail thread…" value={config.greeting} onChange={e=>setConfig(c=>({...c,greeting:e.target.value}))}/>
           </div>
-          <div style={{display:'flex',justifyContent:'flex-end'}}>
+          <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:12}}>
+            {saveMsg && (
+              <span style={{fontSize:12,fontWeight:600,color:saveMsg.ok?'#4ade80':'#f87171'}}>
+                {saveMsg.ok?'✓ ':' '}{saveMsg.text}
+              </span>
+            )}
             <button onClick={saveConfig} disabled={saving} style={{padding:'8px 24px',background:'var(--primary)',border:'none',borderRadius:8,color:'#fff',cursor:'pointer',fontSize:13,fontWeight:700,fontFamily:'Lexend',opacity:saving?.6:1}}>
               {saving?'Saving…':'Save Config'}
             </button>
