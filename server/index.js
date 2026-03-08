@@ -218,6 +218,11 @@ async function ensureTables() {
     // Plain ALTER with USING works if column is BIGINT; if already TEXT Postgres errors
     // and the catch below silently ignores it — so this is safe either way.
     `ALTER TABLE blacklist_data ALTER COLUMN guild_id TYPE TEXT USING guild_id::text`,
+    `ALTER TABLE modmail_config ALTER COLUMN guild_id TYPE TEXT USING guild_id::text`,
+    `ALTER TABLE modmail_threads ALTER COLUMN guild_id TYPE TEXT USING guild_id::text`,
+    `ALTER TABLE modmail_messages ALTER COLUMN guild_id TYPE TEXT USING guild_id::text`,
+    `ALTER TABLE modmail_threads ALTER COLUMN user_id TYPE TEXT USING user_id::text`,
+    `ALTER TABLE modmail_messages ALTER COLUMN author_id TYPE TEXT USING author_id::text`,
     `CREATE TABLE IF NOT EXISTS client_visitors (
       id          BIGSERIAL PRIMARY KEY,
       guild_id    TEXT NOT NULL DEFAULT 'global',
