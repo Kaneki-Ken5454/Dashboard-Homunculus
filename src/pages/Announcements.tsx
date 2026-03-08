@@ -131,9 +131,10 @@ export default function AnnouncementsPage({ guildId }: Props): JSX.Element {
       {/* Modal */}
       {showForm&&(
         <>
-          <div onClick={()=>setShowForm(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:40}}/>
-          <div style={{position:'fixed',inset:0,zIndex:50,overflowY:'auto',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'20px 10px'}}>
-          <div style={{width:preview?860:560,maxWidth:'97vw',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:14,padding:24,display:'flex',gap:24,marginTop:'auto',marginBottom:'auto'}} onClick={e=>e.stopPropagation()}>
+          <div onClick={()=>setShowForm(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.65)',zIndex:9998}}/>
+          <div style={{position:'fixed',inset:0,zIndex:9999,overflowY:'auto'}}>
+            <div style={{display:'flex',minHeight:'100%',alignItems:'center',justifyContent:'center',padding:'24px 12px'}}>
+            <div style={{width:preview?860:560,maxWidth:'97vw',background:'var(--bg)',border:'1px solid var(--border)',borderRadius:14,padding:24,display:'flex',gap:24}} onClick={e=>e.stopPropagation()}>
             {/* Form */}
             <div style={{flex:1,display:'flex',flexDirection:'column',gap:12,minWidth:280}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -204,6 +205,7 @@ export default function AnnouncementsPage({ guildId }: Props): JSX.Element {
               </div>
             )}
           </div>
+            </div>
           </div>
         </>
       )}

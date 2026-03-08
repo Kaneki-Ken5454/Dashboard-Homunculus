@@ -67,6 +67,26 @@ export default function ModMail({ guildId }: Props): JSX.Element {
   const [ntSubject, setNtSubject] = useState('');
   const [ntPriority, setNtPriority] = useState<'normal'|'high'|'urgent'>('normal');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval>|null>(null);
+
+  // Auto-poll active thread for new messages every 8s (picks up user DM replies)
+  useEffect(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (!activeThread) return;
+    pollRef.current = setInterval(async () => {
+      try {
+        const msgs = await apiCall<Message[]>('getModmailMessages',{threadId:activeThread.id});
+        setMessages(prev => {
+          if (JSON.stringify(prev) !== JSON.stringify(msgs)) {
+            setTimeout(()=>messagesEndRef.current?.scrollIntoView({behavior:'smooth'}),80);
+            return msgs as Message[];
+          }
+          return prev;
+        });
+      } catch {}
+    }, 8000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [activeThread?.id]);
 
   useEffect(() => {
     if (!guildId) return;
@@ -94,9 +114,18 @@ export default function ModMail({ guildId }: Props): JSX.Element {
   const sendReply = async () => {
     if (!reply.trim()||!activeThread) return;
     setSending(true);
-    await apiCall('replyModmailThread',{threadId:activeThread.id,guildId,authorId:'admin',authorName:'Staff',content:reply});
-    const msgs = await apiCall<Message[]>('getModmailMessages',{threadId:activeThread.id});
-    setMessages(msgs as Message[]); setReply(''); setSending(false);
+    try {
+      await apiCall('replyModmailThread',{
+        threadId:activeThread.id, guildId,
+        authorId:'admin', authorName:'Staff',
+        authorIsStaff:true,
+        content:reply,
+      });
+      const msgs = await apiCall<Message[]>('getModmailMessages',{threadId:activeThread.id});
+      setMessages(msgs as Message[]); setReply('');
+    } finally {
+      setSending(false);
+    }
     setTimeout(()=>messagesEndRef.current?.scrollIntoView({behavior:'smooth'}),100);
   };
 
