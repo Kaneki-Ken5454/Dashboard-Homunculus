@@ -1731,6 +1731,10 @@ app.post('/api/query', async (req, res) => {
         await sql(`UPDATE modmail_messages SET delivered=true WHERE id=$1`,[params.messageId]);
         return ok(res, { success:true });
       }
+      case 'updateModmailThreadChannel': {
+        await sql(`UPDATE modmail_threads SET thread_channel_id=$2 WHERE id=$1`,[params.threadId, params.threadChannelId]);
+        return ok(res, { success:true });
+      }
       case 'createModmailThread': {
         await sql(`CREATE TABLE IF NOT EXISTS modmail_threads (
           id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
