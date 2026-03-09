@@ -301,6 +301,15 @@ async function ensureTables() {
     `CREATE INDEX IF NOT EXISTS idx_modmail_threads_guild ON modmail_threads(guild_id, status)`,
     `CREATE INDEX IF NOT EXISTS idx_modmail_messages_thread ON modmail_messages(thread_id, sent_at)`,
     `CREATE INDEX IF NOT EXISTS idx_modmail_undelivered ON modmail_messages(author_is_staff, delivered) WHERE author_is_staff = true AND delivered = false`,
+    // Compatibility columns added so bot-inserted rows are visible in dashboard queries
+    `ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ DEFAULT NOW()`,
+    `ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`,
+    `ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS user_id TEXT`,
+    `ALTER TABLE modmail_messages ADD COLUMN IF NOT EXISTS attachments JSONB DEFAULT '[]'`,
+    `ALTER TABLE modmail_threads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`,
+    `ALTER TABLE modmail_threads ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`,
+    `ALTER TABLE modmail_threads ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT 'normal'`,
+    `ALTER TABLE modmail_threads ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ DEFAULT NOW()`,
     // Scheduled events
     `CREATE TABLE IF NOT EXISTS scheduled_events (
       id SERIAL PRIMARY KEY, guild_id TEXT NOT NULL, title TEXT NOT NULL,
@@ -1694,17 +1703,64 @@ app.post('/api/query', async (req, res) => {
         await ensureTablesOnce().catch(()=>{});
         const where = params.status && params.status !== 'all' ? `AND status=$2` : '';
         const args = params.status && params.status !== 'all' ? [params.guildId, params.status] : [params.guildId];
-        const rows = await sql(`SELECT * FROM modmail_threads WHERE guild_id=$1 ${where} ORDER BY last_message_at DESC LIMIT 100`, args).catch(()=>[]);
+        // Return all columns including thread_channel_id (Discord thread link).
+        // ORDER BY uses COALESCE to handle both last_message_at (server) and updated_at (bot).
+        const rows = await sql(
+          `SELECT id, guild_id, user_id, username, subject, status, priority,
+                  thread_channel_id,
+                  COALESCE(opened_at, created_at, NOW()) AS opened_at,
+                  COALESCE(closed_at) AS closed_at,
+                  COALESCE(last_message_at, updated_at, NOW()) AS last_message_at
+           FROM modmail_threads
+           WHERE guild_id=$1 ${where}
+           ORDER BY COALESCE(last_message_at, updated_at, NOW()) DESC
+           LIMIT 100`,
+          args
+        ).catch(()=>[]);
         return ok(res, rows);
       }
       case 'getModmailMessages': {
         await ensureTablesOnce().catch(()=>{});
-        const rows = await sql(`SELECT * FROM modmail_messages WHERE thread_id=$1 ORDER BY sent_at ASC`,[params.threadId]).catch(()=>[]);
+        // Support both `sent_at` (server-created rows) and `created_at` (bot-created rows).
+        // COALESCE ensures ordering works regardless of which column has data.
+        const rows = await sql(
+          `SELECT id, thread_id, guild_id, author_id, author_name, author_is_staff,
+                  content, delivered,
+                  COALESCE(sent_at, created_at, NOW()) AS sent_at,
+                  COALESCE(attachments, '[]'::jsonb) AS attachments
+           FROM modmail_messages
+           WHERE thread_id=$1
+           ORDER BY COALESCE(sent_at, created_at, NOW()) ASC`,
+          [params.threadId]
+        ).catch(()=>[]);
         return ok(res, rows);
       }
       case 'closeModmailThread': {
-        await sql(`UPDATE modmail_threads SET status='closed', closed_at=NOW(), closed_by=$2 WHERE id=$1`,[params.threadId, params.closedBy||'admin']).catch(()=>{});
+        // Ensure close-related columns exist
+        await sql(`ALTER TABLE modmail_threads ADD COLUMN IF NOT EXISTS close_reason TEXT DEFAULT ''`).catch(()=>{});
+        await sql(`ALTER TABLE modmail_threads ADD COLUMN IF NOT EXISTS close_notified BOOLEAN DEFAULT TRUE`).catch(()=>{});
+        await sql(
+          `UPDATE modmail_threads SET status='closed', closed_at=NOW(), closed_by=$2, close_reason=$3, close_notified=FALSE WHERE id=$1`,
+          [params.threadId, params.closedBy||'admin', params.reason||'']
+        ).catch(()=>{});
         return ok(res, { success:true });
+      }
+      case 'getModmailLog': {
+        await ensureTablesOnce().catch(()=>{});
+        await sql(`ALTER TABLE modmail_threads ADD COLUMN IF NOT EXISTS close_reason TEXT DEFAULT ''`).catch(()=>{});
+        const rows = await sql(
+          `SELECT mt.id, mt.guild_id, mt.user_id, mt.username, mt.subject, mt.status, mt.priority,
+                  mt.closed_by, mt.close_reason,
+                  COALESCE(mt.opened_at, mt.created_at, NOW()) AS opened_at,
+                  mt.closed_at,
+                  (SELECT COUNT(*) FROM modmail_messages mm WHERE mm.thread_id = mt.id) AS message_count
+           FROM modmail_threads mt
+           WHERE mt.guild_id=$1 AND mt.status='closed'
+           ORDER BY mt.closed_at DESC NULLS LAST
+           LIMIT 100`,
+          [params.guildId]
+        ).catch(()=>[]);
+        return ok(res, rows);
       }
       case 'replyModmailThread': {
         // authorIsStaff: true = staff reply (from dashboard), false = user message (from bot DM handler)
@@ -1712,7 +1768,10 @@ app.post('/api/query', async (req, res) => {
         await sql(`INSERT INTO modmail_messages(thread_id,guild_id,author_id,author_name,author_is_staff,content,sent_at,delivered)
           VALUES($1,$2,$3,$4,$5,$6,NOW(),$7)`,
           [params.threadId,params.guildId,params.authorId,params.authorName,isStaff,params.content,!isStaff]);
-        await sql(`UPDATE modmail_threads SET last_message_at=NOW() WHERE id=$1`,[params.threadId]);
+        // Keep last_message_at fresh so the thread list sorts correctly (handle both column names)
+        await sql(`UPDATE modmail_threads SET last_message_at=NOW(), updated_at=NOW() WHERE id=$1`,[params.threadId]).catch(()=>
+          sql(`UPDATE modmail_threads SET updated_at=NOW() WHERE id=$1`,[params.threadId]).catch(()=>{})
+        );
         return ok(res, { success:true });
       }
       case 'getUndeliveredModmailReplies': {

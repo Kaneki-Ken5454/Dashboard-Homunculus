@@ -194,6 +194,32 @@ export function getLevelUpMoves(pokeName: string): Array<{level:number;name:stri
   return Object.values(result).sort((a,b) => b.bp - a.bp || a.level - b.level).slice(0,12);
 }
 
+// ── Dex iterators (used by auto-finder) ──────────────────────────────────────
+export function getAllPokemonNames(): string[] {
+  if (!_dex) return [];
+  return Object.values(_dex as Record<string,any>)
+    .map((e: any) => e.name || '')
+    .filter(Boolean);
+}
+
+/** All damaging moves a Pokémon can learn (any generation, any method). */
+export function getAllLearnableMoveNames(pokeName: string): MoveData[] {
+  if (!_lrn || !_mvs) return [];
+  const k = _key(pokeName);
+  const entry = (_lrn as any)[k] || (_lrn as any)[k + 'base'] || {};
+  const learnset = (entry.learnset || {}) as Record<string, string[]>;
+  const moves: MoveData[] = [];
+  const seen = new Set<string>();
+  for (const moveKey of Object.keys(learnset)) {
+    if (seen.has(moveKey)) continue;
+    seen.add(moveKey);
+    const mv = (_mvs as any)[moveKey] as any;
+    if (!mv || !mv.basePower || mv.category === 'Status') continue;
+    moves.push({ name: mv.name || moveKey, bp: mv.basePower, cat: mv.category || 'Physical', type: mv.type || 'Normal' });
+  }
+  return moves;
+}
+
 // ── Natures / Stat calc ───────────────────────────────────────────────────────
 export const NATURES: Record<string,Partial<PokeStat>> = {
   Hardy:{},Docile:{},Serious:{},Bashful:{},Quirky:{},

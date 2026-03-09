@@ -5,6 +5,8 @@ import {
   searchPokemon,
   searchMoves,
   getLevelUpMoves,
+  getAllPokemonNames,
+  getAllLearnableMoveNames,
   runCalc,
   calcStat,
   getNat,
@@ -39,6 +41,9 @@ interface BossConfig {
   level: number; nature: string;
   evs: PokeStat; ivs: PokeStat; teraType: string;
   raidTier: string; weather: string; doubles: boolean; defScreen: boolean;
+  numRaiders: number;
+  hpIncreasePerRaider: number;
+  hpScalingMode: 'additive' | 'multiplicative';
 }
 
 let _slotId = 1;
@@ -51,6 +56,7 @@ const mkBoss = (): BossConfig => ({
   name:'', data:null, level:100, nature:'Hardy',
   evs:{...DEFAULT_EVS}, ivs:{...DEFAULT_IVS}, teraType:'',
   raidTier:'Normal (×1 HP)', weather:'None', doubles:false, defScreen:false,
+  numRaiders:1, hpIncreasePerRaider:0, hpScalingMode:'additive',
 });
 
 // ── Monte-Carlo engine ────────────────────────────────────────────────────────
@@ -141,6 +147,356 @@ function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:nu
       return{name:slot.name||'—',avgHd:a.hd/u,avgHs:a.hs/u,ohko:a.ot?a.ok/a.ot:0,avgDd:a.dd/u,avgDt:a.dt/u};
     }),
   };
+}
+
+// ── Auto-Finder Engine ───────────────────────────────────────────────────────
+
+interface CandidateMetrics {
+  name: string; data: PokeData; bestMove: MoveData;
+  eff: number;
+  avgDmgPct: number;
+  avgTotalPct: number;
+  ohkoRisk: number;
+  turnsSurvived: number;
+  estRaiders: number;
+}
+
+function analyticalRaiders(
+  d: number, inc: number, mode: 'additive'|'multiplicative', k = 6
+): number {
+  if (d <= 0) return 999;
+  if (inc === 0) return Math.ceil(1 / (k * d));
+  if (mode === 'additive') {
+    const denom = k * d - inc;
+    if (denom <= 0) return 999;
+    return Math.ceil((1 - inc) / denom);
+  }
+  for (let r = 1; r <= 100; r++) {
+    if (r * k * d >= Math.pow(1 + inc, r - 1)) return r;
+  }
+  return 999;
+}
+
+function computeCandidate(
+  name: string,
+  boss: BossConfig,
+  bossBaseHP: number,
+  inc: number,
+  mode: 'additive'|'multiplicative'
+): CandidateMetrics | null {
+  const data = lookupPoke(name);
+  if (!data || !boss.data) return null;
+  const bst = data.stats.hp+data.stats.atk+data.stats.def+data.stats.spa+data.stats.spd+data.stats.spe;
+  if (bst < 330) return null;
+
+  const raidMult = RAID_TIERS[boss.raidTier] ?? 1;
+  const bossTypes = boss.teraType ? [boss.teraType] : boss.data.types;
+  const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp: Math.round(boss.data.stats.hp*raidMult)}};
+
+  const moves = getAllLearnableMoveNames(name);
+  if (!moves.length) return null;
+  let bestMove: MoveData | null = null;
+  let bestScore = -1;
+  for (const mv of moves) {
+    const eff = typeEff(mv.type, bossTypes);
+    if (eff === 0) continue;
+    const stab = data.types.includes(mv.type) ? 1.5 : 1;
+    const score = eff * mv.bp * stab;
+    if (score > bestScore) { bestScore = score; bestMove = mv; }
+  }
+  if (!bestMove) return null;
+
+  const eff = typeEff(bestMove.type, bossTypes);
+  const atkRes = runCalc({
+    atkPoke:data, defPoke:bossFake, bp:bestMove.bp, cat:bestMove.cat, mtyp:bestMove.type,
+    atkEvs:DEFAULT_EVS, defEvs:boss.evs, atkIvs:DEFAULT_IVS, defIvs:boss.ivs,
+    atkNat:'Hardy', defNat:boss.nature, atkTera:'', defTera:boss.teraType,
+    atkItem:'(none)', atkStatus:'Healthy', weather:boss.weather, doubles:boss.doubles,
+    atkScreen:false, defScreen:boss.defScreen, isCrit:false, zmove:false,
+    atkLv:100, defLv:boss.level||100,
+  });
+  if (!atkRes || atkRes.immune) return null;
+  const avgDmg = ((atkRes.minD??0) + (atkRes.maxD??0)) / 2;
+  const avgDmgPct = bossBaseHP > 0 ? avgDmg / bossBaseHP * 100 : 0;
+  if (avgDmgPct < 0.1) return null;
+
+  const bossMoves = getLevelUpMoves(boss.name);
+  const atkHP = calcStat(data.stats.hp, 0, 31, true, 1, 100);
+  let ohkoRisk = 0, turnsSurvived = 99;
+  if (bossMoves.length) {
+    const strongestBossMove = bossMoves.reduce((a,b) => a.bp > b.bp ? a : b);
+    const defRes = runCalc({
+      atkPoke:bossFake, defPoke:data,
+      bp:strongestBossMove.bp, cat:strongestBossMove.cat, mtyp:strongestBossMove.type,
+      atkEvs:boss.evs, defEvs:DEFAULT_EVS, atkIvs:boss.ivs, defIvs:DEFAULT_IVS,
+      atkNat:boss.nature, defNat:'Hardy', atkTera:boss.teraType, defTera:'',
+      atkItem:'(none)', atkStatus:'Healthy', weather:boss.weather, doubles:boss.doubles,
+      atkScreen:false, defScreen:false, isCrit:false, zmove:false,
+      atkLv:boss.level||100, defLv:100,
+    });
+    if (defRes && !defRes.immune) {
+      const avgBossDmg = ((defRes.minD??0) + (defRes.maxD??0)) / 2;
+      if (avgBossDmg > 0) {
+        turnsSurvived = Math.max(1, Math.floor(atkHP / avgBossDmg));
+        ohkoRisk = Math.min(1, (defRes.maxD??0) / atkHP);
+      }
+    }
+  }
+
+  const atkSpe = calcStat(data.stats.spe, 0, 31, false, 1, 100);
+  const bossSpe = calcStat(boss.data.stats.spe, boss.evs.spe, boss.ivs.spe, false, getNat(boss.nature,'spe'), boss.level||100);
+  const extraHit = atkSpe >= bossSpe ? 1 : 0;
+  const totalHits = Math.min(turnsSurvived + extraHit, 30);
+  const avgTotalPct = avgDmgPct * totalHits;
+  const estRaiders = Math.max(1, analyticalRaiders(avgTotalPct / 100, inc, mode));
+
+  return { name, data, bestMove, eff, avgDmgPct, avgTotalPct, ohkoRisk, turnsSurvived, estRaiders };
+}
+
+async function runAutoFinder(
+  boss: BossConfig,
+  bossBaseHP: number,
+  inc: number,
+  mode: 'additive'|'multiplicative',
+  maxResults: number,
+  onProgress: (pct: number) => void
+): Promise<CandidateMetrics[]> {
+  const names = getAllPokemonNames();
+  const results: CandidateMetrics[] = [];
+  const CHUNK = 40;
+  for (let i = 0; i < names.length; i += CHUNK) {
+    await new Promise<void>(r => setTimeout(r, 0));
+    onProgress(Math.round(i / names.length * 100));
+    for (let j = i; j < Math.min(i + CHUNK, names.length); j++) {
+      const cand = computeCandidate(names[j], boss, bossBaseHP, inc, mode);
+      if (cand && cand.estRaiders < 500) results.push(cand);
+    }
+  }
+  results.sort((a,b) => a.estRaiders - b.estRaiders || b.avgTotalPct - a.avgTotalPct);
+  return results.slice(0, maxResults);
+}
+
+// ── Auto-Finder Panel ─────────────────────────────────────────────────────────
+function AutoFinderPanel({ boss, bossBaseHP, onLoadCounters, sdState }: {
+  boss: BossConfig;
+  bossBaseHP: number;
+  onLoadCounters: (slots: Partial<CounterSlot>[]) => void;
+  sdState: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [results, setResults] = useState<CandidateMetrics[]>([]);
+  const [maxResults, setMaxResults] = useState(40);
+  const [err, setErr] = useState('');
+  const [loadN, setLoadN] = useState(6);
+  const [mcRunning, setMcRunning] = useState(false);
+  const [mcResult, setMcResult] = useState<SimResult|null>(null);
+
+  if (!boss.data) return null;
+  const inc = boss.hpIncreasePerRaider / 100;
+
+  const runFind = async () => {
+    if (!boss.data) return;
+    setErr(''); setRunning(true); setResults([]); setProgress(0); setMcResult(null);
+    try {
+      const found = await runAutoFinder(boss, bossBaseHP, inc, boss.hpScalingMode, maxResults, setProgress);
+      if (!found.length) setErr('No viable counters found — ensure boss Pokémon is set and data is loaded.');
+      setResults(found);
+    } catch(e: any) { setErr(String(e)); }
+    finally { setRunning(false); setProgress(100); }
+  };
+
+  const doLoad = () => {
+    const top = results.slice(0, loadN);
+    onLoadCounters(top.map(r => ({ name:r.name, data:r.data, moveName:r.bestMove.name, moveData:r.bestMove })));
+  };
+
+  const runMCForTop = () => {
+    if (!results.length || !boss.data) return;
+    const slots: CounterSlot[] = results.slice(0, loadN).map(r => ({
+      ...mkSlot(), name:r.name, data:r.data, moveName:r.bestMove.name, moveData:r.bestMove,
+    }));
+    setMcRunning(true); setMcResult(null);
+    setTimeout(() => { setMcResult(runMC(boss, slots, bossBaseHP, 1000, 'uniform')); setMcRunning(false); }, 20);
+  };
+
+  const effColor = (e: number) => e >= 2 ? '#ef4444' : e >= 1 ? '#f59e0b' : '#6b7280';
+  const rColor   = (r: number) => r <= 2 ? 'var(--success)' : r <= 5 ? 'var(--warning)' : 'var(--danger)';
+
+  return (
+    <div style={{border:'1px solid rgba(139,92,246,.3)',borderRadius:12,overflow:'hidden'}}>
+      <button onClick={()=>setOpen(o=>!o)}
+        style={{width:'100%',padding:'11px 16px',background:'rgba(139,92,246,.07)',border:'none',
+          cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',fontFamily:"'Lexend',sans-serif"}}>
+        <span style={{fontSize:11,fontWeight:800,color:'#c4b5fd',textTransform:'uppercase',letterSpacing:'.09em',display:'flex',alignItems:'center',gap:8}}>
+          🔍 Auto-Find Best Counters
+          {results.length>0&&<span style={{fontSize:10,color:'var(--success)',fontWeight:600,textTransform:'none'}}>
+            {' · '}{results.length} found — best needs {results[0]?.estRaiders} raider{results[0]?.estRaiders!==1?'s':''}
+          </span>}
+        </span>
+        <span style={{color:'var(--text-faint)',fontSize:12}}>{open?'▲':'▼'}</span>
+      </button>
+
+      {open&&(
+        <div style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}}>
+            <div>
+              <label style={LBL}>Max Results</label>
+              <div style={{display:'flex',gap:4}}>
+                {[20,40,80].map(n=>(
+                  <button key={n} onClick={()=>setMaxResults(n)}
+                    style={{padding:'5px 10px',borderRadius:6,border:'1px solid var(--border)',
+                      background:maxResults===n?'rgba(139,92,246,.28)':'transparent',
+                      color:maxResults===n?'#c4b5fd':'var(--text-muted)',cursor:'pointer',fontSize:12,
+                      fontWeight:maxResults===n?700:400,fontFamily:"'Lexend',sans-serif"}}>{n}</button>
+                ))}
+              </div>
+            </div>
+            <button onClick={runFind} disabled={running||sdState!=='ready'}
+              style={{padding:'8px 20px',background:'linear-gradient(135deg,#7c3aed,#4f46e5)',border:'none',
+                borderRadius:8,color:'#fff',cursor:'pointer',fontSize:13,fontWeight:700,
+                fontFamily:"'Lexend',sans-serif",opacity:(running||sdState!=='ready')?.5:1}}>
+              {running ? ('Scanning… ' + progress + '%') : '🔍 Find Counters'}
+            </button>
+          </div>
+
+          {running&&(
+            <div style={{height:4,background:'var(--border)',borderRadius:2,overflow:'hidden'}}>
+              <div style={{height:'100%',width:progress+'%',background:'linear-gradient(90deg,#7c3aed,#4f46e5)',
+                transition:'width .1s',borderRadius:2}}/>
+            </div>
+          )}
+
+          {err&&<div style={{color:'var(--danger)',fontSize:12,padding:'6px 10px',background:'var(--danger-subtle)',borderRadius:6}}>{err}</div>}
+
+          {results.length>0&&(<>
+            <div style={{background:'rgba(0,0,0,.18)',borderRadius:9,overflow:'hidden'}}>
+              <div style={{overflowX:'auto'}}>
+                <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                  <thead>
+                    <tr style={{borderBottom:'1px solid var(--border)'}}>
+                      {(['#','Pokémon','Best Move','Eff','Hit%','Total%','OHKO Risk','Turns','Est. Raiders'] as const).map(h=>(
+                        <th key={h} style={{padding:'6px 8px',textAlign:'center',color:'var(--text-faint)',
+                          fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.map((r,i)=>(
+                      <tr key={r.name} style={{borderBottom:'1px solid rgba(255,255,255,.04)',
+                        background:i<loadN?'rgba(139,92,246,.05)':'transparent'}}>
+                        <td style={{padding:'5px 8px',textAlign:'center',color:'var(--text-faint)',fontSize:10}}>{i+1}</td>
+                        <td style={{padding:'5px 8px',fontWeight:700,color:'var(--text)',whiteSpace:'nowrap'}}>
+                          <div style={{display:'flex',alignItems:'center',gap:5}}>
+                            {i<loadN&&<span style={{fontSize:8,color:'#c4b5fd',fontWeight:900}}>✓</span>}
+                            {r.name}
+                          </div>
+                          <div style={{display:'flex',gap:3,marginTop:2}}>
+                            {r.data.types.map(t=><TypeBadge key={t} t={t}/>)}
+                          </div>
+                        </td>
+                        <td style={{padding:'5px 8px',whiteSpace:'nowrap'}}>
+                          <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <TypeBadge t={r.bestMove.type}/>
+                            <span style={{color:'var(--text-muted)'}}>{r.bestMove.name}</span>
+                            <span style={{color:'var(--text-faint)',fontSize:10}}>BP{r.bestMove.bp}</span>
+                          </div>
+                        </td>
+                        <td style={{padding:'5px 8px',textAlign:'center'}}>
+                          <span style={{fontWeight:800,color:effColor(r.eff),fontSize:12}}>{r.eff}×</span>
+                        </td>
+                        <td style={{padding:'5px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",
+                          color:r.avgDmgPct>=10?'var(--success)':r.avgDmgPct>=3?'var(--warning)':'var(--danger)'}}>
+                          {r.avgDmgPct.toFixed(1)}%
+                        </td>
+                        <td style={{padding:'5px 8px',textAlign:'center'}}>
+                          <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <div style={{flex:1,height:4,background:'rgba(255,255,255,.07)',borderRadius:2,overflow:'hidden',minWidth:36}}>
+                              <div style={{width:Math.min(100,r.avgTotalPct)+'%',height:'100%',borderRadius:2,
+                                background:r.avgTotalPct>=50?'var(--success)':r.avgTotalPct>=20?'var(--warning)':'var(--danger)'}}/>
+                            </div>
+                            <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:'var(--text-muted)',minWidth:36}}>
+                              {r.avgTotalPct.toFixed(0)}%
+                            </span>
+                          </div>
+                        </td>
+                        <td style={{padding:'5px 8px',textAlign:'center'}}>
+                          <span style={{padding:'2px 7px',borderRadius:4,fontSize:10,fontWeight:700,
+                            background:r.ohkoRisk>=.5?'var(--danger-subtle)':r.ohkoRisk>=.2?'var(--warning-subtle)':'var(--success-subtle)',
+                            color:r.ohkoRisk>=.5?'var(--danger)':r.ohkoRisk>=.2?'var(--warning)':'var(--success)'}}>
+                            {(r.ohkoRisk*100).toFixed(0)}%
+                          </span>
+                        </td>
+                        <td style={{padding:'5px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'#a5b4fc'}}>
+                          {r.turnsSurvived >= 99 ? '∞' : r.turnsSurvived}
+                        </td>
+                        <td style={{padding:'5px 8px',textAlign:'center'}}>
+                          <span style={{fontSize:14,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:rColor(r.estRaiders)}}>
+                            {r.estRaiders >= 99 ? '99+' : r.estRaiders}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',padding:'10px 12px',
+              background:'rgba(139,92,246,.06)',borderRadius:9,border:'1px solid rgba(139,92,246,.15)'}}>
+              <div>
+                <label style={LBL}>Load top N as counter slots</label>
+                <div style={{display:'flex',gap:4}}>
+                  {[3,6,10,18].map(n=>(
+                    <button key={n} onClick={()=>setLoadN(n)}
+                      style={{padding:'4px 10px',borderRadius:6,border:'1px solid var(--border)',
+                        background:loadN===n?'rgba(139,92,246,.3)':'transparent',
+                        color:loadN===n?'#c4b5fd':'var(--text-muted)',cursor:'pointer',
+                        fontSize:12,fontWeight:loadN===n?700:400,fontFamily:"'Lexend',sans-serif"}}>{n}</button>
+                  ))}
+                </div>
+              </div>
+              <button onClick={doLoad}
+                style={{padding:'8px 18px',background:'rgba(139,92,246,.9)',border:'none',borderRadius:8,
+                  color:'#fff',cursor:'pointer',fontSize:13,fontWeight:700,fontFamily:"'Lexend',sans-serif"}}>
+                📥 Load Top {loadN}
+              </button>
+              <button onClick={runMCForTop} disabled={mcRunning}
+                style={{padding:'8px 18px',background:'rgba(99,102,241,.18)',border:'1px solid rgba(99,102,241,.35)',
+                  borderRadius:8,color:'#a5b4fc',cursor:'pointer',fontSize:13,fontWeight:700,
+                  fontFamily:"'Lexend',sans-serif",opacity:mcRunning?.5:1}}>
+                {mcRunning ? 'Running MC…' : ('🎲 MC-Validate Top ' + loadN)}
+              </button>
+            </div>
+
+            {mcResult&&(
+              <div style={{padding:'12px 16px',borderRadius:10,
+                background:mcResult.pWin>=.8?'rgba(59,165,93,.1)':mcResult.pWin>=.5?'rgba(250,168,26,.1)':'rgba(237,66,69,.1)',
+                border:'1px solid '+(mcResult.pWin>=.8?'rgba(59,165,93,.35)':mcResult.pWin>=.5?'rgba(250,168,26,.35)':'rgba(237,66,69,.35)')}}>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:5,
+                  color:mcResult.pWin>=.8?'var(--success)':mcResult.pWin>=.5?'var(--warning)':'var(--danger)'}}>
+                  {mcResult.pWin>=.8?'✅ Strong team — recommended!'
+                    :'⚠️ '+(mcResult.pWin>=.5?'Borderline — try more raiders or a different set'
+                      :'High risk — increase raiders or pick stronger counters')}
+                </div>
+                <div style={{fontSize:12,color:'var(--text-muted)',lineHeight:1.7}}>
+                  Win rate: <strong style={{color:'var(--text)'}}>{(mcResult.pWin*100).toFixed(1)}%</strong> over 1,000 MC trials.{' '}
+                  Avg counters needed: <strong style={{color:'var(--text)'}}>{mcResult.mean.toFixed(1)}</strong>.{' '}
+                  Analytical estimate: <strong style={{color:'#c4b5fd'}}>{results[0]?.estRaiders} raider{results[0]?.estRaiders!==1?'s':''}</strong>.
+                </div>
+              </div>
+            )}
+
+            <div style={{fontSize:10,color:'var(--text-faint)'}}>
+              Evaluated at Lv 100, default EVs/IVs, Hardy nature. Searches full learnset (all generations).
+              Sorted by estimated min raiders ↑ then total damage ↓. ✓ rows = will be loaded.
+            </div>
+          </>)}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Counter Row ───────────────────────────────────────────────────────────────
@@ -393,20 +749,30 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
               </div>
 
               {/* Summary cards */}
-              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
-                {[
-                  {l:'Win Rate',     v:`${(result.pWin*100).toFixed(1)}%`,      c:result.pWin>=.8?'var(--success)':result.pWin>=.5?'var(--warning)':'var(--danger)', tip:'% of raids your team wins'},
-                  {l:'Avg Counters', v:result.mean.toFixed(2),                  c:'var(--text)',  tip:'Typical number of counters used'},
-                  {l:'Median',       v:result.median.toString(),                 c:'#a5b4fc',     tip:'Most common counters needed'},
-                  {l:'Worst 10%',    v:result.p90>counters.length?`>${counters.length}`:result.p90.toString(), c:'var(--warning)', tip:'Counters needed in unlucky runs'},
-                ].map(({l,v,c,tip})=>(
-                  <div key={l} title={tip} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:9,padding:'10px 12px',textAlign:'center',cursor:'help'}}>
-                    <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>{l}</div>
-                    <div style={{fontSize:20,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:c}}>{v}</div>
-                    <div style={{fontSize:9,color:'var(--text-faint)',marginTop:3}}>{tip}</div>
+              {(()=>{
+                // Wilson score 95% CI for win rate
+                const n=result.trials, p=result.pWin, z=1.96;
+                const centre=(p + z*z/(2*n))/(1+z*z/n);
+                const margin=z*Math.sqrt(p*(1-p)/n + z*z/(4*n*n))/(1+z*z/n);
+                const lo=Math.max(0,centre-margin), hi=Math.min(1,centre+margin);
+                return (
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
+                    {[
+                      {l:'Win Rate',     v:`${(result.pWin*100).toFixed(1)}%`, sub:`±${((hi-lo)/2*100).toFixed(1)}%`, c:result.pWin>=.8?'var(--success)':result.pWin>=.5?'var(--warning)':'var(--danger)', tip:`95% CI: ${(lo*100).toFixed(1)}%–${(hi*100).toFixed(1)}%`},
+                      {l:'Avg Counters', v:result.mean.toFixed(2),             sub:null,                               c:'var(--text)',  tip:'Typical number of counters used'},
+                      {l:'Median',       v:result.median.toString(),            sub:null,                               c:'#a5b4fc',     tip:'Most common counters needed'},
+                      {l:'Worst 10%',    v:result.p90>counters.length?`>${counters.length}`:result.p90.toString(), sub:null, c:'var(--warning)', tip:'Counters needed in unlucky runs'},
+                    ].map(({l,v,sub,c,tip})=>(
+                      <div key={l} title={tip} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:9,padding:'10px 12px',textAlign:'center',cursor:'help'}}>
+                        <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>{l}</div>
+                        <div style={{fontSize:20,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:c}}>{v}</div>
+                        {sub&&<div style={{fontSize:9,color:'var(--text-faint)',fontFamily:"'JetBrains Mono',monospace",marginTop:1}}>{sub} 95% CI</div>}
+                        <div style={{fontSize:9,color:'var(--text-faint)',marginTop:sub?1:3}}>{tip}</div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                );
+              })()}
 
               {/* Histogram */}
               <div style={{background:'rgba(0,0,0,.2)',borderRadius:9,padding:'12px 14px'}}>
@@ -477,8 +843,12 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
                     </tbody>
                   </table>
                 </div>
-                <div style={{fontSize:10,color:'var(--text-faint)',marginTop:6}}>
-                  Boss move policy: <strong style={{color:'var(--text-muted)'}}>{result.policy==='uniform'?'Uniform random (each move equally likely)':'BP-weighted (stronger moves preferred)'}</strong> · {result.trials.toLocaleString()} trials
+                <div style={{fontSize:10,color:'var(--text-faint)',marginTop:6,display:'flex',gap:12,flexWrap:'wrap'}}>
+                  <span>Boss move policy: <strong style={{color:'var(--text-muted)'}}>{result.policy==='uniform'?'Uniform random (each move equally likely)':'BP-weighted (stronger moves preferred)'}</strong></span>
+                  <span>Trials: <strong style={{color:'var(--text-muted)'}}>{result.trials.toLocaleString()}</strong></span>
+                  <span>Effective boss HP: <strong style={{color:'var(--text-muted)'}}>{bossHP.toLocaleString()}</strong>
+                    {boss.numRaiders>1&&<> <span style={{color:'var(--text-faint)'}}>({boss.numRaiders} raiders, {boss.hpScalingMode}, +{boss.hpIncreasePerRaider}%/raider)</span></>}
+                  </span>
                 </div>
               </div>
             </div>
@@ -514,12 +884,32 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
 
   const setBoss = (p:Partial<BossConfig>) => { setBossRaw(prev=>({...prev,...p})); setCalc(false); };
   const addSlot = () => setCounters(cs=>[...cs,mkSlot()]);
+  const loadAutoFinderSlots = (partials: Partial<CounterSlot>[]) => {
+    const newSlots = partials.map(p => ({ ...mkSlot(), ...p, result:null, error:'' }));
+    setCounters(newSlots); setCalc(false);
+  };
   const removeSlot = (id:number) => setCounters(cs=>cs.filter(c=>c.id!==id));
   const updateSlot = (id:number, p:Partial<CounterSlot>) => setCounters(cs=>cs.map(c=>c.id===id?{...c,...p}:c));
 
   const raidMult = RAID_TIERS[boss.raidTier]??1;
   const bossHpBase = () => boss.data ? calcStat(boss.data.stats.hp,boss.evs.hp,boss.ivs.hp,true,1,boss.level||100) : 0;
-  const effectiveHp = () => { const ov=parseInt(hpOverride); return (!isNaN(ov)&&ov>0)?ov:Math.round(bossHpBase()*raidMult); };
+  const effectiveHp = () => {
+    const ov = parseInt(hpOverride);
+    const base = (!isNaN(ov) && ov > 0)
+      ? ov
+      : Math.round(bossHpBase() * raidMult);
+    if (boss.numRaiders <= 1) return base;
+    const inc = boss.hpIncreasePerRaider / 100;
+    const mult = boss.hpScalingMode === 'additive'
+      ? 1 + inc * (boss.numRaiders - 1)
+      : Math.pow(1 + inc, boss.numRaiders - 1);
+    return Math.round(base * mult);
+  };
+  // Base HP before raider scaling — used by AutoFinder analytical formula
+  const bossBaseHP1R = () => {
+    const ov = parseInt(hpOverride);
+    return (!isNaN(ov) && ov > 0) ? ov : Math.round(bossHpBase() * raidMult);
+  };
 
   const calculateAll = () => {
     if (!boss.data) { setGlErr('Set a valid Boss Pokémon first.'); return; }
@@ -614,11 +1004,33 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
           </div>
         </div>
 
-        <div style={{display:'grid',gridTemplateColumns:'70px 1fr 1fr 1fr',gap:8,marginBottom:10}}>
+        <div style={{display:'grid',gridTemplateColumns:'70px 1fr 1fr 1fr',gap:8,marginBottom:8}}>
           <div><label style={LBL}>Level</label><input style={INP} type="number" min={1} max={100} value={boss.level} onChange={e=>setBoss({level:parseInt(e.target.value)||100})}/></div>
           <div><label style={LBL}>Nature</label><select style={SEL} value={boss.nature} onChange={e=>setBoss({nature:e.target.value})}>{Object.keys(NATURES).map(n=><option key={n}>{n}</option>)}</select></div>
           <div><label style={LBL}>Weather</label><select style={SEL} value={boss.weather} onChange={e=>setBoss({weather:e.target.value})}>{WEATHERS.map(w=><option key={w}>{w}</option>)}</select></div>
           <div><label style={LBL}>HP Override</label><input style={INP} type="number" value={hpOverride} onChange={e=>{setHpOvr(e.target.value);setCalc(false);}} placeholder="auto"/></div>
+        </div>
+
+        {/* Raider scaling row */}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:10,padding:'10px 12px',background:'rgba(255,255,255,.03)',borderRadius:8,border:'1px solid rgba(255,255,255,.07)'}}>
+          <div>
+            <label style={LBL}>👥 # Raiders</label>
+            <input style={INP} type="number" min={1} max={30} value={boss.numRaiders}
+              onChange={e=>setBoss({numRaiders:Math.max(1,parseInt(e.target.value)||1)})}/>
+          </div>
+          <div>
+            <label style={LBL}>HP Increase / Raider (%)</label>
+            <input style={INP} type="number" min={0} step={0.1} value={boss.hpIncreasePerRaider}
+              onChange={e=>setBoss({hpIncreasePerRaider:Math.max(0,parseFloat(e.target.value)||0)})}/>
+          </div>
+          <div>
+            <label style={LBL}>Scaling Mode</label>
+            <select style={SEL} value={boss.hpScalingMode}
+              onChange={e=>setBoss({hpScalingMode:e.target.value as 'additive'|'multiplicative'})}>
+              <option value="additive">Additive</option>
+              <option value="multiplicative">Multiplicative</option>
+            </select>
+          </div>
         </div>
 
         <div style={{marginBottom:10}}>
@@ -641,12 +1053,22 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
           {boss.data&&(
             <span style={{marginLeft:'auto',fontSize:11,color:'var(--text-muted)'}}>
               Base HP: <strong style={{color:'var(--text)'}}>{bossHpBase()}</strong>
-              {raidMult>1&&<> → Raid HP: <strong style={{color:'var(--danger)'}}>{Math.round(bossHpBase()*raidMult)}</strong> <span style={{color:'var(--text-faint)'}}>×{raidMult}</span></>}
+              {raidMult>1&&<> → Raid: <strong style={{color:'var(--danger)'}}>{Math.round(bossHpBase()*raidMult)}</strong> <span style={{color:'var(--text-faint)'}}>×{raidMult}</span></>}
               {hpOverride&&parseInt(hpOverride)>0&&<> → Override: <strong style={{color:'var(--warning)'}}>{hpOverride}</strong></>}
+              {boss.numRaiders>1&&boss.hpIncreasePerRaider>0&&<> → Scaled: <strong style={{color:'#f97316'}}>{effectiveHp().toLocaleString()}</strong> <span style={{color:'var(--text-faint)'}}>({boss.numRaiders}×)</span></>}
+              {boss.numRaiders>1&&boss.hpIncreasePerRaider===0&&<> <span style={{color:'var(--text-faint)'}}>({boss.numRaiders} raiders, no HP scale)</span></>}
             </span>
           )}
         </div>
       </div>
+
+      {/* Auto-Finder panel */}
+      {boss.data&&<AutoFinderPanel
+        boss={boss}
+        bossBaseHP={bossBaseHP1R()}
+        onLoadCounters={loadAutoFinderSlots}
+        sdState={sdState}
+      />}
 
       {/* Counter list header */}
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
@@ -669,6 +1091,18 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
             </div>
           )}
           <button className="btn btn-ghost btn-sm" onClick={addSlot}>+ Add Counter</button>
+          {boss.numRaiders>1&&counters.length>0&&(
+            <button className="btn btn-ghost btn-sm" title={`Copy all ${counters.length} counter(s) for each of the ${boss.numRaiders-1} additional raider(s)`}
+              onClick={()=>{
+                const extras: CounterSlot[] = [];
+                for (let i=1; i<boss.numRaiders; i++) {
+                  counters.forEach(c => extras.push({...c, id:_slotId++, result:null, error:''}));
+                }
+                setCounters(cs=>[...cs,...extras]);
+              }}>
+              ➕ Duplicate for {boss.numRaiders} raiders
+            </button>
+          )}
         </div>
       </div>
 
@@ -700,6 +1134,7 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
         <div style={{background:'rgba(255,255,255,.025)',border:'1px solid rgba(255,255,255,.09)',borderRadius:10,padding:14}}>
           <div style={{fontSize:10,fontWeight:800,color:'#5865f2',textTransform:'uppercase',letterSpacing:'.09em',marginBottom:10}}>
             📊 Rankings vs {boss.data?.name||'Boss'}{raidMult>1?` — Raid HP ×${raidMult}`:''}
+            {boss.numRaiders>1&&boss.hpIncreasePerRaider>0&&<span style={{fontWeight:400,color:'#f97316',textTransform:'none',fontSize:9}}> — {boss.numRaiders} raiders → {effectiveHp().toLocaleString()} HP</span>}
           </div>
           <div style={{display:'flex',flexDirection:'column',gap:4}}>
             {ranked.map(({c},i)=>{
