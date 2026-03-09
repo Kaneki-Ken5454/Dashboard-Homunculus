@@ -44,15 +44,22 @@ const TYPECHART: Record<string,Record<string,number>> = (() => {
     for (const dt of (nve[at]||[])) tc[dt][at] = 0.5;
     for (const dt of (imm[at]||[])) tc[dt][at] = 0;
   }
+  // Shadow: hits every defensive type for 4× (including itself and all types hitting Shadow for 2×)
+  const allDef = [...ALL, 'Shadow'];
+  tc['Shadow'] = Object.fromEntries(allDef.map(d => [d, 4]));
+  for (const at of ALL) {
+    if (!tc[at]) tc[at] = {};
+    tc[at]['Shadow'] = 2;
+  }
   return tc;
 })();
 
-export const ALL_TYPES = ['Normal','Fire','Water','Grass','Electric','Ice','Fighting','Poison','Ground','Flying','Psychic','Bug','Rock','Ghost','Dragon','Dark','Steel','Fairy'];
+export const ALL_TYPES = ['Normal','Fire','Water','Grass','Electric','Ice','Fighting','Poison','Ground','Flying','Psychic','Bug','Rock','Ghost','Dragon','Dark','Steel','Fairy','Shadow'];
 export const TC_COLORS: Record<string,string> = {
   Fire:'#FF4422',Water:'#3399FF',Grass:'#33CC44',Electric:'#FFCC00',Ice:'#66CCFF',
   Fighting:'#CC3300',Poison:'#993399',Ground:'#CCAA55',Flying:'#88AAFF',Psychic:'#FF5599',
   Bug:'#AABB22',Rock:'#BBAA66',Ghost:'#664477',Dragon:'#7744FF',Dark:'#554433',
-  Steel:'#AAAABB',Fairy:'#FFAACC',Normal:'#AAAA88',
+  Steel:'#AAAABB',Fairy:'#FFAACC',Normal:'#AAAA88',Shadow:'#5A0099',
 };
 
 export function typeEff(atkType: string, defTypes: string[]): number {

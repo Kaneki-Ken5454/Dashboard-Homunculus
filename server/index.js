@@ -215,6 +215,19 @@ async function ensureTables() {
       updated_at  TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(guild_id, pokemon_key)
     )`,
+    // Custom fan-made Pokémon registry — written by admins, readable by all raiders
+    `CREATE TABLE IF NOT EXISTS custom_pokemon_registry (
+      id          BIGSERIAL PRIMARY KEY,
+      guild_id    TEXT NOT NULL,
+      name        TEXT NOT NULL,
+      types       JSONB NOT NULL DEFAULT '[]',
+      stats       JSONB NOT NULL DEFAULT '{}',
+      moves       JSONB NOT NULL DEFAULT '[]',
+      created_by  TEXT DEFAULT '',
+      created_at  TIMESTAMPTZ DEFAULT NOW(),
+      updated_at  TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(guild_id, name)
+    )`,
     // Plain ALTER with USING works if column is BIGINT; if already TEXT Postgres errors
     // and the catch below silently ignores it — so this is safe either way.
     `ALTER TABLE blacklist_data ALTER COLUMN guild_id TYPE TEXT USING guild_id::text`,
@@ -2476,6 +2489,68 @@ app.delete('/api/bossinfo/db/calcs/:id', async (req,res) => {
   if (!guild_id||!id) return res.status(400).json({error:'guild_id and id required'});
   try { await sql`DELETE FROM bossinfo_saved_calcs WHERE id=${id} AND guild_id=${guild_id}`; res.json({ok:true}); }
   catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── Custom Pokémon Registry ────────────────────────────────────────────────────
+// GET — public, all users can read custom pokemon for a guild
+app.get('/api/custompokemon', async (req, res) => {
+  const { guild_id } = req.query;
+  if (!guild_id) return res.status(400).json({ error: 'guild_id required' });
+  try {
+    const rows = await sql`SELECT id, name, types, stats, moves, created_by, created_at
+      FROM custom_pokemon_registry WHERE guild_id=${guild_id} ORDER BY name ASC`;
+    const parsed = rows.map(r => ({
+      ...r,
+      types: Array.isArray(r.types) ? r.types : JSON.parse(r.types || '[]'),
+      stats: typeof r.stats === 'object' ? r.stats : JSON.parse(r.stats || '{}'),
+      moves: Array.isArray(r.moves) ? r.moves : JSON.parse(r.moves || '[]'),
+    }));
+    res.json({ entries: parsed });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST — admin only, create or update a custom pokemon
+app.post('/api/custompokemon', async (req, res) => {
+  const token = (req.headers['x-session-token'] || '').toString().trim();
+  const apiKey = (req.headers['x-admin-key'] || '').toString().trim();
+  const keyOk = ADMIN_API_KEY && apiKey === ADMIN_API_KEY;
+  const sessionOk = token ? await isAdminSessionToken(token) : false;
+  if (!keyOk && !sessionOk) return res.status(401).json({ error: 'Admin session required' });
+
+  const { guild_id, name, types, stats, moves, created_by } = req.body;
+  if (!guild_id || !name) return res.status(400).json({ error: 'guild_id and name required' });
+  try {
+    const row = await sql`
+      INSERT INTO custom_pokemon_registry (guild_id, name, types, stats, moves, created_by, updated_at)
+      VALUES (${guild_id}, ${name}, ${JSON.stringify(types||[])}::jsonb,
+              ${JSON.stringify(stats||{})}::jsonb, ${JSON.stringify(moves||[])}::jsonb,
+              ${created_by||''}, NOW())
+      ON CONFLICT (guild_id, name) DO UPDATE SET
+        types=${JSON.stringify(types||[])}::jsonb,
+        stats=${JSON.stringify(stats||{})}::jsonb,
+        moves=${JSON.stringify(moves||[])}::jsonb,
+        created_by=${created_by||''},
+        updated_at=NOW()
+      RETURNING id`;
+    res.json({ ok: true, id: row[0]?.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE — admin only
+app.delete('/api/custompokemon/:id', async (req, res) => {
+  const token = (req.headers['x-session-token'] || '').toString().trim();
+  const apiKey = (req.headers['x-admin-key'] || '').toString().trim();
+  const keyOk = ADMIN_API_KEY && apiKey === ADMIN_API_KEY;
+  const sessionOk = token ? await isAdminSessionToken(token) : false;
+  if (!keyOk && !sessionOk) return res.status(401).json({ error: 'Admin session required' });
+
+  const { guild_id } = req.query;
+  const id = parseInt(req.params.id);
+  if (!guild_id || !id) return res.status(400).json({ error: 'guild_id and id required' });
+  try {
+    await sql`DELETE FROM custom_pokemon_registry WHERE id=${id} AND guild_id=${guild_id}`;
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 

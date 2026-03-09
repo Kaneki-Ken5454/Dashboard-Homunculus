@@ -4,6 +4,7 @@ import {
   lookupPoke,
   lookupMove,
   searchMoves,
+  typeEff,
   getLevelUpMoves,
   runCalc,
   calcStat,
@@ -50,6 +51,16 @@ interface BossConfig {
   numRaiders: number;
   hpIncreasePerRaider: number;
   hpScalingMode: 'additive' | 'multiplicative';
+  // Shield
+  shieldActivatesAt: number;     // % HP at which shield activates (0 = off)
+  shieldDamageReduction: number; // fraction 0-1 (e.g. 0.5 = halve damage)
+  // Custom movepool override
+  customMoves: MoveData[];       // if non-empty, used instead of level-up moves
+}
+interface RaiderTeam {
+  id: number;
+  label: string;
+  slots: CounterSlot[];          // each raider's independent Pokémon list
 }
 
 let _slotId = 1;
@@ -63,6 +74,13 @@ const mkBoss = (): BossConfig => ({
   evs:{...DEFAULT_EVS}, ivs:{...DEFAULT_IVS}, teraType:'',
   raidTier:'Normal (×1 HP)', weather:'None', doubles:false, defScreen:false,
   numRaiders:1, hpIncreasePerRaider:0, hpScalingMode:'additive',
+  shieldActivatesAt:0, shieldDamageReduction:0.5, customMoves:[],
+});
+let _raiderId = 1;
+const mkRaider = (n: number): RaiderTeam => ({
+  id: _raiderId++,
+  label: 'Raider ' + n,
+  slots: [mkSlot(), mkSlot(), mkSlot(), mkSlot(), mkSlot(), mkSlot()],
 });
 
 // ── Monte-Carlo engine ────────────────────────────────────────────────────────
@@ -76,7 +94,7 @@ function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:nu
   if (!boss.data) return null;
   const raidMult = RAID_TIERS[boss.raidTier]??1;
   const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp:Math.round(boss.data.stats.hp*raidMult)}};
-  const bossMoves = getLevelUpMoves(boss.name);
+  const bossMoves = (boss.customMoves && boss.customMoves.length > 0) ? boss.customMoves : getLevelUpMoves(boss.name);
   if (!bossMoves.length) return null;
 
   const mkBase = (o:any) => runCalc(o);
@@ -180,7 +198,10 @@ self.onmessage = function(e) {
 
 function runMCInner(p) {
   const { atkToBoss, bossToAtk, atkHPs, atkSpes, bossSpe,
-          totalBP, cumBP, rawW, cumW, policy, trials, bossHP, counterNames } = p;
+          totalBP, cumBP, rawW, cumW, policy, trials, bossHP, counterNames,
+          shieldActivatesAt, shieldDamageReduction } = p;
+  const shieldHP = shieldActivatesAt > 0 ? bossHP * shieldActivatesAt / 100 : -1;
+  const shieldRed = (shieldDamageReduction > 0 && shieldDamageReduction < 1) ? (1 - shieldDamageReduction) : 1;
   const sr = (rolls) => rolls[Math.floor(Math.random()*16)];
   const acc = counterNames.map(() => ({hd:0,hs:0,dd:0,dt:0,ok:0,ot:0,used:0}));
   const needed = [];
@@ -194,8 +215,13 @@ function runMCInner(p) {
       used++; acc[si].used++;
       let ahp = atkHPs[si], hd=0, hs=0, dd=0, dt=0, first=true;
       while (bhp > 0 && ahp > 0) {
+        const shielded = shieldHP > 0 && bhp <= shieldHP;
         const af = atkSpes[si] >= bossSpe;
-        if (af) { const d=sr(ac.rolls); bhp-=d; hd++; dd+=d; if(bhp<=0){won=true;break;} }
+        if (af) {
+          let d = sr(ac.rolls);
+          if (shielded) d = Math.max(1, Math.floor(d * shieldRed));
+          bhp -= d; hd++; dd += d; if(bhp<=0){won=true;break;}
+        }
         let mi;
         if (policy==='uniform')   mi = Math.floor(Math.random()*bossToAtk.length);
         else if (policy==='cyclic') { mi = cyclicRef.v % bossToAtk.length; cyclicRef.v++; }
@@ -207,7 +233,11 @@ function runMCInner(p) {
           if(first){acc[si].ot++;if(d>=ahp)acc[si].ok++;first=false;}
           ahp-=d; hs++; dt+=d;
         }
-        if (!af && ahp>0) { const d=sr(ac.rolls); bhp-=d; hd++; dd+=d; if(bhp<=0){won=true;break;} }
+        if (!af && ahp>0) {
+          let d = sr(ac.rolls);
+          if (shielded) d = Math.max(1, Math.floor(d * shieldRed));
+          bhp -= d; hd++; dd += d; if(bhp<=0){won=true;break;}
+        }
       }
       acc[si].hd+=hd; acc[si].hs+=hs; acc[si].dd+=dd; acc[si].dt+=dt;
       if (won) break;
@@ -285,7 +315,9 @@ function precomputeMCData(boss: BossConfig, counters: CounterSlot[], bossHP: num
   const cumW    = rawW.map((_,i)=>rawW.slice(0,i+1).reduce((a,b)=>a+b,0)/totW);
 
   return { atkToBoss, bossToAtk, atkHPs, atkSpes, bossSpe, totalBP, cumBP, rawW, cumW,
-           counterNames: counters.map(s=>s.name||'—'), bossHP, policy };
+           counterNames: counters.map(s=>s.name||'—'), bossHP, policy,
+           shieldActivatesAt: boss.shieldActivatesAt || 0,
+           shieldDamageReduction: boss.shieldDamageReduction || 0 };
 }
 
 function runMCViaWorker(
@@ -475,9 +507,10 @@ const BLANK_ENTRY = (): CustomPokeEntry => ({
   moves: [{ name:'', type:'Normal', cat:'Physical', bp:80 }],
 });
 
-function CustomPokemonPanel() {
+function CustomPokemonPanel({ isAdmin = false, apiUrl = '', guildId = 'global' }: { isAdmin?: boolean; apiUrl?: string; guildId?: string }) {
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<CustomPokeEntry[]>(() => {
+    // Prime from localStorage as instant-load fallback
     const loaded = loadCustomFromStorage();
     syncCustomPokemon(loaded);
     return loaded;
@@ -485,13 +518,96 @@ function CustomPokemonPanel() {
   const [editing, setEditing] = useState<CustomPokeEntry|null>(null);
   const [editIdx, setEditIdx] = useState<number|null>(null);
   const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [serverErr, setServerErr] = useState('');
+
+  // Load custom pokemon from server on mount (all users read; admin may write)
+  useEffect(() => {
+    if (!apiUrl) return;
+    setLoading(true);
+    fetch(`${apiUrl}/api/custompokemon?guild_id=${encodeURIComponent(guildId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.entries) {
+          const mapped: CustomPokeEntry[] = data.entries.map((e: any) => ({
+            name: e.name,
+            types: (e.types || ['Normal']) as [string, string?],
+            stats: e.stats || { hp:80, atk:80, def:80, spa:80, spd:80, spe:80 },
+            moves: e.moves || [],
+            _serverId: e.id,
+          }));
+          saveCustomToStorage(mapped);
+          syncCustomPokemon(mapped);
+          setEntries(mapped);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [apiUrl, guildId]);
+
+  const sessionToken = () => {
+    try { return localStorage.getItem('hom_session') || ''; } catch { return ''; }
+  };
+
+  const persistToServer = async (updated: CustomPokeEntry[]) => {
+    setServerErr('');
+    if (!apiUrl || !isAdmin) {
+      // Fallback: local only
+      saveCustomToStorage(updated);
+      syncCustomPokemon(updated);
+      setEntries(updated);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      return;
+    }
+    // Save every entry to server (upsert by name)
+    try {
+      for (const e of updated) {
+        await fetch(`${apiUrl}/api/custompokemon`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-session-token': sessionToken() },
+          body: JSON.stringify({ guild_id: guildId, name: e.name, types: e.types.filter(Boolean), stats: e.stats, moves: e.moves }),
+        });
+      }
+      // Reload from server to get server IDs
+      const refreshed = await fetch(`${apiUrl}/api/custompokemon?guild_id=${encodeURIComponent(guildId)}`).then(r=>r.json());
+      if (refreshed?.entries) {
+        const mapped: CustomPokeEntry[] = refreshed.entries.map((e: any) => ({
+          name: e.name, types: e.types as [string,string?], stats: e.stats, moves: e.moves, _serverId: e.id,
+        }));
+        saveCustomToStorage(mapped);
+        syncCustomPokemon(mapped);
+        setEntries(mapped);
+      } else {
+        saveCustomToStorage(updated);
+        syncCustomPokemon(updated);
+        setEntries(updated);
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (err) {
+      setServerErr('Failed to save to server — check your session.');
+    }
+  };
+
+  const deleteFromServer = async (idx: number) => {
+    const entry = entries[idx];
+    const copy = entries.filter((_,i)=>i!==idx);
+    if (apiUrl && isAdmin && (entry as any)._serverId) {
+      try {
+        await fetch(`${apiUrl}/api/custompokemon/${(entry as any)._serverId}?guild_id=${encodeURIComponent(guildId)}`, {
+          method: 'DELETE',
+          headers: { 'x-session-token': sessionToken() },
+        });
+      } catch {}
+    }
+    saveCustomToStorage(copy);
+    syncCustomPokemon(copy);
+    setEntries(copy);
+  };
 
   const persist = (updated: CustomPokeEntry[]) => {
-    saveCustomToStorage(updated);
-    syncCustomPokemon(updated);
-    setEntries(updated);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+    persistToServer(updated);
   };
 
   const startEdit = (idx: number | null) => {
@@ -509,8 +625,7 @@ function CustomPokemonPanel() {
   };
 
   const deleteEntry = (idx: number) => {
-    const copy = entries.filter((_,i)=>i!==idx);
-    persist(copy);
+    deleteFromServer(idx);
   };
 
   const upd = (p: Partial<CustomPokeEntry>) => setEditing(prev => prev ? {...prev,...p} : prev);
@@ -539,8 +654,10 @@ function CustomPokemonPanel() {
       {open&&(
         <div style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
           <div style={{fontSize:11,color:'var(--text-muted)'}}>
-            Define custom or fan-made Pokémon. They will appear in all searches and the Auto-Finder.
+            {isAdmin ? 'Define custom or fan-made Pokémon (stored server-side). They become available to ALL raiders immediately.' : 'Custom Pokémon registered by admins are loaded here automatically.'}
           </div>
+          {loading&&<div style={{fontSize:11,color:'var(--text-faint)',display:'flex',alignItems:'center',gap:6}}>⏳ Loading from server…</div>}
+          {serverErr&&<div style={{fontSize:11,color:'var(--danger)',padding:'5px 10px',background:'var(--danger-subtle)',borderRadius:6}}>{serverErr}</div>}
 
           {/* Entry list */}
           {entries.length>0&&(
@@ -557,22 +674,25 @@ function CustomPokemonPanel() {
                       BST {Object.values(e.stats).reduce((a,b)=>a+b,0)} · {e.moves.length} move{e.moves.length!==1?'s':''}
                     </div>
                   </div>
-                  <button onClick={()=>startEdit(i)} style={{padding:'4px 10px',background:'rgba(251,191,36,.12)',border:'1px solid rgba(251,191,36,.3)',borderRadius:6,color:'#fbbf24',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>Edit</button>
-                  <button onClick={()=>deleteEntry(i)} style={{padding:'4px 10px',background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:6,color:'#ef4444',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>✕</button>
+                  {isAdmin&&<button onClick={()=>startEdit(i)} style={{padding:'4px 10px',background:'rgba(251,191,36,.12)',border:'1px solid rgba(251,191,36,.3)',borderRadius:6,color:'#fbbf24',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>Edit</button>}
+                  {isAdmin&&<button onClick={()=>deleteEntry(i)} style={{padding:'4px 10px',background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:6,color:'#ef4444',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>✕</button>}
                 </div>
               ))}
             </div>
           )}
 
-          <button onClick={()=>startEdit(null)}
-            style={{padding:'7px 16px',background:'rgba(251,191,36,.1)',border:'1px solid rgba(251,191,36,.3)',
-              borderRadius:8,color:'#fbbf24',cursor:'pointer',fontSize:12,fontWeight:700,
-              fontFamily:"'Lexend',sans-serif",width:'fit-content'}}>
-            + Add Custom Pokémon
-          </button>
+          {isAdmin&&(
+            <button onClick={()=>startEdit(null)}
+              style={{padding:'7px 16px',background:'rgba(251,191,36,.1)',border:'1px solid rgba(251,191,36,.3)',
+                borderRadius:8,color:'#fbbf24',cursor:'pointer',fontSize:12,fontWeight:700,
+                fontFamily:"'Lexend',sans-serif",width:'fit-content'}}>
+              + Add Custom Pokémon
+            </button>
+          )}
+          {!isAdmin&&<div style={{fontSize:11,color:'var(--text-faint)',fontStyle:'italic'}}>Ask a server admin to add custom Pokémon — they will appear in all searches once registered.</div>}
 
-          {/* Editor */}
-          {editing&&(
+          {/* Editor — admin only */}
+          {isAdmin&&editing&&(
             <div style={{background:'var(--elevated)',border:'1px solid rgba(251,191,36,.2)',borderRadius:10,padding:14,display:'flex',flexDirection:'column',gap:12}}>
               <div style={{fontSize:12,fontWeight:700,color:'#fbbf24',marginBottom:2}}>
                 {editIdx===null?'New Custom Pokémon':'Edit: '+entries[editIdx]?.name}
@@ -606,8 +726,8 @@ function CustomPokemonPanel() {
                   {(Object.keys(editing.stats) as (keyof PokeStat)[]).map(k=>(
                     <div key={k} style={{textAlign:'center'}}>
                       <div style={{fontSize:9,color:'var(--text-faint)',marginBottom:3,textTransform:'uppercase',fontWeight:700}}>{k}</div>
-                      <input type="number" style={{...INP,padding:'4px 2px',textAlign:'center'}} min={1} max={255}
-                        value={editing.stats[k]} onChange={e=>updStat(k,Math.max(1,Math.min(255,Number(e.target.value))))}/>
+                      <input type="number" style={{...INP,padding:'4px 2px',textAlign:'center'}} min={1} max={999}
+                        value={editing.stats[k]} onChange={e=>updStat(k,Math.max(1,Math.min(999,Number(e.target.value))))}/>
                     </div>
                   ))}
                 </div>
@@ -1264,6 +1384,129 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
                   </span>
                 </div>
               </div>
+
+              {/* ── Per-Raider Summary ─────────────────────────────────────────── */}
+              {boss.numRaiders > 1 && (()=>{
+                const spr = Math.max(1, Math.ceil(counters.length / boss.numRaiders));
+                const raiders = Array.from({length:boss.numRaiders},(_,r)=>{
+                  const slots = result.perSlot.slice(r*spr,(r+1)*spr);
+                  const active = slots.filter(s=>s.avgHd>0||s.avgDd>0);
+                  const totalDmgPct = slots.reduce((a,s)=>a+s.avgDd/bossHP*100,0);
+                  const avgOhko = active.length ? active.reduce((a,s)=>a+s.ohko,0)/active.length : 0;
+                  const totalHd = slots.reduce((a,s)=>a+s.avgHd,0);
+                  return {r,totalDmgPct,avgOhko,totalHd,slots};
+                });
+                const dc=(p:number)=>p>=40?'var(--danger)':p>=20?'var(--warning)':'var(--success)';
+                return(
+                  <div style={{background:'rgba(0,0,0,.15)',borderRadius:9,padding:'12px 14px'}}>
+                    <div style={{fontSize:10,fontWeight:800,color:'#818cf8',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>
+                      👥 Per-Raider Performance
+                    </div>
+                    <div style={{overflowX:'auto'}}>
+                      <table style={{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:360}}>
+                        <thead><tr style={{borderBottom:'1px solid var(--border)'}}>
+                          {['Raider','Team','Total Dmg %','Avg OHKO Risk','Hits Dealt'].map(h=>(
+                            <th key={h} style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
+                          ))}
+                        </tr></thead>
+                        <tbody>
+                          {raiders.map(({r,totalDmgPct,avgOhko,totalHd,slots})=>(
+                            <tr key={r} style={{borderBottom:'1px solid rgba(255,255,255,.04)',background:r%2===0?'rgba(255,255,255,.015)':'transparent'}}>
+                              <td style={{padding:'6px 8px',fontWeight:700,color:'#818cf8',textAlign:'center',whiteSpace:'nowrap'}}>Raider {r+1}</td>
+                              <td style={{padding:'6px 8px',fontSize:10,color:'var(--text-muted)'}}>
+                                {(()=>{
+                                  const nm:Record<string,number>={};
+                                  slots.forEach(s=>{if(s.name)nm[s.name]=(nm[s.name]||0)+1;});
+                                  return Object.entries(nm).map(([n,cnt])=>(
+                                    <span key={n} style={{display:'inline-block',marginRight:4,whiteSpace:'nowrap',fontWeight:600}}>
+                                      {cnt>1?`${cnt}× `:''}{n}
+                                    </span>
+                                  ));
+                                })()}
+                              </td>
+                              <td style={{padding:'6px 8px',textAlign:'center'}}>
+                                <div style={{display:'flex',alignItems:'center',gap:5}}>
+                                  <div style={{flex:1,height:5,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',minWidth:50}}>
+                                    <div style={{width:`${Math.min(100,totalDmgPct)}%`,height:'100%',background:dc(totalDmgPct),borderRadius:3}}/>
+                                  </div>
+                                  <span style={{fontSize:11,fontWeight:800,fontFamily:"'JetBrains Mono',monospace",color:dc(totalDmgPct),minWidth:44,textAlign:'right'}}>{totalDmgPct.toFixed(1)}%</span>
+                                </div>
+                              </td>
+                              <td style={{padding:'6px 8px',textAlign:'center'}}>
+                                <span style={{padding:'2px 8px',borderRadius:4,fontSize:11,fontWeight:700,
+                                  background:avgOhko>=.5?'var(--danger-subtle)':avgOhko>=.2?'var(--warning-subtle)':'var(--success-subtle)',
+                                  color:avgOhko>=.5?'var(--danger)':avgOhko>=.2?'var(--warning)':'var(--success)'}}>
+                                  {(avgOhko*100).toFixed(0)}%
+                                </span>
+                              </td>
+                              <td style={{padding:'6px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'var(--success)',fontWeight:700}}>{totalHd.toFixed(1)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── Per-Species Summary ─────────────────────────────────────────── */}
+              {(()=>{
+                const specMap:Record<string,{count:number;totalDd:number;totalHd:number;totalOhko:number}>={};
+                for(const s of result.perSlot){
+                  const nm=s.name||'—';
+                  if(!specMap[nm])specMap[nm]={count:0,totalDd:0,totalHd:0,totalOhko:0};
+                  specMap[nm].count++;
+                  specMap[nm].totalDd+=s.avgDd;
+                  specMap[nm].totalHd+=s.avgHd;
+                  specMap[nm].totalOhko+=s.ohko;
+                }
+                const species=Object.entries(specMap)
+                  .map(([name,v])=>({name,count:v.count,avgDmgPct:v.totalDd/v.count/bossHP*100,avgHd:v.totalHd/v.count,avgOhko:v.totalOhko/v.count}))
+                  .sort((a,b)=>b.avgDmgPct-a.avgDmgPct);
+                if(species.length<2) return null;
+                const dc=(p:number)=>p>=10?'var(--success)':p>=3?'var(--warning)':'var(--danger)';
+                return(
+                  <div style={{background:'rgba(0,0,0,.15)',borderRadius:9,padding:'12px 14px'}}>
+                    <div style={{fontSize:10,fontWeight:800,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>
+                      🔬 Per-Species Avg Performance
+                      <span style={{fontWeight:400,textTransform:'none',color:'var(--text-faint)',marginLeft:6}}>averaged across {result.trials.toLocaleString()} trials</span>
+                    </div>
+                    <div style={{overflowX:'auto'}}>
+                      <table style={{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:360}}>
+                        <thead><tr style={{borderBottom:'1px solid var(--border)'}}>
+                          {['Species','Count','Avg Dmg%','Avg Hits','Avg OHKO Risk'].map(h=>(
+                            <th key={h} style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
+                          ))}
+                        </tr></thead>
+                        <tbody>
+                          {species.map((s,i)=>(
+                            <tr key={s.name} style={{borderBottom:'1px solid rgba(255,255,255,.04)',background:i%2===0?'rgba(255,255,255,.015)':'transparent'}}>
+                              <td style={{padding:'6px 8px',fontWeight:700,color:'var(--text)'}}>{s.name}</td>
+                              <td style={{padding:'6px 8px',textAlign:'center',color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace"}}>×{s.count}</td>
+                              <td style={{padding:'6px 8px',textAlign:'center'}}>
+                                <div style={{display:'flex',alignItems:'center',gap:5}}>
+                                  <div style={{flex:1,height:5,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',minWidth:50}}>
+                                    <div style={{width:`${Math.min(100,s.avgDmgPct*6)}%`,height:'100%',background:dc(s.avgDmgPct),borderRadius:3}}/>
+                                  </div>
+                                  <span style={{fontSize:11,fontWeight:800,fontFamily:"'JetBrains Mono',monospace",color:dc(s.avgDmgPct),minWidth:44,textAlign:'right'}}>{s.avgDmgPct.toFixed(2)}%</span>
+                                </div>
+                              </td>
+                              <td style={{padding:'6px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'var(--success)',fontWeight:700}}>{s.avgHd.toFixed(1)}</td>
+                              <td style={{padding:'6px 8px',textAlign:'center'}}>
+                                <span style={{padding:'2px 8px',borderRadius:4,fontSize:11,fontWeight:700,
+                                  background:s.avgOhko>=.5?'var(--danger-subtle)':s.avgOhko>=.2?'var(--warning-subtle)':'var(--success-subtle)',
+                                  color:s.avgOhko>=.5?'var(--danger)':s.avgOhko>=.2?'var(--warning)':'var(--success)'}}>
+                                  {(s.avgOhko*100).toFixed(0)}%
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -1273,7 +1516,7 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
 }
 
 // ── Main Export ───────────────────────────────────────────────────────────────
-export default function CounterCalc({ sdState, user }: { sdState: string; user?: { discord_id: string; username: string; avatar_url?: string | null } | null }) {
+export default function CounterCalc({ sdState, user, isAdmin = false, guildId: guildIdProp }: { sdState: string; user?: { discord_id: string; username: string; avatar_url?: string | null } | null; isAdmin?: boolean; guildId?: string }) {
   const [boss, setBossRaw]    = useState<BossConfig>(mkBoss());
   const [counters, setCounters] = useState<CounterSlot[]>([mkSlot(), mkSlot()]);
   const [calculated, setCalc] = useState(false);
@@ -1286,15 +1529,17 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
   const [raidPresets, setRaidPresets] = useState<Array<{pokemon_key:string;display_name:string;types:string[];notes:string}>>([]);
   const [showPresets,  setShowPresets] = useState(false);
 
+  // Resolve API URL and guild ID — prop overrides env var (admin passes guildId explicitly)
+  const apiUrl = ((import.meta.env.VITE_API_URL as string | undefined) ?? '').replace(/\/$/, '');
+  const guildId = guildIdProp || (import.meta.env.VITE_GUILD_ID as string | undefined) || 'global';
+
   useEffect(() => {
-    const apiUrl = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '');
-    const guildId = (import.meta.env.VITE_GUILD_ID as string | undefined) ?? 'global';
     if (!apiUrl) return;
     fetch(`${apiUrl}/api/bossinfo/raidbosses?guild_id=${encodeURIComponent(guildId)}`)
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data?.bosses) setRaidPresets(data.bosses); })
       .catch(() => {});
-  }, []);
+  }, [apiUrl, guildId]);
 
   const setBoss = (p:Partial<BossConfig>) => { setBossRaw(prev=>({...prev,...p})); setCalc(false); };
   const addSlot = () => setCounters(cs=>[...cs,mkSlot()]);
@@ -1479,7 +1724,7 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
       </div>
 
       {/* Custom Pokémon panel */}
-      <CustomPokemonPanel/>
+      <CustomPokemonPanel isAdmin={isAdmin} apiUrl={apiUrl} guildId={guildId}/>
 
       {/* Auto-Finder panel */}
       {boss.data&&<AutoFinderPanel
