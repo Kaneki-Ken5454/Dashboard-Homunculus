@@ -220,6 +220,59 @@ export function getAllLearnableMoveNames(pokeName: string): MoveData[] {
   return moves;
 }
 
+// ── Custom Pokémon registry ───────────────────────────────────────────────────
+/** In-memory registry for fan-made / custom Pokémon and their learnsets. */
+const _customDex: Record<string, PokeData> = {};
+const _customLearnsets: Record<string, MoveData[]> = {};
+
+export function injectCustomPokemon(data: PokeData, moves: MoveData[]): void {
+  const k = _key(data.name);
+  _customDex[k]       = data;
+  _customLearnsets[k] = moves;
+}
+
+export function removeCustomPokemon(name: string): void {
+  const k = _key(name);
+  delete _customDex[k];
+  delete _customLearnsets[k];
+}
+
+export function getCustomPokemonNames(): string[] {
+  return Object.values(_customDex).map(d => d.name);
+}
+
+// Patch lookupPoke so custom entries are returned transparently
+const _origLookupPoke = lookupPoke;
+export function lookupPokeWithCustom(name: string): PokeData | null {
+  const k = _key(name);
+  if (_customDex[k]) return _customDex[k];
+  return _origLookupPoke(name);
+}
+
+// Patch getAllLearnableMoveNames to include custom learnsets
+const _origGetAllLearnable = getAllLearnableMoveNames;
+export function getAllLearnableMoveNamesWithCustom(pokeName: string): MoveData[] {
+  const k = _key(pokeName);
+  if (_customLearnsets[k]) return _customLearnsets[k];
+  return _origGetAllLearnable(pokeName);
+}
+
+// Patch getAllPokemonNames to include custom entries
+const _origGetAllPokemonNames = getAllPokemonNames;
+export function getAllPokemonNamesWithCustom(): string[] {
+  return [..._origGetAllPokemonNames(), ...getCustomPokemonNames()];
+}
+
+// Patch searchPokemon to include custom entries
+export function searchPokemonWithCustom(q: string, limit = 25): string[] {
+  const base = searchPokemon(q, limit);
+  if (!q) return [...base, ...getCustomPokemonNames()].slice(0, limit);
+  const k = _key(q);
+  const custom = getCustomPokemonNames().filter(n => _key(n).includes(k));
+  const merged = [...custom, ...base.filter(n => !custom.includes(n))];
+  return merged.slice(0, limit);
+}
+
 // ── Natures / Stat calc ───────────────────────────────────────────────────────
 export const NATURES: Record<string,Partial<PokeStat>> = {
   Hardy:{},Docile:{},Serious:{},Bashful:{},Quirky:{},

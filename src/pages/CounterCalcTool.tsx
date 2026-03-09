@@ -1,12 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import React from 'react';
 import {
   lookupPoke,
   lookupMove,
-  searchPokemon,
   searchMoves,
   getLevelUpMoves,
-  getAllPokemonNames,
-  getAllLearnableMoveNames,
   runCalc,
   calcStat,
   getNat,
@@ -23,8 +21,16 @@ import {
   NUM,
   SEL,
   LBL,
+  injectCustomPokemon,
+  removeCustomPokemon,
+  getCustomPokemonNames,
+  lookupPokeWithCustom,
+  searchPokemonWithCustom,
+  getAllPokemonNamesWithCustom,
+  getAllLearnableMoveNamesWithCustom,
   type PokeStat,
   type PokeData,
+  type MoveData,
 } from '../lib/engine_pokemon';
 import { TypeBadge, AutoInput } from '../lib/pokemon_components';
 
@@ -66,7 +72,7 @@ interface SimResult {
   perSlot: Array<{name:string;avgHd:number;avgHs:number;ohko:number;avgDd:number;avgDt:number}>;
 }
 
-function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:number, policy:string): SimResult|null {
+function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:number, policy:string, moveWeights?: number[]): SimResult|null {
   if (!boss.data) return null;
   const raidMult = RAID_TIERS[boss.raidTier]??1;
   const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp:Math.round(boss.data.stats.hp*raidMult)}};
@@ -76,7 +82,7 @@ function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:nu
   const mkBase = (o:any) => runCalc(o);
 
   const atkToBoss = counters.map(slot => {
-    const ad=slot.data||lookupPoke(slot.name), mv=slot.moveData||lookupMove(slot.moveName);
+    const ad=slot.data||lookupPokeWithCustom(slot.name), mv=slot.moveData||lookupMove(slot.moveName);
     if (!ad||!mv||!mv.bp) return null;
     const res = mkBase({atkPoke:ad,defPoke:bossFake,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
       atkEvs:slot.evs,defEvs:boss.evs,atkIvs:slot.ivs,defIvs:boss.ivs,
@@ -89,7 +95,7 @@ function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:nu
 
   const bossToAtk = bossMoves.map(mv =>
     counters.map(slot => {
-      const ad=slot.data||lookupPoke(slot.name); if (!ad) return null;
+      const ad=slot.data||lookupPokeWithCustom(slot.name); if (!ad) return null;
       const res = mkBase({atkPoke:bossFake,defPoke:ad,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
         atkEvs:boss.evs,defEvs:slot.evs,atkIvs:boss.ivs,defIvs:slot.ivs,
         atkNat:boss.nature,defNat:slot.nature,atkTera:boss.teraType,defTera:slot.teraType,
@@ -105,23 +111,34 @@ function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:nu
   const bossSpe = calcStat(boss.data.stats.spe,boss.evs.spe,boss.ivs.spe,false,getNat(boss.nature,'spe'),boss.level||100);
   const totalBP = bossMoves.reduce((s,m)=>s+m.bp,0);
   const cumBP = bossMoves.map((_,i)=>bossMoves.slice(0,i+1).reduce((s,m)=>s+m.bp,0));
-  const pickMv = () => {
-    if (policy==='uniform') return Math.floor(Math.random()*bossMoves.length);
-    const r=Math.random()*totalBP; return cumBP.findIndex(c=>r<=c);
+  // Custom weights: normalise provided weights or fall back to uniform
+  const rawW = (policy==='custom' && moveWeights && moveWeights.length===bossMoves.length)
+    ? moveWeights : bossMoves.map(()=>1);
+  const totalW = rawW.reduce((a,b)=>a+b,0)||1;
+  const cumW  = rawW.map((_,i)=>rawW.slice(0,i+1).reduce((a,b)=>a+b,0)/totalW);
+  let cyclicIdx = 0;
+  const pickMv = (trialCyclicRef: {v:number}) => {
+    if (policy==='uniform')  return Math.floor(Math.random()*bossMoves.length);
+    if (policy==='cyclic')   { const idx=trialCyclicRef.v%bossMoves.length; trialCyclicRef.v++; return idx; }
+    if (policy==='custom')   { const r=Math.random(); return cumW.findIndex(w=>r<=w); }
+    // bpweighted
+    const r=Math.random()*totalBP; return cumBP.findIndex(cp=>r<=cp);
   };
+  void cyclicIdx;
   const sr = (rolls:number[]) => rolls[Math.floor(Math.random()*16)];
   const acc = counters.map(()=>({hd:0,hs:0,dd:0,dt:0,ok:0,ot:0,used:0}));
   const needed: number[] = [];
 
   for (let t=0; t<trials; t++) {
     let bhp=bossHP; let used=0; let won=false;
+    const cyclicRef = {v:0};  // per-trial cyclic counter for 'cyclic' policy
     for (let si=0; si<counters.length&&bhp>0; si++) {
       const ac=atkToBoss[si]; if (!ac||ac.immune||!atkHPs[si]) continue;
       used++; acc[si].used++; let ahp=atkHPs[si]; let hd=0,hs=0,dd=0,dt=0; let first=true;
       while (bhp>0&&ahp>0) {
         const af=atkSpes[si]>=bossSpe;
         if (af) { const d=sr(ac.rolls); bhp-=d; hd++; dd+=d; if(bhp<=0){won=true;break;} }
-        const mi=pickMv(); const bc=bossToAtk[mi]?.[si];
+        const mi=pickMv(cyclicRef); const bc=bossToAtk[mi]?.[si];
         if (bc&&!bc.immune&&bc.rolls.length) {
           const d=sr(bc.rolls);
           if (first){acc[si].ot++;if(d>=ahp)acc[si].ok++;first=false;}
@@ -147,6 +164,144 @@ function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:nu
       return{name:slot.name||'—',avgHd:a.hd/u,avgHs:a.hs/u,ohko:a.ot?a.ok/a.ot:0,avgDd:a.dd/u,avgDt:a.dt/u};
     }),
   };
+}
+
+// ── Web Worker for MC simulation ─────────────────────────────────────────────
+/**
+ * Inline Blob Worker. The main thread pre-computes all roll-arrays so the
+ * worker code is pure arithmetic — no Pokemon data imports needed.
+ */
+const MC_WORKER_SRC = `
+self.onmessage = function(e) {
+  const p = e.data;
+  const results = runMCInner(p);
+  self.postMessage(results);
+};
+
+function runMCInner(p) {
+  const { atkToBoss, bossToAtk, atkHPs, atkSpes, bossSpe,
+          totalBP, cumBP, rawW, cumW, policy, trials, bossHP, counterNames } = p;
+  const sr = (rolls) => rolls[Math.floor(Math.random()*16)];
+  const acc = counterNames.map(() => ({hd:0,hs:0,dd:0,dt:0,ok:0,ot:0,used:0}));
+  const needed = [];
+
+  for (let t = 0; t < trials; t++) {
+    let bhp = bossHP, used = 0, won = false;
+    const cyclicRef = {v:0};
+    for (let si = 0; si < atkToBoss.length && bhp > 0; si++) {
+      const ac = atkToBoss[si];
+      if (!ac || ac.immune || !atkHPs[si]) continue;
+      used++; acc[si].used++;
+      let ahp = atkHPs[si], hd=0, hs=0, dd=0, dt=0, first=true;
+      while (bhp > 0 && ahp > 0) {
+        const af = atkSpes[si] >= bossSpe;
+        if (af) { const d=sr(ac.rolls); bhp-=d; hd++; dd+=d; if(bhp<=0){won=true;break;} }
+        let mi;
+        if (policy==='uniform')   mi = Math.floor(Math.random()*bossToAtk.length);
+        else if (policy==='cyclic') { mi = cyclicRef.v % bossToAtk.length; cyclicRef.v++; }
+        else if (policy==='custom') { const r=Math.random(); mi=cumW.findIndex(w=>r<=w); if(mi<0)mi=0; }
+        else { const r=Math.random()*totalBP; mi=cumBP.findIndex(cp=>r<=cp); if(mi<0)mi=0; }
+        const bc = bossToAtk[mi] && bossToAtk[mi][si];
+        if (bc && !bc.immune && bc.rolls.length) {
+          const d=sr(bc.rolls);
+          if(first){acc[si].ot++;if(d>=ahp)acc[si].ok++;first=false;}
+          ahp-=d; hs++; dt+=d;
+        }
+        if (!af && ahp>0) { const d=sr(ac.rolls); bhp-=d; hd++; dd+=d; if(bhp<=0){won=true;break;} }
+      }
+      acc[si].hd+=hd; acc[si].hs+=hs; acc[si].dd+=dd; acc[si].dt+=dt;
+      if (won) break;
+    }
+    needed.push(won ? used : atkToBoss.length+1);
+  }
+
+  const s = [...needed].sort((a,b)=>a-b);
+  const hist = {};
+  for (const n of needed) hist[n]=(hist[n]||0)+1;
+  return {
+    trials, hist, policy,
+    mean: needed.reduce((a,b)=>a+b,0)/trials,
+    median: s[Math.floor(trials/2)],
+    p90: s[Math.floor(trials*.9)],
+    pWin: needed.filter(n=>n<=atkToBoss.length).length/trials,
+    perSlot: counterNames.map((name,i) => {
+      const a=acc[i], u=a.used||1;
+      return {name, avgHd:a.hd/u, avgHs:a.hs/u, ohko:a.ot?a.ok/a.ot:0, avgDd:a.dd/u, avgDt:a.dt/u};
+    }),
+  };
+}
+`;
+
+let _mcWorkerURL: string | null = null;
+function getMCWorkerURL(): string {
+  if (!_mcWorkerURL) {
+    const blob = new Blob([MC_WORKER_SRC], { type: 'application/javascript' });
+    _mcWorkerURL = URL.createObjectURL(blob);
+  }
+  return _mcWorkerURL;
+}
+
+/** Pre-compute all roll arrays so the worker doesn't need any Pokemon data. */
+function precomputeMCData(boss: BossConfig, counters: CounterSlot[], bossHP: number, policy: string, moveWeights?: number[]) {
+  const raidMult = RAID_TIERS[boss.raidTier]??1;
+  const bossFake: PokeData = {...boss.data!, stats:{...boss.data!.stats, hp:Math.round(boss.data!.stats.hp*raidMult)}};
+  const bossMoves = getLevelUpMoves(boss.name);
+  if (!bossMoves.length) return null;
+
+  const atkToBoss = counters.map(slot => {
+    const ad = slot.data||lookupPokeWithCustom(slot.name);
+    const mv = slot.moveData||lookupMove(slot.moveName);
+    if (!ad||!mv||!mv.bp) return {immune:true, rolls:[]};
+    const res = runCalc({atkPoke:ad,defPoke:bossFake,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
+      atkEvs:slot.evs,defEvs:boss.evs,atkIvs:slot.ivs,defIvs:boss.ivs,
+      atkNat:slot.nature,defNat:boss.nature,atkTera:slot.teraType,defTera:boss.teraType,
+      atkItem:slot.item,atkStatus:'Healthy',weather:boss.weather,doubles:boss.doubles,
+      atkScreen:false,defScreen:boss.defScreen,isCrit:slot.isCrit,zmove:slot.zmove,
+      atkLv:slot.level||100,defLv:boss.level||100});
+    return res&&!res.immune ? {immune:false,rolls:res.rolls} : {immune:true,rolls:[]};
+  });
+
+  const bossToAtk = bossMoves.map(mv =>
+    counters.map(slot => {
+      const ad = slot.data||lookupPokeWithCustom(slot.name);
+      if (!ad) return {immune:true,rolls:[]};
+      const res = runCalc({atkPoke:bossFake,defPoke:ad,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
+        atkEvs:boss.evs,defEvs:slot.evs,atkIvs:boss.ivs,defIvs:slot.ivs,
+        atkNat:boss.nature,defNat:slot.nature,atkTera:boss.teraType,defTera:slot.teraType,
+        atkItem:'(none)',atkStatus:'Healthy',weather:boss.weather,doubles:boss.doubles,
+        atkScreen:boss.defScreen,defScreen:false,isCrit:false,zmove:false,
+        atkLv:boss.level||100,defLv:slot.level||100});
+      return res&&!res.immune ? {immune:false,rolls:res.rolls} : {immune:true,rolls:[]};
+    })
+  );
+
+  const atkHPs  = counters.map(s=>{const d=s.data||lookupPokeWithCustom(s.name);if(!d)return 0;return calcStat(d.stats.hp,s.evs.hp,s.ivs.hp,true,1,s.level||100);});
+  const atkSpes = counters.map(s=>{const d=s.data||lookupPokeWithCustom(s.name);if(!d)return 0;return calcStat(d.stats.spe,s.evs.spe,s.ivs.spe,false,getNat(s.nature,'spe'),s.level||100);});
+  const bossSpe = calcStat(boss.data!.stats.spe,boss.evs.spe,boss.ivs.spe,false,getNat(boss.nature,'spe'),boss.level||100);
+  const totalBP = bossMoves.reduce((s,m)=>s+m.bp,0);
+  const cumBP   = bossMoves.map((_,i)=>bossMoves.slice(0,i+1).reduce((s,m)=>s+m.bp,0));
+  const rawW    = (policy==='custom'&&moveWeights?.length===bossMoves.length) ? moveWeights : bossMoves.map(()=>1);
+  const totW    = rawW.reduce((a,b)=>a+b,0)||1;
+  const cumW    = rawW.map((_,i)=>rawW.slice(0,i+1).reduce((a,b)=>a+b,0)/totW);
+
+  return { atkToBoss, bossToAtk, atkHPs, atkSpes, bossSpe, totalBP, cumBP, rawW, cumW,
+           counterNames: counters.map(s=>s.name||'—'), bossHP, policy };
+}
+
+function runMCViaWorker(
+  boss: BossConfig, counters: CounterSlot[], bossHP: number,
+  trials: number, policy: string, moveWeights?: number[]
+): Promise<SimResult|null> {
+  return new Promise(resolve => {
+    const pre = precomputeMCData(boss, counters, bossHP, policy, moveWeights);
+    if (!pre) { resolve(null); return; }
+    try {
+      const worker = new Worker(getMCWorkerURL());
+      worker.onmessage = (e) => { resolve(e.data as SimResult); worker.terminate(); };
+      worker.onerror   = ()  => { resolve(null); worker.terminate(); };
+      worker.postMessage({ ...pre, trials });
+    } catch { resolve(null); }
+  });
 }
 
 // ── Auto-Finder Engine ───────────────────────────────────────────────────────
@@ -184,7 +339,7 @@ function computeCandidate(
   inc: number,
   mode: 'additive'|'multiplicative'
 ): CandidateMetrics | null {
-  const data = lookupPoke(name);
+  const data = lookupPokeWithCustom(name);
   if (!data || !boss.data) return null;
   const bst = data.stats.hp+data.stats.atk+data.stats.def+data.stats.spa+data.stats.spd+data.stats.spe;
   if (bst < 330) return null;
@@ -193,7 +348,7 @@ function computeCandidate(
   const bossTypes = boss.teraType ? [boss.teraType] : boss.data.types;
   const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp: Math.round(boss.data.stats.hp*raidMult)}};
 
-  const moves = getAllLearnableMoveNames(name);
+  const moves = getAllLearnableMoveNamesWithCustom(name);
   if (!moves.length) return null;
   let bestMove: MoveData | null = null;
   let bestScore = -1;
@@ -261,7 +416,7 @@ async function runAutoFinder(
   maxResults: number,
   onProgress: (pct: number) => void
 ): Promise<CandidateMetrics[]> {
-  const names = getAllPokemonNames();
+  const names = getAllPokemonNamesWithCustom();
   const results: CandidateMetrics[] = [];
   const CHUNK = 40;
   for (let i = 0; i < names.length; i += CHUNK) {
@@ -274,6 +429,234 @@ async function runAutoFinder(
   }
   results.sort((a,b) => a.estRaiders - b.estRaiders || b.avgTotalPct - a.avgTotalPct);
   return results.slice(0, maxResults);
+}
+
+// ── Custom Pokémon Panel ─────────────────────────────────────────────────────
+interface CustomPokeEntry {
+  name: string;
+  types: [string, string?];
+  stats: PokeStat;
+  moves: Array<{ name: string; type: string; cat: string; bp: number }>;
+}
+
+const CUSTOM_LS_KEY = 'pktool_custom_pokemon_v1';
+
+function loadCustomFromStorage(): CustomPokeEntry[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_LS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+function saveCustomToStorage(entries: CustomPokeEntry[]) {
+  try { localStorage.setItem(CUSTOM_LS_KEY, JSON.stringify(entries)); } catch {}
+}
+
+/** Register all custom entries with the engine so lookupPoke/search picks them up. */
+function syncCustomPokemon(entries: CustomPokeEntry[]) {
+  // Clear previous custom entries
+  for (const n of getCustomPokemonNames()) removeCustomPokemon(n);
+  for (const e of entries) {
+    const data: PokeData = {
+      name: e.name,
+      types: e.types.filter(Boolean) as string[],
+      stats: e.stats,
+      bst: Object.values(e.stats).reduce((a,b)=>a+b,0),
+      abilities: [],
+      weaknesses: {},
+    };
+    const moves: MoveData[] = e.moves.map(m => ({ name:m.name, bp:m.bp, cat:m.cat, type:m.type }));
+    injectCustomPokemon(data, moves);
+  }
+}
+
+const BLANK_ENTRY = (): CustomPokeEntry => ({
+  name: '', types: ['Normal', undefined],
+  stats: { hp:80, atk:80, def:80, spa:80, spd:80, spe:80 },
+  moves: [{ name:'', type:'Normal', cat:'Physical', bp:80 }],
+});
+
+function CustomPokemonPanel() {
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState<CustomPokeEntry[]>(() => {
+    const loaded = loadCustomFromStorage();
+    syncCustomPokemon(loaded);
+    return loaded;
+  });
+  const [editing, setEditing] = useState<CustomPokeEntry|null>(null);
+  const [editIdx, setEditIdx] = useState<number|null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const persist = (updated: CustomPokeEntry[]) => {
+    saveCustomToStorage(updated);
+    syncCustomPokemon(updated);
+    setEntries(updated);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  };
+
+  const startEdit = (idx: number | null) => {
+    setEditing(idx === null ? BLANK_ENTRY() : { ...entries[idx], types: [...entries[idx].types] as [string,string?], moves: entries[idx].moves.map(m=>({...m})) });
+    setEditIdx(idx);
+  };
+
+  const saveEdit = () => {
+    if (!editing || !editing.name.trim()) return;
+    const copy = [...entries];
+    if (editIdx === null) copy.push(editing);
+    else copy[editIdx] = editing;
+    persist(copy);
+    setEditing(null); setEditIdx(null);
+  };
+
+  const deleteEntry = (idx: number) => {
+    const copy = entries.filter((_,i)=>i!==idx);
+    persist(copy);
+  };
+
+  const upd = (p: Partial<CustomPokeEntry>) => setEditing(prev => prev ? {...prev,...p} : prev);
+  const updStat = (k: keyof PokeStat, v: number) => setEditing(prev => prev ? {...prev, stats:{...prev.stats,[k]:v}} : prev);
+  const updMove = (i: number, p: Partial<typeof editing.moves[0]>) =>
+    setEditing(prev => { if(!prev) return prev; const mv=[...prev.moves]; mv[i]={...mv[i],...p}; return {...prev,moves:mv}; });
+  const addMove = () => setEditing(prev => prev ? {...prev, moves:[...prev.moves,{name:'',type:'Normal',cat:'Physical',bp:80}]} : prev);
+  const delMove = (i: number) => setEditing(prev => { if(!prev)return prev; const mv=prev.moves.filter((_,j)=>j!==i); return {...prev,moves:mv}; });
+
+  return (
+    <div style={{border:'1px solid rgba(251,191,36,.25)',borderRadius:12,overflow:'hidden'}}>
+      <button onClick={()=>setOpen(o=>!o)}
+        style={{width:'100%',padding:'11px 16px',background:'rgba(251,191,36,.06)',border:'none',
+          cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',
+          fontFamily:"'Lexend',sans-serif"}}>
+        <span style={{fontSize:11,fontWeight:800,color:'#fbbf24',textTransform:'uppercase',letterSpacing:'.09em',display:'flex',alignItems:'center',gap:8}}>
+          ✨ Custom / Fan-made Pokémon
+          {entries.length>0&&<span style={{fontSize:10,color:'var(--text-muted)',fontWeight:600,textTransform:'none'}}>
+            {' · '}{entries.length} registered
+          </span>}
+          {saved&&<span style={{fontSize:10,color:'var(--success)',fontWeight:600,textTransform:'none'}}>· ✓ Saved</span>}
+        </span>
+        <span style={{color:'var(--text-faint)',fontSize:12}}>{open?'▲':'▼'}</span>
+      </button>
+
+      {open&&(
+        <div style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
+          <div style={{fontSize:11,color:'var(--text-muted)'}}>
+            Define custom or fan-made Pokémon. They will appear in all searches and the Auto-Finder.
+          </div>
+
+          {/* Entry list */}
+          {entries.length>0&&(
+            <div style={{display:'flex',flexDirection:'column',gap:4}}>
+              {entries.map((e,i)=>(
+                <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',
+                  background:'rgba(255,255,255,.035)',borderRadius:8,border:'1px solid var(--border)'}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'var(--text)',display:'flex',alignItems:'center',gap:5}}>
+                      {e.name}
+                      {e.types.filter(Boolean).map(t=><TypeBadge key={t} t={t!}/>)}
+                    </div>
+                    <div style={{fontSize:10,color:'var(--text-faint)',marginTop:2}}>
+                      BST {Object.values(e.stats).reduce((a,b)=>a+b,0)} · {e.moves.length} move{e.moves.length!==1?'s':''}
+                    </div>
+                  </div>
+                  <button onClick={()=>startEdit(i)} style={{padding:'4px 10px',background:'rgba(251,191,36,.12)',border:'1px solid rgba(251,191,36,.3)',borderRadius:6,color:'#fbbf24',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>Edit</button>
+                  <button onClick={()=>deleteEntry(i)} style={{padding:'4px 10px',background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:6,color:'#ef4444',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button onClick={()=>startEdit(null)}
+            style={{padding:'7px 16px',background:'rgba(251,191,36,.1)',border:'1px solid rgba(251,191,36,.3)',
+              borderRadius:8,color:'#fbbf24',cursor:'pointer',fontSize:12,fontWeight:700,
+              fontFamily:"'Lexend',sans-serif",width:'fit-content'}}>
+            + Add Custom Pokémon
+          </button>
+
+          {/* Editor */}
+          {editing&&(
+            <div style={{background:'var(--elevated)',border:'1px solid rgba(251,191,36,.2)',borderRadius:10,padding:14,display:'flex',flexDirection:'column',gap:12}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#fbbf24',marginBottom:2}}>
+                {editIdx===null?'New Custom Pokémon':'Edit: '+entries[editIdx]?.name}
+              </div>
+
+              {/* Name + Types */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                <div>
+                  <label style={LBL}>Name *</label>
+                  <input style={INP} placeholder="e.g. Shadow Mewtwo" value={editing.name} onChange={e=>upd({name:e.target.value})}/>
+                </div>
+                <div>
+                  <label style={LBL}>Type 1</label>
+                  <select style={INP} value={editing.types[0]} onChange={e=>upd({types:[e.target.value as string, editing.types[1]]})}>
+                    {ALL_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={LBL}>Type 2 (optional)</label>
+                  <select style={INP} value={editing.types[1]||''} onChange={e=>upd({types:[editing.types[0], e.target.value||undefined]})}>
+                    <option value="">— None —</option>
+                    {ALL_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Base Stats */}
+              <div>
+                <label style={LBL}>Base Stats</label>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:6}}>
+                  {(Object.keys(editing.stats) as (keyof PokeStat)[]).map(k=>(
+                    <div key={k} style={{textAlign:'center'}}>
+                      <div style={{fontSize:9,color:'var(--text-faint)',marginBottom:3,textTransform:'uppercase',fontWeight:700}}>{k}</div>
+                      <input type="number" style={{...INP,padding:'4px 2px',textAlign:'center'}} min={1} max={255}
+                        value={editing.stats[k]} onChange={e=>updStat(k,Math.max(1,Math.min(255,Number(e.target.value))))}/>
+                    </div>
+                  ))}
+                </div>
+                <div style={{fontSize:10,color:'var(--text-faint)',marginTop:4,textAlign:'right'}}>
+                  BST: <strong style={{color:'var(--text-muted)'}}>{Object.values(editing.stats).reduce((a,b)=>a+b,0)}</strong>
+                </div>
+              </div>
+
+              {/* Moves */}
+              <div>
+                <label style={LBL}>Damaging Moves</label>
+                <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                  {editing.moves.map((mv,i)=>(
+                    <div key={i} style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr auto',gap:6,alignItems:'center'}}>
+                      <input style={INP} placeholder="Move name" value={mv.name} onChange={e=>updMove(i,{name:e.target.value})}/>
+                      <select style={INP} value={mv.type} onChange={e=>updMove(i,{type:e.target.value})}>
+                        {ALL_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <select style={INP} value={mv.cat} onChange={e=>updMove(i,{cat:e.target.value})}>
+                        <option value="Physical">Physical</option>
+                        <option value="Special">Special</option>
+                      </select>
+                      <input type="number" style={{...INP,padding:'4px 6px'}} placeholder="BP" min={1} max={300}
+                        value={mv.bp} onChange={e=>updMove(i,{bp:Math.max(1,Number(e.target.value))})}/>
+                      <button onClick={()=>delMove(i)} style={{padding:'4px 8px',background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.25)',borderRadius:6,color:'#ef4444',cursor:'pointer',fontSize:12,fontFamily:"'Lexend',sans-serif"}}>✕</button>
+                    </div>
+                  ))}
+                  <button onClick={addMove} style={{padding:'5px 12px',background:'transparent',border:'1px dashed var(--border)',borderRadius:6,color:'var(--text-faint)',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif",width:'fit-content'}}>
+                    + Add Move
+                  </button>
+                </div>
+              </div>
+
+              <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+                <button onClick={()=>{setEditing(null);setEditIdx(null);}}
+                  style={{padding:'7px 16px',background:'transparent',border:'1px solid var(--border)',borderRadius:7,color:'var(--text-muted)',cursor:'pointer',fontSize:12,fontFamily:"'Lexend',sans-serif"}}>
+                  Cancel
+                </button>
+                <button onClick={saveEdit} disabled={!editing.name.trim()}
+                  style={{padding:'7px 18px',background:'rgba(251,191,36,.85)',border:'none',borderRadius:7,color:'#000',cursor:'pointer',fontSize:12,fontWeight:700,fontFamily:"'Lexend',sans-serif",opacity:!editing.name.trim()?.5:1}}>
+                  ✓ Save Pokémon
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Auto-Finder Panel ─────────────────────────────────────────────────────────
@@ -318,7 +701,9 @@ function AutoFinderPanel({ boss, bossBaseHP, onLoadCounters, sdState }: {
       ...mkSlot(), name:r.name, data:r.data, moveName:r.bestMove.name, moveData:r.bestMove,
     }));
     setMcRunning(true); setMcResult(null);
-    setTimeout(() => { setMcResult(runMC(boss, slots, bossBaseHP, 1000, 'uniform')); setMcRunning(false); }, 20);
+    runMCViaWorker(boss, slots, bossBaseHP, 1000, 'uniform').then(res => {
+      setMcResult(res); setMcRunning(false);
+    });
   };
 
   const effColor = (e: number) => e >= 2 ? '#ef4444' : e >= 1 ? '#f59e0b' : '#6b7280';
@@ -520,7 +905,7 @@ function CounterRow({ slot, onChange, onRemove, rank }: {
         <span style={{fontSize:14,minWidth:22,textAlign:'center',flexShrink:0}}>
           {medal || <span style={{fontSize:9,color:'var(--text-faint)',fontWeight:700}}>#{slot.id}</span>}
         </span>
-        <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.name} searchFn={searchPokemon} onChange={v=>{const d=lookupPoke(v);upd({name:v,data:d,result:null,error:''});}} placeholder="Attacker Pokémon…"/></div>
+        <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.name} searchFn={searchPokemonWithCustom} onChange={v=>{const d=lookupPokeWithCustom(v);upd({name:v,data:d,result:null,error:''});}} placeholder="Attacker Pokémon…"/></div>
         <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.moveName} searchFn={searchMoves} onChange={v=>{const mv=lookupMove(v);upd({moveName:v,moveData:mv,result:null,error:''});}} placeholder="Move…"/></div>
         <select style={{...SEL,width:'auto',minWidth:100,fontSize:11}} value={slot.nature} onChange={e=>upd({nature:e.target.value,result:null})}>{Object.keys(NATURES).map(n=><option key={n}>{n}</option>)}</select>
         <select style={{...SEL,width:'auto',minWidth:90,fontSize:11}} value={slot.teraType} onChange={e=>upd({teraType:e.target.value,result:null})}><option value="">No Tera</option>{ALL_TYPES.map(t=><option key={t}>{t}</option>)}</select>
@@ -587,7 +972,7 @@ function BossSimPanel({ boss, counters }: { boss:BossConfig; counters:CounterSlo
   const simRows = !open ? [] : bossMoves.map(mv => ({
     mv,
     cols: validCounters.map(slot => {
-      const cData=slot.data||lookupPoke(slot.name); if (!cData) return null;
+      const cData=slot.data||lookupPokeWithCustom(slot.name); if (!cData) return null;
       const res=runCalc({atkPoke:bossFake,defPoke:cData,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
         atkEvs:boss.evs,defEvs:slot.evs,atkIvs:boss.ivs,defIvs:slot.ivs,
         atkNat:boss.nature,defNat:slot.nature,atkTera:boss.teraType,defTera:slot.teraType,
@@ -673,20 +1058,29 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
 }) {
   const [open, setOpen]     = useState(false);
   const [trials, setTrials] = useState(2000);
-  const [policy, setPolicy] = useState<'uniform'|'bpweighted'>('uniform');
+  const [policy, setPolicy] = useState<'uniform'|'bpweighted'|'cyclic'|'custom'>('uniform');
   const [result, setResult] = useState<SimResult|null>(null);
   const [running, setRun]   = useState(false);
   const [err, setErr]       = useState('');
+  const [moveWeights, setMoveWeights] = useState<Record<string,number>>({});
   if (!boss.data) return null;
 
   const valid = counters.filter(c=>c.name&&(c.data||lookupPoke(c.name))&&c.moveName&&(c.moveData||lookupMove(c.moveName)));
   const bm = getLevelUpMoves(boss.name);
 
-  const run = () => {
+  const getWeightsArray = () => bm.map(mv => {
+    const w = moveWeights[mv.name];
+    return (w !== undefined && w >= 0) ? w : mv.bp;
+  });
+
+  const run = async () => {
     if (!valid.length) { setErr('Add at least one complete counter slot.'); return; }
     if (!bm.length)    { setErr(`No level-up moves found for ${boss.data!.name}.`); return; }
     setErr(''); setRun(true); setResult(null);
-    setTimeout(() => { setResult(runMC(boss,counters,bossHP,trials,policy)); setRun(false); }, 20);
+    const wts = (policy==='custom') ? getWeightsArray() : undefined;
+    const res = await runMCViaWorker(boss, counters, bossHP, trials, policy, wts);
+    setResult(res);
+    setRun(false);
   };
 
   const maxH = result ? Math.max(...Object.values(result.hist)) : 1;
@@ -719,13 +1113,29 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
             </div>
             <div>
               <label style={LBL}>Boss Move Policy</label>
-              <div style={{display:'flex',gap:4}}>
-                {(['uniform','bpweighted'] as const).map(p=>(
+              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                {(['uniform','bpweighted','cyclic','custom'] as const).map(p=>(
                   <button key={p} onClick={()=>setPolicy(p)} style={{padding:'5px 11px',borderRadius:6,border:'1px solid var(--border)',background:policy===p?'rgba(99,102,241,.3)':'transparent',color:policy===p?'#a5b4fc':'var(--text-muted)',cursor:'pointer',fontSize:12,fontWeight:policy===p?700:400,fontFamily:"'Lexend',sans-serif"}}>
-                    {p==='uniform'?'Uniform':'BP-Weighted'}
+                    {p==='uniform'?'Uniform':p==='bpweighted'?'BP-Weighted':p==='cyclic'?'Cyclic':'Custom'}
                   </button>
                 ))}
               </div>
+              {policy==='cyclic'&&<div style={{fontSize:10,color:'var(--text-faint)',marginTop:5}}>Boss cycles through its moves in fixed order each turn — realistic for scripted bosses.</div>}
+              {policy==='custom'&&bm.length>0&&(
+                <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:5}}>
+                  <div style={{fontSize:10,color:'var(--text-faint)',marginBottom:2}}>Assign relative weight to each move (higher = more frequent). Default is the move BP.</div>
+                  {bm.map(mv=>(
+                    <div key={mv.name} style={{display:'flex',alignItems:'center',gap:8}}>
+                      <TypeBadge t={mv.type}/>
+                      <span style={{fontSize:11,color:'var(--text-muted)',minWidth:120,flex:1}}>{mv.name} <span style={{color:'var(--text-faint)'}}>BP{mv.bp}</span></span>
+                      <input type="number" min={0} max={100} style={{...INP,width:64,padding:'4px 6px'}}
+                        value={moveWeights[mv.name]??mv.bp}
+                        onChange={e=>setMoveWeights(prev=>({...prev,[mv.name]:Math.max(0,Number(e.target.value))}))}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <button className="btn btn-primary" onClick={run} disabled={running||sdState!=='ready'}
               style={{opacity:(running||sdState!=='ready')?.5:1}}>
@@ -844,7 +1254,10 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
                   </table>
                 </div>
                 <div style={{fontSize:10,color:'var(--text-faint)',marginTop:6,display:'flex',gap:12,flexWrap:'wrap'}}>
-                  <span>Boss move policy: <strong style={{color:'var(--text-muted)'}}>{result.policy==='uniform'?'Uniform random (each move equally likely)':'BP-weighted (stronger moves preferred)'}</strong></span>
+                  <span>Boss move policy: <strong style={{color:'var(--text-muted)'}}>{result.policy==='uniform'?'Uniform (equal chance)'
+  :result.policy==='bpweighted'?'BP-Weighted (stronger moves preferred)'
+  :result.policy==='cyclic'?'Cyclic (fixed order)'
+  :'Custom (user weights)'}</strong></span>
                   <span>Trials: <strong style={{color:'var(--text-muted)'}}>{result.trials.toLocaleString()}</strong></span>
                   <span>Effective boss HP: <strong style={{color:'var(--text-muted)'}}>{bossHP.toLocaleString()}</strong>
                     {boss.numRaiders>1&&<> <span style={{color:'var(--text-faint)'}}>({boss.numRaiders} raiders, {boss.hpScalingMode}, +{boss.hpIncreasePerRaider}%/raider)</span></>}
@@ -867,6 +1280,7 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
   const [globalErr, setGlErr] = useState('');
   const [sortBy, setSortBy]   = useState<'max'|'min'>('max');
   const [hpOverride, setHpOvr] = useState('');
+  const [teamTemplate, setTeamTemplate] = useState<CounterSlot[]|null>(null);
 
   // Raid boss presets from admin server
   const [raidPresets, setRaidPresets] = useState<Array<{pokemon_key:string;display_name:string;types:string[];notes:string}>>([]);
@@ -887,6 +1301,8 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
   const loadAutoFinderSlots = (partials: Partial<CounterSlot>[]) => {
     const newSlots = partials.map(p => ({ ...mkSlot(), ...p, result:null, error:'' }));
     setCounters(newSlots); setCalc(false);
+    // Auto-save first 6 as template so "Apply to All Raiders" works immediately
+    setTeamTemplate(newSlots.slice(0, 6));
   };
   const removeSlot = (id:number) => setCounters(cs=>cs.filter(c=>c.id!==id));
   const updateSlot = (id:number, p:Partial<CounterSlot>) => setCounters(cs=>cs.map(c=>c.id===id?{...c,...p}:c));
@@ -918,7 +1334,7 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
     const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp:Math.round(boss.data.stats.hp*raidMult)}};
     const updated = counters.map(slot => {
       if (!slot.name||!slot.moveName) return {...slot,error:'',result:null};
-      const ad=slot.data||lookupPoke(slot.name), mv=slot.moveData||lookupMove(slot.moveName);
+      const ad=slot.data||lookupPokeWithCustom(slot.name), mv=slot.moveData||lookupMove(slot.moveName);
       if (!ad) return {...slot,error:`"${slot.name}" not found`,result:null};
       if (!mv||!mv.bp) return {...slot,error:`"${slot.moveName}" not found/status`,result:null};
       const res = runCalc({atkPoke:ad,defPoke:bossFake,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
@@ -982,8 +1398,8 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
 
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
           <div>
-            <AutoInput label="Boss Pokémon" value={boss.name} searchFn={searchPokemon}
-              onChange={v=>{const d=lookupPoke(v);setBoss({name:v,data:d});}} placeholder="e.g. Charizard"/>
+            <AutoInput label="Boss Pokémon" value={boss.name} searchFn={searchPokemonWithCustom}
+              onChange={v=>{const d=lookupPokeWithCustom(v);setBoss({name:v,data:d});}} placeholder="e.g. Charizard"/>
             {boss.data&&<div style={{display:'flex',gap:4,marginTop:5,flexWrap:'wrap'}}>
               {(boss.teraType?[boss.teraType]:boss.data.types).map(t=><TypeBadge key={t} t={t}/>)}
             </div>}
@@ -1062,6 +1478,9 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
         </div>
       </div>
 
+      {/* Custom Pokémon panel */}
+      <CustomPokemonPanel/>
+
       {/* Auto-Finder panel */}
       {boss.data&&<AutoFinderPanel
         boss={boss}
@@ -1091,8 +1510,28 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
             </div>
           )}
           <button className="btn btn-ghost btn-sm" onClick={addSlot}>+ Add Counter</button>
+          {counters.length>0&&(
+            <button className="btn btn-ghost btn-sm" title="Save current team (first 6 slots) as a reusable template"
+              onClick={()=>setTeamTemplate(counters.slice(0,6))}>
+              💾 Save Template
+            </button>
+          )}
+          {teamTemplate&&teamTemplate.length>0&&(
+            <button className="btn btn-ghost btn-sm"
+              title={"Replicate template across all " + boss.numRaiders + " raiders"}
+              onClick={()=>{
+                const tpl = teamTemplate.slice(0,6);
+                const newCounters: CounterSlot[] = [];
+                for (let r=0; r<boss.numRaiders; r++) {
+                  tpl.forEach(slot => newCounters.push({...slot, id:_slotId++, result:null, error:''}));
+                }
+                setCounters(newCounters); setCalc(false);
+              }}>
+              🔁 Apply to {boss.numRaiders} Raider{boss.numRaiders!==1?'s':''}
+            </button>
+          )}
           {boss.numRaiders>1&&counters.length>0&&(
-            <button className="btn btn-ghost btn-sm" title={`Copy all ${counters.length} counter(s) for each of the ${boss.numRaiders-1} additional raider(s)`}
+            <button className="btn btn-ghost btn-sm" title="Append copies of ALL current counters for each additional raider"
               onClick={()=>{
                 const extras: CounterSlot[] = [];
                 for (let i=1; i<boss.numRaiders; i++) {
@@ -1100,17 +1539,33 @@ export default function CounterCalc({ sdState, user }: { sdState: string; user?:
                 }
                 setCounters(cs=>[...cs,...extras]);
               }}>
-              ➕ Duplicate for {boss.numRaiders} raiders
+              ➕ Duplicate Raw
             </button>
           )}
         </div>
       </div>
 
-      {/* Counter rows */}
+      {/* Counter rows — with raider group labels when numRaiders > 1 */}
       <div style={{display:'flex',flexDirection:'column',gap:8}}>
-        {displayCounters.map(slot=>{
+        {displayCounters.map((slot,idx)=>{
           const rpos = calculated ? rankedIds.indexOf(slot.id)+1 : null;
-          return <CounterRow key={slot.id} slot={slot} onChange={updateSlot} onRemove={removeSlot} rank={rpos&&rpos<=3?rpos:null}/>;
+          const slotsPerRaider = boss.numRaiders > 1 ? Math.ceil(counters.length / boss.numRaiders) : 0;
+          const showLabel = boss.numRaiders > 1 && slotsPerRaider > 0 && idx % slotsPerRaider === 0;
+          const raiderNum  = boss.numRaiders > 1 ? Math.floor(idx / slotsPerRaider) + 1 : 0;
+          return (
+            <React.Fragment key={slot.id}>
+              {showLabel&&(
+                <div style={{marginTop:idx>0?8:0,fontSize:11,fontWeight:700,color:'#c4b5fd',
+                  display:'flex',alignItems:'center',gap:6,letterSpacing:'.04em'}}>
+                  <span style={{fontSize:13}}>👤</span> Raider {raiderNum}
+                  <span style={{fontSize:9,color:'var(--text-faint)',fontWeight:400}}>
+                    (slots {idx+1}–{Math.min(idx+slotsPerRaider, counters.length)})
+                  </span>
+                </div>
+              )}
+              <CounterRow key={slot.id} slot={slot} onChange={updateSlot} onRemove={removeSlot} rank={rpos&&rpos<=3?rpos:null}/>
+            </React.Fragment>
+          );
         })}
       </div>
 
