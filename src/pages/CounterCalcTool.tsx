@@ -1260,14 +1260,13 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
   const [raidPresets, setRaidPresets] = useState<Array<{pokemon_key:string;display_name:string;types:string[];notes:string}>>([]);
   const [showPresets,  setShowPresets] = useState(false);
 
-  // Resolve API URL and guild ID — prop overrides env var (admin passes guildId explicitly)
+  // Resolve API URL and guild ID
   const apiUrl = ((import.meta.env.VITE_API_URL as string | undefined) ?? '').replace(/\/$/, '');
   const guildId = guildIdProp || (import.meta.env.VITE_GUILD_ID as string | undefined) || 'global';
 
-  // For non-admin users: silently load custom Pokémon from server so they appear in searches
-  // (admin users get this through CustomPokemonPanel)
+  // All users: silently load custom Pokémon from server so they appear in all searches
   useEffect(() => {
-    if (isAdmin || !apiUrl) return;
+    if (!apiUrl) return;
     fetch(`${apiUrl}/api/custompokemon?guild_id=${encodeURIComponent(guildId)}`)
       .then(r => r.ok ? r.json() : null)
       .then(data => {
@@ -1281,7 +1280,7 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
         }
       })
       .catch(() => {});
-  }, [isAdmin, apiUrl, guildId]);
+  }, [apiUrl, guildId]);
 
   useEffect(() => {
     if (!apiUrl) return;
@@ -1518,8 +1517,8 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
           })()}
           {boss.customMoves.map((mv,i)=>(
             <div key={i} style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 60px auto',gap:6,alignItems:'center',marginBottom:4}}>
-              <AutoInput label="" value={mv.name} searchFn={searchMoves}
-                onChange={v=>{const found=lookupMove(v);const nm=[...boss.customMoves];nm[i]={...nm[i],name:v,type:found?.type||nm[i].type,cat:found?.cat||nm[i].cat,bp:found?.bp||nm[i].bp};setBoss({customMoves:nm});}}
+              <AutoInput label="" value={mv.name} searchFn={searchMovesWithCustom}
+                onChange={v=>{const found=lookupMoveWithCustom(v);const nm=[...boss.customMoves];nm[i]={...nm[i],name:v,type:found?.type||nm[i].type,cat:found?.cat||nm[i].cat,bp:found?.bp||nm[i].bp};setBoss({customMoves:nm});}}
                 placeholder="Move name"/>
               <select style={SEL} value={mv.type} onChange={e=>{const nm=[...boss.customMoves];nm[i]={...nm[i],type:e.target.value};setBoss({customMoves:nm});}}>
                 {ALL_TYPES.map(t=><option key={t}>{t}</option>)}
@@ -1646,18 +1645,17 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
       {/* Per-Raider Team Analysis */}
       {calculated&&counters.some(c=>c.result&&!c.result.immune&&c.name)&&(()=>{
         const teamSz = Math.max(1, boss.teamSize ?? 6);
-        const totalSlots = counters.filter(c=>c.name&&c.result&&!c.result.immune);
         const bHP = effectiveHp();
+        const numR = Math.max(1, boss.numRaiders ?? 1);
 
-        // Group counters into raider teams
-        const raiderTeams: Array<{raiderIdx:number; slots:typeof counters}> = [];
-        if (boss.numRaiders > 1) {
-          for (let r = 0; r < boss.numRaiders; r++) {
-            const start = r * teamSz;
-            const team = counters.slice(start, start + teamSz).filter(c=>c.name);
-            if (team.length > 0) raiderTeams.push({ raiderIdx: r, slots: team });
-          }
-        }
+        // Group counters by raiderId if set, otherwise by equal split
+        const hasRaiderIds = counters.some(c => (c.raiderId ?? 0) > 0);
+        const raiderTeams: Array<{raiderIdx:number; slots:CounterSlot[]}> = Array.from({length:numR},(_,r)=>({
+          raiderIdx: r,
+          slots: hasRaiderIds
+            ? counters.filter(c => (c.raiderId ?? 1) === r+1)
+            : counters.slice(r * teamSz, (r+1) * teamSz),
+        }));
 
         const dcColor = (p:number) => p >= 100 ? 'var(--danger)' : p >= 50 ? 'var(--warning)' : p >= 20 ? '#fbbf24' : 'var(--success)';
         const hkoColor = (r:any) => r.ohko||r.possibleOhko ? 'var(--danger)' : r.twoHko||r.maxP>=50 ? 'var(--warning)' : 'var(--success)';
@@ -1666,77 +1664,93 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
           <div style={{background:'rgba(255,255,255,.025)',border:'1px solid rgba(255,255,255,.09)',borderRadius:10,padding:14}}>
             <div style={{fontSize:10,fontWeight:800,color:'#5865f2',textTransform:'uppercase',letterSpacing:'.09em',marginBottom:12,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
               📊 Team Analysis vs {boss.data?.name||'Boss'}{raidMult>1?` — Raid HP ×${raidMult}`:''}
-              {boss.numRaiders>1&&<span style={{fontWeight:600,color:'#f97316',textTransform:'none',fontSize:10}}>
-                {boss.numRaiders} Raiders · {teamSz} Pokémon/team · {bHP.toLocaleString()} HP
+              {numR>1&&<span style={{fontWeight:600,color:'#f97316',textTransform:'none',fontSize:10}}>
+                {numR} Raiders · {teamSz} Pokémon/team · {bHP.toLocaleString()} HP
               </span>}
             </div>
 
-            {/* Per-Raider Team Cards */}
-            {raiderTeams.length > 0 && (
+            {/* Per-Raider Team Cards — always render when numRaiders > 1 */}
+            {numR > 1 && (
               <div style={{display:'flex',flexDirection:'column',gap:12,marginBottom:16}}>
                 {raiderTeams.map(({raiderIdx, slots})=>{
-                  const validSlots = slots.filter(c=>c.result&&!c.result.immune);
+                  const validSlots = slots.filter(c=>c.result&&!c.result.immune&&c.name);
                   const teamTotalMinPct = validSlots.reduce((s,c)=>(s + (c.result?.minP??0)), 0);
                   const teamTotalMaxPct = validSlots.reduce((s,c)=>(s + (c.result?.maxP??0)), 0);
                   const teamAvgPct = (teamTotalMinPct + teamTotalMaxPct) / 2;
                   const canWin = teamTotalMinPct >= 100;
                   const likelyWin = teamTotalMaxPct >= 100;
+                  const isEmpty = slots.filter(c=>c.name).length === 0;
                   return (
-                    <div key={raiderIdx} style={{background:'rgba(0,0,0,.2)',borderRadius:10,padding:'10px 12px',border:`1px solid ${canWin?'rgba(59,165,93,.35)':likelyWin?'rgba(250,168,26,.3)':'rgba(255,255,255,.07)'}`}}>
-                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
-                        <span style={{fontSize:12,fontWeight:800,color:'#c4b5fd'}}>👤 Raider {raiderIdx+1}</span>
-                        <span style={{fontSize:10,color:'var(--text-faint)'}}>{slots.length} Pokémon</span>
-                        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
+                    <div key={raiderIdx} style={{background:'rgba(0,0,0,.2)',borderRadius:10,padding:'10px 12px',
+                      border:`1px solid ${isEmpty?'rgba(255,255,255,.05)':canWin?'rgba(59,165,93,.35)':likelyWin?'rgba(250,168,26,.3)':'rgba(255,255,255,.07)'}`,
+                      opacity:isEmpty?.55:1}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:isEmpty?0:8,flexWrap:'wrap'}}>
+                        <span style={{fontSize:12,fontWeight:800,color:isEmpty?'var(--text-faint)':'#c4b5fd'}}>
+                          {raiderIdx===0?'🥇':raiderIdx===1?'🥈':raiderIdx===2?'🥉':'👤'} Raider {raiderIdx+1}
+                        </span>
+                        <span style={{fontSize:10,color:'var(--text-faint)'}}>
+                          {isEmpty ? 'No Pokémon assigned' : `${slots.filter(c=>c.name).length} Pokémon`}
+                        </span>
+                        {!isEmpty&&<div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
                           <span style={{fontSize:11,fontWeight:700,color:canWin?'var(--success)':likelyWin?'var(--warning)':'var(--danger)'}}>
                             {canWin?'✅ Can solo':'⚠️ '+(likelyWin?'Likely beats boss':'Needs support')}
                           </span>
                           <span style={{fontSize:14,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:dcColor(teamAvgPct)}}>
                             {teamTotalMinPct.toFixed(0)}–{teamTotalMaxPct.toFixed(0)}% total dmg
                           </span>
+                        </div>}
+                      </div>
+                      {isEmpty && (
+                        <div style={{fontSize:11,color:'var(--text-faint)',fontStyle:'italic',padding:'4px 0'}}>
+                          Assign Pokémon to this raider using the counter slots above, or use "Apply to {numR} Raiders".
                         </div>
-                      </div>
-                      {/* Team damage bar */}
-                      <div style={{height:6,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',marginBottom:8,position:'relative'}}>
-                        <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,teamTotalMinPct)}%`,background:dcColor(teamAvgPct),opacity:.4,borderRadius:3}}/>
-                        <div style={{position:'absolute',left:`${Math.min(100,teamTotalMinPct)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,teamTotalMaxPct)-Math.min(100,teamTotalMinPct))}%`,background:dcColor(teamAvgPct),borderRadius:3}}/>
-                        {/* 100% marker */}
-                        <div style={{position:'absolute',left:'100%',top:0,bottom:0,width:2,background:'rgba(255,255,255,.4)',borderRadius:2,transform:'translateX(-50%)'}}/>
-                      </div>
-                      {/* Per-slot rows */}
-                      <div style={{display:'flex',flexDirection:'column',gap:3}}>
-                        {slots.map((c,si)=>{
-                          if (!c.result||c.result.immune||!c.name) return (
-                            <div key={c.id} style={{fontSize:11,color:'var(--text-faint)',padding:'3px 6px'}}>— {c.name||'Empty slot'}</div>
-                          );
-                          const r=c.result;
-                          const hitStr=r.hitsToKo[0]===r.hitsToKo[1]?`${r.hitsToKo[0]}HKO`:`${r.hitsToKo[0]}–${r.hitsToKo[1]}HKO`;
-                          return(
-                            <div key={c.id} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 6px',background:'rgba(255,255,255,.03)',borderRadius:6}}>
-                              <span style={{fontSize:10,color:'var(--text-faint)',width:16,textAlign:'center',flexShrink:0}}>{si+1}</span>
-                              <span style={{fontSize:12,fontWeight:600,color:'var(--text)',minWidth:90,flexShrink:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</span>
-                              {c.moveData&&<TypeBadge t={c.moveData.type}/>}
-                              <span style={{fontSize:10,color:'var(--text-muted)',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.moveName}</span>
-                              <div style={{display:'flex',alignItems:'center',gap:4,flexShrink:0}}>
-                                <div style={{width:50,height:4,background:'rgba(255,255,255,.07)',borderRadius:2,overflow:'hidden',position:'relative'}}>
-                                  <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,r.minP)}%`,background:dcColor(r.maxP),opacity:.4,borderRadius:2}}/>
-                                  <div style={{position:'absolute',left:`${Math.min(100,r.minP)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,r.maxP)-Math.min(100,r.minP))}%`,background:dcColor(r.maxP),borderRadius:2}}/>
-                                </div>
-                                <span style={{fontSize:11,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:'#fff',minWidth:85,textAlign:'right'}}>{r.minP.toFixed(1)}%–{r.maxP.toFixed(1)}%</span>
-                                <span style={{fontSize:10,fontWeight:700,minWidth:55,textAlign:'right',color:hkoColor(r)}}>{hitStr}</span>
+                      )}
+                      {!isEmpty&&(<>
+                        {/* Team damage bar */}
+                        <div style={{height:6,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',marginBottom:8,position:'relative'}}>
+                          <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,teamTotalMinPct)}%`,background:dcColor(teamAvgPct),opacity:.4,borderRadius:3}}/>
+                          <div style={{position:'absolute',left:`${Math.min(100,teamTotalMinPct)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,teamTotalMaxPct)-Math.min(100,teamTotalMinPct))}%`,background:dcColor(teamAvgPct),borderRadius:3}}/>
+                          <div style={{position:'absolute',left:'100%',top:0,bottom:0,width:2,background:'rgba(255,255,255,.4)',borderRadius:2,transform:'translateX(-50%)'}}/>
+                        </div>
+                        {/* Per-slot rows */}
+                        <div style={{display:'flex',flexDirection:'column',gap:3}}>
+                          {slots.map((c,si)=>{
+                            if (!c.name) return null;
+                            if (!c.result||c.result.immune) return (
+                              <div key={c.id} style={{fontSize:11,color:'var(--text-faint)',padding:'3px 6px'}}>
+                                — {c.name} <span style={{fontSize:10}}>(no result / immune)</span>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                            );
+                            const r=c.result;
+                            const hitStr=r.hitsToKo[0]===r.hitsToKo[1]?`${r.hitsToKo[0]}HKO`:`${r.hitsToKo[0]}–${r.hitsToKo[1]}HKO`;
+                            return(
+                              <div key={c.id} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 6px',background:'rgba(255,255,255,.03)',borderRadius:6}}>
+                                <span style={{fontSize:10,color:'var(--text-faint)',width:16,textAlign:'center',flexShrink:0}}>{si+1}</span>
+                                <span style={{fontSize:12,fontWeight:600,color:'var(--text)',minWidth:90,flexShrink:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</span>
+                                {c.moveData&&<TypeBadge t={c.moveData.type}/>}
+                                <span style={{fontSize:10,color:'var(--text-muted)',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.moveName}</span>
+                                <div style={{display:'flex',alignItems:'center',gap:4,flexShrink:0}}>
+                                  <div style={{width:50,height:4,background:'rgba(255,255,255,.07)',borderRadius:2,overflow:'hidden',position:'relative'}}>
+                                    <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,r.minP)}%`,background:dcColor(r.maxP),opacity:.4,borderRadius:2}}/>
+                                    <div style={{position:'absolute',left:`${Math.min(100,r.minP)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,r.maxP)-Math.min(100,r.minP))}%`,background:dcColor(r.maxP),borderRadius:2}}/>
+                                  </div>
+                                  <span style={{fontSize:11,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:'#fff',minWidth:85,textAlign:'right'}}>{r.minP.toFixed(1)}%–{r.maxP.toFixed(1)}%</span>
+                                  <span style={{fontSize:10,fontWeight:700,minWidth:55,textAlign:'right',color:hkoColor(r)}}>{hitStr}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>)}
                     </div>
                   );
                 })}
               </div>
             )}
 
-            {/* Single-raider flat list (or totals overview) */}
+            {/* Individual rankings */}
             <div style={{fontSize:10,fontWeight:700,color:'var(--text-faint)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>
-              {raiderTeams.length > 0 ? 'All Slots (Individual)' : 'Individual Rankings'}
+              {numR > 1 ? 'All Slots (Individual)' : 'Individual Rankings'}
             </div>
             <div style={{display:'flex',flexDirection:'column',gap:4}}>
               {ranked.map(({c},i)=>{
@@ -1747,6 +1761,7 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
                 return(
                   <div key={c.id} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 8px',background:i===0?'rgba(251,191,36,.05)':'rgba(255,255,255,.02)',borderRadius:6,border:'1px solid rgba(255,255,255,.04)'}}>
                     <span style={{fontSize:13,width:22,textAlign:'center',flexShrink:0}}>{medal||<span style={{fontSize:10,color:'var(--text-faint)'}}>{i+1}</span>}</span>
+                    {numR>1&&<span style={{fontSize:9,color:'#818cf8',fontWeight:700,minWidth:18,textAlign:'center',flexShrink:0}}>R{c.raiderId||1}</span>}
                     <span style={{fontSize:12,fontWeight:700,color:'var(--text)',minWidth:100,flexShrink:0}}>{c.name}</span>
                     {c.moveData&&<TypeBadge t={c.moveData.type}/>}
                     <span style={{fontSize:11,color:'var(--text-muted)',minWidth:80,flexShrink:0}}>{c.moveName}</span>

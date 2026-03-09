@@ -2354,7 +2354,7 @@ interface CustomPokeEntry {
 }
 
 const CUSTOM_LS_KEY = 'pktool_custom_pokemon_v1';
-const ALL_TYPES_CP = ['Normal','Fire','Water','Grass','Electric','Ice','Fighting','Poison','Ground','Flying','Psychic','Bug','Rock','Ghost','Dragon','Dark','Steel','Fairy'];
+const ALL_TYPES_CP = ['Normal','Fire','Water','Grass','Electric','Ice','Fighting','Poison','Ground','Flying','Psychic','Bug','Rock','Ghost','Dragon','Dark','Steel','Fairy','Shadow'];
 
 function loadCustomLS(): CustomPokeEntry[] {
   try { const r=localStorage.getItem(CUSTOM_LS_KEY); return r?JSON.parse(r):[]; } catch{return [];}
