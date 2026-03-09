@@ -1,10 +1,24 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+/**
+ * CounterCalcTool.tsx — Raid Counter Calculator (main component)
+ *
+ * Architecture:
+ *   - Shared types:       ../lib/raid_types.ts
+ *   - MC simulation:      ../lib/mc_engine.ts
+ *   - Auto-finder:        ../lib/auto_finder.ts
+ *   - Pokémon engine:     ../lib/engine_pokemon.ts
+ *   - Custom Pokémon:     defined inline below (CustomPokemonPanel)
+ *
+ * Admin vs client:
+ *   isAdmin=true  →  can create/edit/delete custom Pokémon (stored server-side)
+ *   isAdmin=false →  can view/use custom Pokémon created by admins
+ */
+
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import React from 'react';
 import {
   lookupPoke,
   lookupMove,
   searchMoves,
-  typeEff,
   getLevelUpMoves,
   runCalc,
   calcStat,
@@ -35,433 +49,29 @@ import {
 } from '../lib/engine_pokemon';
 import { TypeBadge, AutoInput } from '../lib/pokemon_components';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-interface CounterSlot {
-  id: number; name: string; data: PokeData|null;
-  level: number; nature: string; item: string;
-  evs: PokeStat; ivs: PokeStat; teraType: string;
-  moveName: string; moveData: any; zmove: boolean; isCrit: boolean;
-  result: any; error: string;
-}
-interface BossConfig {
-  name: string; data: PokeData|null;
-  level: number; nature: string;
-  evs: PokeStat; ivs: PokeStat; teraType: string;
-  raidTier: string; weather: string; doubles: boolean; defScreen: boolean;
-  numRaiders: number;
-  hpIncreasePerRaider: number;
-  hpScalingMode: 'additive' | 'multiplicative';
-  // Shield
-  shieldActivatesAt: number;     // % HP at which shield activates (0 = off)
-  shieldDamageReduction: number; // fraction 0-1 (e.g. 0.5 = halve damage)
-  // Custom movepool override
-  customMoves: MoveData[];       // if non-empty, used instead of level-up moves
-}
-interface RaiderTeam {
-  id: number;
-  label: string;
-  slots: CounterSlot[];          // each raider's independent Pokémon list
-}
+// Extracted engine modules
+import { runMCViaWorker } from '../lib/mc_engine';
+import { runAutoFinder, type SortMetric } from '../lib/auto_finder';
+import type {
+  CounterSlot, BossConfig, SimResult, CandidateMetrics, CalcResult,
+} from '../lib/raid_types';
 
+// ── Slot/Boss factories ───────────────────────────────────────────────────────
 let _slotId = 1;
 const mkSlot = (): CounterSlot => ({
-  id: _slotId++, name:'', data:null, level:100, nature:'Hardy', item:'(none)',
-  evs:{...DEFAULT_EVS}, ivs:{...DEFAULT_IVS}, teraType:'', moveName:'', moveData:null,
-  zmove:false, isCrit:false, result:null, error:'',
+  id: _slotId++, name: '', data: null, level: 100, nature: 'Hardy', item: '(none)',
+  evs: { ...DEFAULT_EVS }, ivs: { ...DEFAULT_IVS }, teraType: '',
+  moveName: '', moveData: null, zmove: false, isCrit: false,
+  raiderId: 0, result: null, error: '',
 });
+
 const mkBoss = (): BossConfig => ({
-  name:'', data:null, level:100, nature:'Hardy',
-  evs:{...DEFAULT_EVS}, ivs:{...DEFAULT_IVS}, teraType:'',
-  raidTier:'Normal (×1 HP)', weather:'None', doubles:false, defScreen:false,
-  numRaiders:1, hpIncreasePerRaider:0, hpScalingMode:'additive',
-  shieldActivatesAt:0, shieldDamageReduction:0.5, customMoves:[],
+  name: '', data: null, level: 100, nature: 'Hardy',
+  evs: { ...DEFAULT_EVS }, ivs: { ...DEFAULT_IVS }, teraType: '',
+  raidTier: 'Normal (×1 HP)', weather: 'None', doubles: false, defScreen: false,
+  numRaiders: 1, hpIncreasePerRaider: 0, hpScalingMode: 'additive',
+  shieldActivatesAt: 0, shieldDamageReduction: 0.5, customMoves: [],
 });
-let _raiderId = 1;
-const mkRaider = (n: number): RaiderTeam => ({
-  id: _raiderId++,
-  label: 'Raider ' + n,
-  slots: [mkSlot(), mkSlot(), mkSlot(), mkSlot(), mkSlot(), mkSlot()],
-});
-
-// ── Monte-Carlo engine ────────────────────────────────────────────────────────
-interface SimResult {
-  trials: number; mean: number; median: number; p90: number;
-  pWin: number; hist: Record<number,number>; policy: string;
-  perSlot: Array<{name:string;avgHd:number;avgHs:number;ohko:number;avgDd:number;avgDt:number}>;
-}
-
-function runMC(boss:BossConfig, counters:CounterSlot[], bossHP:number, trials:number, policy:string, moveWeights?: number[]): SimResult|null {
-  if (!boss.data) return null;
-  const raidMult = RAID_TIERS[boss.raidTier]??1;
-  const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp:Math.round(boss.data.stats.hp*raidMult)}};
-  const bossMoves = (boss.customMoves && boss.customMoves.length > 0) ? boss.customMoves : getLevelUpMoves(boss.name);
-  if (!bossMoves.length) return null;
-
-  const mkBase = (o:any) => runCalc(o);
-
-  const atkToBoss = counters.map(slot => {
-    const ad=slot.data||lookupPokeWithCustom(slot.name), mv=slot.moveData||lookupMove(slot.moveName);
-    if (!ad||!mv||!mv.bp) return null;
-    const res = mkBase({atkPoke:ad,defPoke:bossFake,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
-      atkEvs:slot.evs,defEvs:boss.evs,atkIvs:slot.ivs,defIvs:boss.ivs,
-      atkNat:slot.nature,defNat:boss.nature,atkTera:slot.teraType,defTera:boss.teraType,
-      atkItem:slot.item,atkStatus:'Healthy',weather:boss.weather,doubles:boss.doubles,
-      atkScreen:false,defScreen:boss.defScreen,isCrit:slot.isCrit,zmove:slot.zmove,
-      atkLv:slot.level||100,defLv:boss.level||100});
-    return res&&!res.immune ? {rolls:res.rolls,immune:false} : {rolls:[],immune:true};
-  });
-
-  const bossToAtk = bossMoves.map(mv =>
-    counters.map(slot => {
-      const ad=slot.data||lookupPokeWithCustom(slot.name); if (!ad) return null;
-      const res = mkBase({atkPoke:bossFake,defPoke:ad,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
-        atkEvs:boss.evs,defEvs:slot.evs,atkIvs:boss.ivs,defIvs:slot.ivs,
-        atkNat:boss.nature,defNat:slot.nature,atkTera:boss.teraType,defTera:slot.teraType,
-        atkItem:'(none)',atkStatus:'Healthy',weather:boss.weather,doubles:boss.doubles,
-        atkScreen:boss.defScreen,defScreen:false,isCrit:false,zmove:false,
-        atkLv:boss.level||100,defLv:slot.level||100});
-      return res&&!res.immune ? {rolls:res.rolls,immune:false} : {rolls:[],immune:true};
-    })
-  );
-
-  const atkHPs = counters.map(s=>{const d=s.data||lookupPoke(s.name);if(!d)return 0;return calcStat(d.stats.hp,s.evs.hp,s.ivs.hp,true,1,s.level||100);});
-  const atkSpes = counters.map(s=>{const d=s.data||lookupPoke(s.name);if(!d)return 0;return calcStat(d.stats.spe,s.evs.spe,s.ivs.spe,false,getNat(s.nature,'spe'),s.level||100);});
-  const bossSpe = calcStat(boss.data.stats.spe,boss.evs.spe,boss.ivs.spe,false,getNat(boss.nature,'spe'),boss.level||100);
-  const totalBP = bossMoves.reduce((s,m)=>s+m.bp,0);
-  const cumBP = bossMoves.map((_,i)=>bossMoves.slice(0,i+1).reduce((s,m)=>s+m.bp,0));
-  // Custom weights: normalise provided weights or fall back to uniform
-  const rawW = (policy==='custom' && moveWeights && moveWeights.length===bossMoves.length)
-    ? moveWeights : bossMoves.map(()=>1);
-  const totalW = rawW.reduce((a,b)=>a+b,0)||1;
-  const cumW  = rawW.map((_,i)=>rawW.slice(0,i+1).reduce((a,b)=>a+b,0)/totalW);
-  let cyclicIdx = 0;
-  const pickMv = (trialCyclicRef: {v:number}) => {
-    if (policy==='uniform')  return Math.floor(Math.random()*bossMoves.length);
-    if (policy==='cyclic')   { const idx=trialCyclicRef.v%bossMoves.length; trialCyclicRef.v++; return idx; }
-    if (policy==='custom')   { const r=Math.random(); return cumW.findIndex(w=>r<=w); }
-    // bpweighted
-    const r=Math.random()*totalBP; return cumBP.findIndex(cp=>r<=cp);
-  };
-  void cyclicIdx;
-  const sr = (rolls:number[]) => rolls[Math.floor(Math.random()*16)];
-  const acc = counters.map(()=>({hd:0,hs:0,dd:0,dt:0,ok:0,ot:0,used:0}));
-  const needed: number[] = [];
-
-  for (let t=0; t<trials; t++) {
-    let bhp=bossHP; let used=0; let won=false;
-    const cyclicRef = {v:0};  // per-trial cyclic counter for 'cyclic' policy
-    for (let si=0; si<counters.length&&bhp>0; si++) {
-      const ac=atkToBoss[si]; if (!ac||ac.immune||!atkHPs[si]) continue;
-      used++; acc[si].used++; let ahp=atkHPs[si]; let hd=0,hs=0,dd=0,dt=0; let first=true;
-      while (bhp>0&&ahp>0) {
-        const af=atkSpes[si]>=bossSpe;
-        if (af) { const d=sr(ac.rolls); bhp-=d; hd++; dd+=d; if(bhp<=0){won=true;break;} }
-        const mi=pickMv(cyclicRef); const bc=bossToAtk[mi]?.[si];
-        if (bc&&!bc.immune&&bc.rolls.length) {
-          const d=sr(bc.rolls);
-          if (first){acc[si].ot++;if(d>=ahp)acc[si].ok++;first=false;}
-          ahp-=d; hs++; dt+=d;
-        }
-        if (!af&&ahp>0) { const d=sr(ac.rolls); bhp-=d; hd++; dd+=d; if(bhp<=0){won=true;break;} }
-      }
-      acc[si].hd+=hd; acc[si].hs+=hs; acc[si].dd+=dd; acc[si].dt+=dt;
-      if (won) break;
-    }
-    needed.push(won ? used : counters.length+1);
-  }
-
-  const s=[...needed].sort((a,b)=>a-b);
-  const hist: Record<number,number>={};
-  for (const n of needed) hist[n]=(hist[n]||0)+1;
-  return {
-    trials, mean:needed.reduce((a,b)=>a+b,0)/trials,
-    median:s[Math.floor(trials/2)], p90:s[Math.floor(trials*.9)],
-    pWin:needed.filter(n=>n<=counters.length).length/trials,
-    hist, policy,
-    perSlot:counters.map((slot,i)=>{const a=acc[i];const u=a.used||1;
-      return{name:slot.name||'—',avgHd:a.hd/u,avgHs:a.hs/u,ohko:a.ot?a.ok/a.ot:0,avgDd:a.dd/u,avgDt:a.dt/u};
-    }),
-  };
-}
-
-// ── Web Worker for MC simulation ─────────────────────────────────────────────
-/**
- * Inline Blob Worker. The main thread pre-computes all roll-arrays so the
- * worker code is pure arithmetic — no Pokemon data imports needed.
- */
-const MC_WORKER_SRC = `
-self.onmessage = function(e) {
-  const p = e.data;
-  const results = runMCInner(p);
-  self.postMessage(results);
-};
-
-function runMCInner(p) {
-  const { atkToBoss, bossToAtk, atkHPs, atkSpes, bossSpe,
-          totalBP, cumBP, rawW, cumW, policy, trials, bossHP, counterNames,
-          shieldActivatesAt, shieldDamageReduction } = p;
-  const shieldHP = shieldActivatesAt > 0 ? bossHP * shieldActivatesAt / 100 : -1;
-  const shieldRed = (shieldDamageReduction > 0 && shieldDamageReduction < 1) ? (1 - shieldDamageReduction) : 1;
-  const sr = (rolls) => rolls[Math.floor(Math.random()*16)];
-  const acc = counterNames.map(() => ({hd:0,hs:0,dd:0,dt:0,ok:0,ot:0,used:0}));
-  const needed = [];
-
-  for (let t = 0; t < trials; t++) {
-    let bhp = bossHP, used = 0, won = false;
-    const cyclicRef = {v:0};
-    for (let si = 0; si < atkToBoss.length && bhp > 0; si++) {
-      const ac = atkToBoss[si];
-      if (!ac || ac.immune || !atkHPs[si]) continue;
-      used++; acc[si].used++;
-      let ahp = atkHPs[si], hd=0, hs=0, dd=0, dt=0, first=true;
-      while (bhp > 0 && ahp > 0) {
-        const shielded = shieldHP > 0 && bhp <= shieldHP;
-        const af = atkSpes[si] >= bossSpe;
-        if (af) {
-          let d = sr(ac.rolls);
-          if (shielded) d = Math.max(1, Math.floor(d * shieldRed));
-          bhp -= d; hd++; dd += d; if(bhp<=0){won=true;break;}
-        }
-        let mi;
-        if (policy==='uniform')   mi = Math.floor(Math.random()*bossToAtk.length);
-        else if (policy==='cyclic') { mi = cyclicRef.v % bossToAtk.length; cyclicRef.v++; }
-        else if (policy==='custom') { const r=Math.random(); mi=cumW.findIndex(w=>r<=w); if(mi<0)mi=0; }
-        else { const r=Math.random()*totalBP; mi=cumBP.findIndex(cp=>r<=cp); if(mi<0)mi=0; }
-        const bc = bossToAtk[mi] && bossToAtk[mi][si];
-        if (bc && !bc.immune && bc.rolls.length) {
-          const d=sr(bc.rolls);
-          if(first){acc[si].ot++;if(d>=ahp)acc[si].ok++;first=false;}
-          ahp-=d; hs++; dt+=d;
-        }
-        if (!af && ahp>0) {
-          let d = sr(ac.rolls);
-          if (shielded) d = Math.max(1, Math.floor(d * shieldRed));
-          bhp -= d; hd++; dd += d; if(bhp<=0){won=true;break;}
-        }
-      }
-      acc[si].hd+=hd; acc[si].hs+=hs; acc[si].dd+=dd; acc[si].dt+=dt;
-      if (won) break;
-    }
-    needed.push(won ? used : atkToBoss.length+1);
-  }
-
-  const s = [...needed].sort((a,b)=>a-b);
-  const hist = {};
-  for (const n of needed) hist[n]=(hist[n]||0)+1;
-  return {
-    trials, hist, policy,
-    mean: needed.reduce((a,b)=>a+b,0)/trials,
-    median: s[Math.floor(trials/2)],
-    p90: s[Math.floor(trials*.9)],
-    pWin: needed.filter(n=>n<=atkToBoss.length).length/trials,
-    perSlot: counterNames.map((name,i) => {
-      const a=acc[i], u=a.used||1;
-      return {name, avgHd:a.hd/u, avgHs:a.hs/u, ohko:a.ot?a.ok/a.ot:0, avgDd:a.dd/u, avgDt:a.dt/u};
-    }),
-  };
-}
-`;
-
-let _mcWorkerURL: string | null = null;
-function getMCWorkerURL(): string {
-  if (!_mcWorkerURL) {
-    const blob = new Blob([MC_WORKER_SRC], { type: 'application/javascript' });
-    _mcWorkerURL = URL.createObjectURL(blob);
-  }
-  return _mcWorkerURL;
-}
-
-/** Pre-compute all roll arrays so the worker doesn't need any Pokemon data. */
-function precomputeMCData(boss: BossConfig, counters: CounterSlot[], bossHP: number, policy: string, moveWeights?: number[]) {
-  const raidMult = RAID_TIERS[boss.raidTier]??1;
-  const bossFake: PokeData = {...boss.data!, stats:{...boss.data!.stats, hp:Math.round(boss.data!.stats.hp*raidMult)}};
-  const bossMoves = getLevelUpMoves(boss.name);
-  if (!bossMoves.length) return null;
-
-  const atkToBoss = counters.map(slot => {
-    const ad = slot.data||lookupPokeWithCustom(slot.name);
-    const mv = slot.moveData||lookupMove(slot.moveName);
-    if (!ad||!mv||!mv.bp) return {immune:true, rolls:[]};
-    const res = runCalc({atkPoke:ad,defPoke:bossFake,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
-      atkEvs:slot.evs,defEvs:boss.evs,atkIvs:slot.ivs,defIvs:boss.ivs,
-      atkNat:slot.nature,defNat:boss.nature,atkTera:slot.teraType,defTera:boss.teraType,
-      atkItem:slot.item,atkStatus:'Healthy',weather:boss.weather,doubles:boss.doubles,
-      atkScreen:false,defScreen:boss.defScreen,isCrit:slot.isCrit,zmove:slot.zmove,
-      atkLv:slot.level||100,defLv:boss.level||100});
-    return res&&!res.immune ? {immune:false,rolls:res.rolls} : {immune:true,rolls:[]};
-  });
-
-  const bossToAtk = bossMoves.map(mv =>
-    counters.map(slot => {
-      const ad = slot.data||lookupPokeWithCustom(slot.name);
-      if (!ad) return {immune:true,rolls:[]};
-      const res = runCalc({atkPoke:bossFake,defPoke:ad,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
-        atkEvs:boss.evs,defEvs:slot.evs,atkIvs:boss.ivs,defIvs:slot.ivs,
-        atkNat:boss.nature,defNat:slot.nature,atkTera:boss.teraType,defTera:slot.teraType,
-        atkItem:'(none)',atkStatus:'Healthy',weather:boss.weather,doubles:boss.doubles,
-        atkScreen:boss.defScreen,defScreen:false,isCrit:false,zmove:false,
-        atkLv:boss.level||100,defLv:slot.level||100});
-      return res&&!res.immune ? {immune:false,rolls:res.rolls} : {immune:true,rolls:[]};
-    })
-  );
-
-  const atkHPs  = counters.map(s=>{const d=s.data||lookupPokeWithCustom(s.name);if(!d)return 0;return calcStat(d.stats.hp,s.evs.hp,s.ivs.hp,true,1,s.level||100);});
-  const atkSpes = counters.map(s=>{const d=s.data||lookupPokeWithCustom(s.name);if(!d)return 0;return calcStat(d.stats.spe,s.evs.spe,s.ivs.spe,false,getNat(s.nature,'spe'),s.level||100);});
-  const bossSpe = calcStat(boss.data!.stats.spe,boss.evs.spe,boss.ivs.spe,false,getNat(boss.nature,'spe'),boss.level||100);
-  const totalBP = bossMoves.reduce((s,m)=>s+m.bp,0);
-  const cumBP   = bossMoves.map((_,i)=>bossMoves.slice(0,i+1).reduce((s,m)=>s+m.bp,0));
-  const rawW    = (policy==='custom'&&moveWeights?.length===bossMoves.length) ? moveWeights : bossMoves.map(()=>1);
-  const totW    = rawW.reduce((a,b)=>a+b,0)||1;
-  const cumW    = rawW.map((_,i)=>rawW.slice(0,i+1).reduce((a,b)=>a+b,0)/totW);
-
-  return { atkToBoss, bossToAtk, atkHPs, atkSpes, bossSpe, totalBP, cumBP, rawW, cumW,
-           counterNames: counters.map(s=>s.name||'—'), bossHP, policy,
-           shieldActivatesAt: boss.shieldActivatesAt || 0,
-           shieldDamageReduction: boss.shieldDamageReduction || 0 };
-}
-
-function runMCViaWorker(
-  boss: BossConfig, counters: CounterSlot[], bossHP: number,
-  trials: number, policy: string, moveWeights?: number[]
-): Promise<SimResult|null> {
-  return new Promise(resolve => {
-    const pre = precomputeMCData(boss, counters, bossHP, policy, moveWeights);
-    if (!pre) { resolve(null); return; }
-    try {
-      const worker = new Worker(getMCWorkerURL());
-      worker.onmessage = (e) => { resolve(e.data as SimResult); worker.terminate(); };
-      worker.onerror   = ()  => { resolve(null); worker.terminate(); };
-      worker.postMessage({ ...pre, trials });
-    } catch { resolve(null); }
-  });
-}
-
-// ── Auto-Finder Engine ───────────────────────────────────────────────────────
-
-interface CandidateMetrics {
-  name: string; data: PokeData; bestMove: MoveData;
-  eff: number;
-  avgDmgPct: number;
-  avgTotalPct: number;
-  ohkoRisk: number;
-  turnsSurvived: number;
-  estRaiders: number;
-}
-
-function analyticalRaiders(
-  d: number, inc: number, mode: 'additive'|'multiplicative', k = 6
-): number {
-  if (d <= 0) return 999;
-  if (inc === 0) return Math.ceil(1 / (k * d));
-  if (mode === 'additive') {
-    const denom = k * d - inc;
-    if (denom <= 0) return 999;
-    return Math.ceil((1 - inc) / denom);
-  }
-  for (let r = 1; r <= 100; r++) {
-    if (r * k * d >= Math.pow(1 + inc, r - 1)) return r;
-  }
-  return 999;
-}
-
-function computeCandidate(
-  name: string,
-  boss: BossConfig,
-  bossBaseHP: number,
-  inc: number,
-  mode: 'additive'|'multiplicative'
-): CandidateMetrics | null {
-  const data = lookupPokeWithCustom(name);
-  if (!data || !boss.data) return null;
-  const bst = data.stats.hp+data.stats.atk+data.stats.def+data.stats.spa+data.stats.spd+data.stats.spe;
-  if (bst < 330) return null;
-
-  const raidMult = RAID_TIERS[boss.raidTier] ?? 1;
-  const bossTypes = boss.teraType ? [boss.teraType] : boss.data.types;
-  const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp: Math.round(boss.data.stats.hp*raidMult)}};
-
-  const moves = getAllLearnableMoveNamesWithCustom(name);
-  if (!moves.length) return null;
-  let bestMove: MoveData | null = null;
-  let bestScore = -1;
-  for (const mv of moves) {
-    const eff = typeEff(mv.type, bossTypes);
-    if (eff === 0) continue;
-    const stab = data.types.includes(mv.type) ? 1.5 : 1;
-    const score = eff * mv.bp * stab;
-    if (score > bestScore) { bestScore = score; bestMove = mv; }
-  }
-  if (!bestMove) return null;
-
-  const eff = typeEff(bestMove.type, bossTypes);
-  const atkRes = runCalc({
-    atkPoke:data, defPoke:bossFake, bp:bestMove.bp, cat:bestMove.cat, mtyp:bestMove.type,
-    atkEvs:DEFAULT_EVS, defEvs:boss.evs, atkIvs:DEFAULT_IVS, defIvs:boss.ivs,
-    atkNat:'Hardy', defNat:boss.nature, atkTera:'', defTera:boss.teraType,
-    atkItem:'(none)', atkStatus:'Healthy', weather:boss.weather, doubles:boss.doubles,
-    atkScreen:false, defScreen:boss.defScreen, isCrit:false, zmove:false,
-    atkLv:100, defLv:boss.level||100,
-  });
-  if (!atkRes || atkRes.immune) return null;
-  const avgDmg = ((atkRes.minD??0) + (atkRes.maxD??0)) / 2;
-  const avgDmgPct = bossBaseHP > 0 ? avgDmg / bossBaseHP * 100 : 0;
-  if (avgDmgPct < 0.1) return null;
-
-  const bossMoves = getLevelUpMoves(boss.name);
-  const atkHP = calcStat(data.stats.hp, 0, 31, true, 1, 100);
-  let ohkoRisk = 0, turnsSurvived = 99;
-  if (bossMoves.length) {
-    const strongestBossMove = bossMoves.reduce((a,b) => a.bp > b.bp ? a : b);
-    const defRes = runCalc({
-      atkPoke:bossFake, defPoke:data,
-      bp:strongestBossMove.bp, cat:strongestBossMove.cat, mtyp:strongestBossMove.type,
-      atkEvs:boss.evs, defEvs:DEFAULT_EVS, atkIvs:boss.ivs, defIvs:DEFAULT_IVS,
-      atkNat:boss.nature, defNat:'Hardy', atkTera:boss.teraType, defTera:'',
-      atkItem:'(none)', atkStatus:'Healthy', weather:boss.weather, doubles:boss.doubles,
-      atkScreen:false, defScreen:false, isCrit:false, zmove:false,
-      atkLv:boss.level||100, defLv:100,
-    });
-    if (defRes && !defRes.immune) {
-      const avgBossDmg = ((defRes.minD??0) + (defRes.maxD??0)) / 2;
-      if (avgBossDmg > 0) {
-        turnsSurvived = Math.max(1, Math.floor(atkHP / avgBossDmg));
-        ohkoRisk = Math.min(1, (defRes.maxD??0) / atkHP);
-      }
-    }
-  }
-
-  const atkSpe = calcStat(data.stats.spe, 0, 31, false, 1, 100);
-  const bossSpe = calcStat(boss.data.stats.spe, boss.evs.spe, boss.ivs.spe, false, getNat(boss.nature,'spe'), boss.level||100);
-  const extraHit = atkSpe >= bossSpe ? 1 : 0;
-  const totalHits = Math.min(turnsSurvived + extraHit, 30);
-  const avgTotalPct = avgDmgPct * totalHits;
-  const estRaiders = Math.max(1, analyticalRaiders(avgTotalPct / 100, inc, mode));
-
-  return { name, data, bestMove, eff, avgDmgPct, avgTotalPct, ohkoRisk, turnsSurvived, estRaiders };
-}
-
-async function runAutoFinder(
-  boss: BossConfig,
-  bossBaseHP: number,
-  inc: number,
-  mode: 'additive'|'multiplicative',
-  maxResults: number,
-  onProgress: (pct: number) => void
-): Promise<CandidateMetrics[]> {
-  const names = getAllPokemonNamesWithCustom();
-  const results: CandidateMetrics[] = [];
-  const CHUNK = 40;
-  for (let i = 0; i < names.length; i += CHUNK) {
-    await new Promise<void>(r => setTimeout(r, 0));
-    onProgress(Math.round(i / names.length * 100));
-    for (let j = i; j < Math.min(i + CHUNK, names.length); j++) {
-      const cand = computeCandidate(names[j], boss, bossBaseHP, inc, mode);
-      if (cand && cand.estRaiders < 500) results.push(cand);
-    }
-  }
-  results.sort((a,b) => a.estRaiders - b.estRaiders || b.avgTotalPct - a.avgTotalPct);
-  return results.slice(0, maxResults);
-}
 
 // ── Custom Pokémon Panel ─────────────────────────────────────────────────────
 interface CustomPokeEntry {
@@ -791,6 +401,7 @@ function AutoFinderPanel({ boss, bossBaseHP, onLoadCounters, sdState }: {
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<CandidateMetrics[]>([]);
   const [maxResults, setMaxResults] = useState(40);
+  const [sortMetric, setSortMetric] = useState<SortMetric>('raiders');
   const [err, setErr] = useState('');
   const [loadN, setLoadN] = useState(6);
   const [mcRunning, setMcRunning] = useState(false);
@@ -803,7 +414,7 @@ function AutoFinderPanel({ boss, bossBaseHP, onLoadCounters, sdState }: {
     if (!boss.data) return;
     setErr(''); setRunning(true); setResults([]); setProgress(0); setMcResult(null);
     try {
-      const found = await runAutoFinder(boss, bossBaseHP, inc, boss.hpScalingMode, maxResults, setProgress);
+      const found = await runAutoFinder(boss, bossBaseHP, inc, boss.hpScalingMode, maxResults, setProgress, sortMetric);
       if (!found.length) setErr('No viable counters found — ensure boss Pokémon is set and data is loaded.');
       setResults(found);
     } catch(e: any) { setErr(String(e)); }
@@ -857,6 +468,15 @@ function AutoFinderPanel({ boss, bossBaseHP, onLoadCounters, sdState }: {
                       fontWeight:maxResults===n?700:400,fontFamily:"'Lexend',sans-serif"}}>{n}</button>
                 ))}
               </div>
+            </div>
+            <div>
+              <label style={LBL}>Sort by</label>
+              <select style={{...SEL,fontSize:11}} value={sortMetric} onChange={e=>setSortMetric(e.target.value as SortMetric)}>
+                <option value="raiders">Min Raiders</option>
+                <option value="damage">Max Damage</option>
+                <option value="ohko">Lowest OHKO Risk</option>
+                <option value="turns">Most Turns Survived</option>
+              </select>
             </div>
             <button onClick={runFind} disabled={running||sdState!=='ready'}
               style={{padding:'8px 20px',background:'linear-gradient(135deg,#7c3aed,#4f46e5)',border:'none',
@@ -1083,7 +703,7 @@ function CounterRow({ slot, onChange, onRemove, rank }: {
 function BossSimPanel({ boss, counters }: { boss:BossConfig; counters:CounterSlot[] }) {
   const [open, setOpen] = useState(false);
   const bossData = boss.data; if (!bossData) return null;
-  const bossMoves = getLevelUpMoves(boss.name); if (!bossMoves.length) return null;
+  const bossMoves = (boss.customMoves?.length ? boss.customMoves : getLevelUpMoves(boss.name)); if (!bossMoves.length) return null;
   const raidMult = RAID_TIERS[boss.raidTier]??1;
   const bossFake: PokeData = {...bossData, stats:{...bossData.stats, hp:Math.round(bossData.stats.hp*raidMult)}};
   const bossTypes = boss.teraType ? [boss.teraType] : bossData.types;
@@ -1186,7 +806,8 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
   if (!boss.data) return null;
 
   const valid = counters.filter(c=>c.name&&(c.data||lookupPoke(c.name))&&c.moveName&&(c.moveData||lookupMove(c.moveName)));
-  const bm = getLevelUpMoves(boss.name);
+  // Use custom movepool if configured, otherwise fall back to level-up moves
+  const bm = boss.customMoves?.length ? boss.customMoves : getLevelUpMoves(boss.name);
 
   const getWeightsArray = () => bm.map(mv => {
     const w = moveWeights[mv.name];
@@ -1195,7 +816,7 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
 
   const run = async () => {
     if (!valid.length) { setErr('Add at least one complete counter slot.'); return; }
-    if (!bm.length)    { setErr(`No level-up moves found for ${boss.data!.name}.`); return; }
+    if (!bm.length)    { setErr(`No moves found for ${boss.data!.name}. Add custom moves in Boss Configuration, or the boss has no level-up data.`); return; }
     setErr(''); setRun(true); setResult(null);
     const wts = (policy==='custom') ? getWeightsArray() : undefined;
     const res = await runMCViaWorker(boss, counters, bossHP, trials, policy, wts);
@@ -1481,7 +1102,12 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
                         <tbody>
                           {species.map((s,i)=>(
                             <tr key={s.name} style={{borderBottom:'1px solid rgba(255,255,255,.04)',background:i%2===0?'rgba(255,255,255,.015)':'transparent'}}>
-                              <td style={{padding:'6px 8px',fontWeight:700,color:'var(--text)'}}>{s.name}</td>
+                              <td style={{padding:'6px 8px',fontWeight:700,color:'var(--text)'}}>
+                                <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
+                                  <span>{s.name}</span>
+                                  {(()=>{const d=lookupPokeWithCustom(s.name);return d?d.types.map(t=><TypeBadge key={t} t={t}/>):null;})()}
+                                </div>
+                              </td>
                               <td style={{padding:'6px 8px',textAlign:'center',color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace"}}>×{s.count}</td>
                               <td style={{padding:'6px 8px',textAlign:'center'}}>
                                 <div style={{display:'flex',alignItems:'center',gap:5}}>
@@ -1544,9 +1170,8 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
   const setBoss = (p:Partial<BossConfig>) => { setBossRaw(prev=>({...prev,...p})); setCalc(false); };
   const addSlot = () => setCounters(cs=>[...cs,mkSlot()]);
   const loadAutoFinderSlots = (partials: Partial<CounterSlot>[]) => {
-    const newSlots = partials.map(p => ({ ...mkSlot(), ...p, result:null, error:'' }));
+    const newSlots = partials.map(p => ({ ...mkSlot(), ...p, result:null, error:'', raiderId:1 }));
     setCounters(newSlots); setCalc(false);
-    // Auto-save first 6 as template so "Apply to All Raiders" works immediately
     setTeamTemplate(newSlots.slice(0, 6));
   };
   const removeSlot = (id:number) => setCounters(cs=>cs.filter(c=>c.id!==id));
@@ -1721,6 +1346,83 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
             </span>
           )}
         </div>
+
+        {/* ── Shield Mechanics ─────────────────────────────────── */}
+        <div style={{marginTop:10,padding:'10px 12px',background:'rgba(59,130,246,.05)',borderRadius:8,border:'1px solid rgba(59,130,246,.15)'}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#60a5fa',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+            🛡 Shield Mechanics
+            <span style={{fontSize:10,color:'var(--text-faint)',fontWeight:400,textTransform:'none'}}>(0 = off)</span>
+          </div>
+          <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-end'}}>
+            <div>
+              <label style={LBL}>Activates at % HP</label>
+              <input style={{...INP,width:70}} type="number" min={0} max={99} step={5}
+                value={boss.shieldActivatesAt}
+                title="Boss gains shield when HP drops below this percentage. 0 = no shield."
+                onChange={e=>setBoss({shieldActivatesAt:Math.max(0,Math.min(99,Number(e.target.value)||0))})}/>
+            </div>
+            <div>
+              <label style={LBL}>Damage Reduction (0–1)</label>
+              <input style={{...INP,width:70}} type="number" min={0} max={0.99} step={0.05}
+                value={boss.shieldDamageReduction}
+                title="While shielded, attacker damage is multiplied by (1 – this value). 0.5 = halve all damage."
+                onChange={e=>setBoss({shieldDamageReduction:Math.max(0,Math.min(0.99,Number(e.target.value)||0))})}/>
+            </div>
+            {boss.shieldActivatesAt>0&&(
+              <div style={{fontSize:11,color:'#60a5fa',padding:'4px 10px',background:'rgba(59,130,246,.1)',borderRadius:6,border:'1px solid rgba(59,130,246,.2)'}}>
+                Shield at {boss.shieldActivatesAt}% HP · {Math.round(boss.shieldDamageReduction*100)}% damage reduction
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Custom Boss Movepool ──────────────────────────────── */}
+        <div style={{marginTop:10,padding:'10px 12px',background:'rgba(239,68,68,.04)',borderRadius:8,border:'1px solid rgba(239,68,68,.15)'}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#f87171',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:8,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+            ⚔️ Boss Movepool
+            {boss.customMoves.length===0&&<span style={{fontSize:10,color:'var(--text-faint)',fontWeight:400,textTransform:'none'}}>— using level-up moves</span>}
+            {boss.customMoves.length>0&&<span style={{fontSize:10,color:'#fca5a5',fontWeight:600,textTransform:'none'}}>— {boss.customMoves.length} custom move{boss.customMoves.length!==1?'s':''} (overrides level-up)</span>}
+            <button onClick={()=>setBoss({customMoves:[...boss.customMoves,{name:'',type:'Normal',cat:'Physical',bp:80}]})}
+              style={{marginLeft:'auto',padding:'2px 8px',background:'rgba(239,68,68,.12)',border:'1px solid rgba(239,68,68,.3)',borderRadius:5,color:'#fca5a5',cursor:'pointer',fontSize:11,fontWeight:700}}>
+              + Add Move
+            </button>
+            {boss.customMoves.length>0&&(
+              <button onClick={()=>setBoss({customMoves:[]})}
+                style={{padding:'2px 8px',background:'transparent',border:'1px solid rgba(255,255,255,.1)',borderRadius:5,color:'var(--text-faint)',cursor:'pointer',fontSize:11}}>
+                Clear
+              </button>
+            )}
+          </div>
+          {boss.customMoves.length===0&&boss.data&&(()=>{
+            const lum = getLevelUpMoves(boss.name);
+            return lum.length ? (
+              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                {lum.map(mv=>(
+                  <span key={mv.name} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 8px',background:'rgba(255,255,255,.04)',borderRadius:5,border:'1px solid var(--border)',fontSize:11,color:'var(--text-muted)'}}>
+                    <TypeBadge t={mv.type}/>{mv.name} <span style={{color:'var(--text-faint)',fontSize:9}}>BP{mv.bp}</span>
+                  </span>
+                ))}
+              </div>
+            ) : <div style={{fontSize:11,color:'var(--text-faint)'}}>No level-up moves found — add custom moves above.</div>;
+          })()}
+          {boss.customMoves.map((mv,i)=>(
+            <div key={i} style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 60px auto',gap:6,alignItems:'center',marginBottom:4}}>
+              <AutoInput label="" value={mv.name} searchFn={searchMoves}
+                onChange={v=>{const found=lookupMove(v);const nm=[...boss.customMoves];nm[i]={...nm[i],name:v,type:found?.type||nm[i].type,cat:found?.cat||nm[i].cat,bp:found?.bp||nm[i].bp};setBoss({customMoves:nm});}}
+                placeholder="Move name"/>
+              <select style={SEL} value={mv.type} onChange={e=>{const nm=[...boss.customMoves];nm[i]={...nm[i],type:e.target.value};setBoss({customMoves:nm});}}>
+                {ALL_TYPES.map(t=><option key={t}>{t}</option>)}
+              </select>
+              <select style={SEL} value={mv.cat} onChange={e=>{const nm=[...boss.customMoves];nm[i]={...nm[i],cat:e.target.value};setBoss({customMoves:nm});}}>
+                <option value="Physical">Physical</option><option value="Special">Special</option>
+              </select>
+              <input type="number" style={{...INP,padding:'4px 6px'}} min={1} max={300} value={mv.bp}
+                onChange={e=>{const nm=[...boss.customMoves];nm[i]={...nm[i],bp:Math.max(1,Number(e.target.value))};setBoss({customMoves:nm});}}/>
+              <button onClick={()=>setBoss({customMoves:boss.customMoves.filter((_,j)=>j!==i)})}
+                style={{padding:'4px 8px',background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.25)',borderRadius:5,color:'#ef4444',cursor:'pointer',fontSize:12}}>✕</button>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Custom Pokémon panel */}
@@ -1765,10 +1467,11 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
             <button className="btn btn-ghost btn-sm"
               title={"Replicate template across all " + boss.numRaiders + " raiders"}
               onClick={()=>{
+                if (counters.length > 0 && !window.confirm(`This will overwrite all ${counters.length} current counter slots. Continue?`)) return;
                 const tpl = teamTemplate.slice(0,6);
                 const newCounters: CounterSlot[] = [];
                 for (let r=0; r<boss.numRaiders; r++) {
-                  tpl.forEach(slot => newCounters.push({...slot, id:_slotId++, result:null, error:''}));
+                  tpl.forEach(slot => newCounters.push({...slot, id:_slotId++, result:null, error:'', raiderId:r+1}));
                 }
                 setCounters(newCounters); setCalc(false);
               }}>
