@@ -6,7 +6,7 @@
  *   - MC simulation:      ../lib/mc_engine.ts
  *   - Auto-finder:        ../lib/auto_finder.ts
  *   - Pokémon engine:     ../lib/engine_pokemon.ts
- *   - Custom Pokémon:     defined inline below (CustomPokemonPanel)
+ *   - Custom Pokémon:     managed by admins in BossInfo → ✨ Custom Pokémon tab
  *
  * Admin vs client:
  *   isAdmin=true  →  can create/edit/delete custom Pokémon (stored server-side)
@@ -19,6 +19,7 @@ import {
   lookupPoke,
   lookupMove,
   searchMoves,
+  searchMovesWithCustom,
   getLevelUpMoves,
   runCalc,
   calcStat,
@@ -71,7 +72,7 @@ const mkBoss = (): BossConfig => ({
   evs: { ...DEFAULT_EVS }, ivs: { ...DEFAULT_IVS }, teraType: '',
   raidTier: 'Normal (×1 HP)', weather: 'None', doubles: false, defScreen: false,
   numRaiders: 1, hpIncreasePerRaider: 0, hpScalingMode: 'additive',
-  shieldActivatesAt: 0, shieldDamageReduction: 0.5, customMoves: [],
+  customMoves: [], teamSize: 6,
 });
 
 // ── Custom Pokémon Panel ─────────────────────────────────────────────────────
@@ -647,7 +648,7 @@ function CounterRow({ slot, onChange, onRemove, rank }: {
           {medal || <span style={{fontSize:9,color:'var(--text-faint)',fontWeight:700}}>#{slot.id}</span>}
         </span>
         <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.name} searchFn={searchPokemonWithCustom} onChange={v=>{const d=lookupPokeWithCustom(v);upd({name:v,data:d,result:null,error:''});}} placeholder="Attacker Pokémon…"/></div>
-        <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.moveName} searchFn={searchMoves} onChange={v=>{const mv=lookupMoveWithCustom(v);upd({moveName:v,moveData:mv,result:null,error:''});}} placeholder="Move…"/></div>
+        <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.moveName} searchFn={searchMovesWithCustom} onChange={v=>{const mv=lookupMoveWithCustom(v);upd({moveName:v,moveData:mv,result:null,error:''});}} placeholder="Move…"/></div>
         <select style={{...SEL,width:'auto',minWidth:100,fontSize:11}} value={slot.nature} onChange={e=>upd({nature:e.target.value,result:null})}>{Object.keys(NATURES).map(n=><option key={n}>{n}</option>)}</select>
         <select style={{...SEL,width:'auto',minWidth:90,fontSize:11}} value={slot.teraType} onChange={e=>upd({teraType:e.target.value,result:null})}><option value="">No Tera</option>{ALL_TYPES.map(t=><option key={t}>{t}</option>)}</select>
         <label style={{display:'flex',alignItems:'center',gap:3,fontSize:11,color:'var(--text-muted)',cursor:'pointer',whiteSpace:'nowrap'}}><input type="checkbox" checked={slot.isCrit} onChange={e=>upd({isCrit:e.target.checked,result:null})}/> Crit</label>
@@ -805,16 +806,18 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
 }) {
   const [open, setOpen]     = useState(false);
   const [trials, setTrials] = useState(2000);
-  const [policy, setPolicy] = useState<'uniform'|'bpweighted'|'cyclic'|'custom'>('uniform');
+  const [policy, setPolicy] = useState<'uniform'|'bpweighted'|'cyclic'|'custom'>('bpweighted');
   const [result, setResult] = useState<SimResult|null>(null);
   const [running, setRun]   = useState(false);
   const [err, setErr]       = useState('');
   const [moveWeights, setMoveWeights] = useState<Record<string,number>>({});
+  const [viewMode, setViewMode] = useState<'raiders'|'pokemon'|'chart'>('raiders');
   if (!boss.data) return null;
 
-  const valid = counters.filter(c=>c.name&&(c.data||lookupPoke(c.name))&&c.moveName&&(c.moveData||lookupMove(c.moveName)));
-  // Use custom movepool if configured, otherwise fall back to level-up moves
+  const valid = counters.filter(c=>c.name&&c.moveName);
   const bm = boss.customMoves?.length ? boss.customMoves : getLevelUpMoves(boss.name);
+  const teamSz = Math.max(1, boss.teamSize ?? 6);
+  const numRaiders = Math.max(1, boss.numRaiders ?? 1);
 
   const getWeightsArray = () => bm.map(mv => {
     const w = moveWeights[mv.name];
@@ -823,323 +826,418 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
 
   const run = async () => {
     if (!valid.length) { setErr('Add at least one complete counter slot.'); return; }
-    if (!bm.length)    { setErr(`No moves found for ${boss.data!.name}. Add custom moves in Boss Configuration, or the boss has no level-up data.`); return; }
+    if (!bm.length)    { setErr(`No moves found for ${boss.data!.name}. Add custom moves above.`); return; }
     setErr(''); setRun(true); setResult(null);
     const wts = (policy==='custom') ? getWeightsArray() : undefined;
     const res = await runMCViaWorker(boss, counters, bossHP, trials, policy, wts);
     setResult(res);
     setRun(false);
+    // Auto-switch to best view
+    if (numRaiders > 1) setViewMode('raiders');
   };
 
-  const maxH = result ? Math.max(...Object.values(result.hist)) : 1;
+  const maxH = result ? Math.max(...(Object.values(result.hist) as number[])) : 1;
   const hkeys = result ? Object.keys(result.hist).map(Number).sort((a,b)=>a-b) : [];
+
+  // Build per-raider data from perSlot
+  const raiderData = result ? Array.from({length:numRaiders},(_,r)=>{
+    const slots = result.perSlot.slice(r*teamSz, (r+1)*teamSz);
+    const totalDmgPct = slots.reduce((a,s)=>a+s.avgDd/bossHP*100,0);
+    const avgOhko = slots.length ? slots.reduce((a,s)=>a+s.ohko,0)/slots.length : 0;
+    const totalHits = slots.reduce((a,s)=>a+s.avgHd,0);
+    return {r, slots, totalDmgPct, avgOhko, totalHits};
+  }) : [];
+
+  const winColor = (p:number) => p>=.8?'var(--success)':p>=.5?'var(--warning)':'var(--danger)';
+  const winBg    = (p:number) => p>=.8?'rgba(59,165,93,.12)':p>=.5?'rgba(250,168,26,.12)':'rgba(237,66,69,.12)';
+  const winBdr   = (p:number) => p>=.8?'rgba(59,165,93,.4)':p>=.5?'rgba(250,168,26,.4)':'rgba(237,66,69,.4)';
+  const dmgColor = (p:number) => p>=40?'var(--danger)':p>=15?'var(--warning)':'var(--success)';
+  const ohkoColor= (p:number) => p>=.5?'var(--danger)':p>=.2?'var(--warning)':'var(--success)';
 
   return (
     <div style={{border:'1px solid rgba(99,102,241,.3)',borderRadius:12,overflow:'hidden'}}>
+      {/* Header */}
       <button onClick={()=>setOpen(o=>!o)} style={{width:'100%',padding:'11px 16px',background:'rgba(99,102,241,.07)',border:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',fontFamily:"'Lexend',sans-serif"}}>
         <span style={{fontSize:11,fontWeight:800,color:'#a5b4fc',textTransform:'uppercase',letterSpacing:'.09em',display:'flex',alignItems:'center',gap:8}}>
           🎲 Monte-Carlo Simulation
-          {result&&<span style={{fontSize:10,color:'var(--success)',fontWeight:600,textTransform:'none'}}>
-            · {(result.pWin*100).toFixed(0)}% win · avg {result.mean.toFixed(1)} attacker{result.mean!==1?'s':''}
+          {result&&<span style={{fontWeight:600,textTransform:'none',fontSize:11,
+            color:winColor(result.pWin),background:winBg(result.pWin),padding:'2px 8px',borderRadius:6,border:`1px solid ${winBdr(result.pWin)}`}}>
+            {(result.pWin*100).toFixed(0)}% win · avg {result.mean.toFixed(1)} Pokémon used
           </span>}
         </span>
         <span style={{color:'var(--text-faint)',fontSize:12}}>{open?'▲':'▼'}</span>
       </button>
+
       {open&&(
-        <div style={{padding:16,display:'flex',flexDirection:'column',gap:12}}>
-          {/* Controls */}
-          <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}}>
+        <div style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
+
+          {/* ── Controls ─────────────────────────────────────────────── */}
+          <div style={{display:'flex',gap:14,flexWrap:'wrap',alignItems:'flex-start',
+            padding:'12px 14px',background:'rgba(255,255,255,.03)',borderRadius:9,border:'1px solid rgba(255,255,255,.06)'}}>
+
+            {/* Trials */}
             <div>
-              <label style={LBL}>Trials</label>
+              <label style={LBL}>Simulation Trials</label>
               <div style={{display:'flex',gap:4}}>
-                {[500,2000,5000].map(n=>(
-                  <button key={n} onClick={()=>setTrials(n)} style={{padding:'5px 11px',borderRadius:6,border:'1px solid var(--border)',background:trials===n?'rgba(99,102,241,.3)':'transparent',color:trials===n?'#a5b4fc':'var(--text-muted)',cursor:'pointer',fontSize:12,fontWeight:trials===n?700:400,fontFamily:"'Lexend',sans-serif"}}>
-                    {n.toLocaleString()}
+                {[500,2000,5000,10000].map(n=>(
+                  <button key={n} onClick={()=>setTrials(n)} style={{padding:'5px 10px',borderRadius:6,
+                    border:'1px solid var(--border)',
+                    background:trials===n?'rgba(99,102,241,.3)':'transparent',
+                    color:trials===n?'#a5b4fc':'var(--text-muted)',cursor:'pointer',fontSize:11,
+                    fontWeight:trials===n?700:400,fontFamily:"'Lexend',sans-serif"}}>
+                    {n >= 1000 ? (n/1000)+'k' : n}
                   </button>
                 ))}
               </div>
             </div>
-            <div>
-              <label style={LBL}>Boss Move Policy</label>
+
+            {/* Policy */}
+            <div style={{flex:1,minWidth:220}}>
+              <label style={LBL}>Boss Move Selection Policy</label>
               <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                {(['uniform','bpweighted','cyclic','custom'] as const).map(p=>(
-                  <button key={p} onClick={()=>setPolicy(p)} style={{padding:'5px 11px',borderRadius:6,border:'1px solid var(--border)',background:policy===p?'rgba(99,102,241,.3)':'transparent',color:policy===p?'#a5b4fc':'var(--text-muted)',cursor:'pointer',fontSize:12,fontWeight:policy===p?700:400,fontFamily:"'Lexend',sans-serif"}}>
-                    {p==='uniform'?'Uniform':p==='bpweighted'?'BP-Weighted':p==='cyclic'?'Cyclic':'Custom'}
+                {([
+                  {id:'uniform',    label:'Uniform',    tip:'All moves equally likely each turn'},
+                  {id:'bpweighted', label:'BP-Weighted', tip:'Higher BP moves used more often'},
+                  {id:'cyclic',     label:'Cyclic',      tip:'Boss rotates through moves in fixed order'},
+                  {id:'custom',     label:'Custom',      tip:'You set the probability weight for each move'},
+                ] as const).map(p=>(
+                  <button key={p.id} onClick={()=>setPolicy(p.id)} title={p.tip}
+                    style={{padding:'5px 11px',borderRadius:6,border:'1px solid var(--border)',
+                      background:policy===p.id?'rgba(99,102,241,.3)':'transparent',
+                      color:policy===p.id?'#a5b4fc':'var(--text-muted)',cursor:'pointer',fontSize:11,
+                      fontWeight:policy===p.id?700:400,fontFamily:"'Lexend',sans-serif"}}>
+                    {p.label}
                   </button>
                 ))}
               </div>
-              {policy==='cyclic'&&<div style={{fontSize:10,color:'var(--text-faint)',marginTop:5}}>Boss cycles through its moves in fixed order each turn — realistic for scripted bosses.</div>}
+              <div style={{fontSize:10,color:'var(--text-faint)',marginTop:4}}>
+                {policy==='uniform'    && '⚖️ Each of the boss\'s moves has an equal chance of being used each turn.'}
+                {policy==='bpweighted' && '💪 Moves with higher base power are selected more often — simulates aggressive boss AI.'}
+                {policy==='cyclic'     && '🔄 Boss uses its moves in strict rotation — ideal for scripted or raid-style bosses.'}
+                {policy==='custom'     && '🎛️ Set individual weights below. Higher weight = selected more often.'}
+              </div>
               {policy==='custom'&&bm.length>0&&(
-                <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:5}}>
-                  <div style={{fontSize:10,color:'var(--text-faint)',marginBottom:2}}>Assign relative weight to each move (higher = more frequent). Default is the move BP.</div>
+                <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:4,
+                  background:'rgba(0,0,0,.2)',borderRadius:8,padding:'8px 10px'}}>
                   {bm.map(mv=>(
                     <div key={mv.name} style={{display:'flex',alignItems:'center',gap:8}}>
                       <TypeBadge t={mv.type}/>
-                      <span style={{fontSize:11,color:'var(--text-muted)',minWidth:120,flex:1}}>{mv.name} <span style={{color:'var(--text-faint)'}}>BP{mv.bp}</span></span>
-                      <input type="number" min={0} max={100} style={{...INP,width:64,padding:'4px 6px'}}
+                      <span style={{fontSize:11,color:'var(--text-muted)',flex:1}}>{mv.name} <span style={{color:'var(--text-faint)'}}>BP{mv.bp}</span></span>
+                      <input type="number" min={0} max={100} style={{...INP,width:60,padding:'3px 6px'}}
                         value={moveWeights[mv.name]??mv.bp}
-                        onChange={e=>setMoveWeights(prev=>({...prev,[mv.name]:Math.max(0,Number(e.target.value))}))}
-                      />
+                        onChange={e=>setMoveWeights(prev=>({...prev,[mv.name]:Math.max(0,Number(e.target.value))}))}/>
                     </div>
                   ))}
                 </div>
               )}
             </div>
-            <button className="btn btn-primary" onClick={run} disabled={running||sdState!=='ready'}
-              style={{opacity:(running||sdState!=='ready')?.5:1}}>
-              {running?'Running…':'▶ Run Simulation'}
-            </button>
+
+            <div style={{display:'flex',flexDirection:'column',gap:6,justifyContent:'flex-end'}}>
+              <button className="btn btn-primary" onClick={run} disabled={running||sdState!=='ready'}
+                style={{opacity:(running||sdState!=='ready')?.5:1,padding:'9px 22px',fontSize:13}}>
+                {running ? '⚙️ Running…' : '▶ Run Simulation'}
+              </button>
+              {result&&(
+                <div style={{fontSize:10,color:'var(--text-faint)',textAlign:'center'}}>
+                  {result.trials.toLocaleString()} trials · {bm.length} boss move{bm.length!==1?'s':''}
+                </div>
+              )}
+            </div>
           </div>
-          {err&&<div style={{color:'var(--danger)',fontSize:12}}>{err}</div>}
+
+          {err&&<div style={{color:'var(--danger)',fontSize:12,padding:'7px 12px',background:'var(--danger-subtle)',borderRadius:7}}>{err}</div>}
 
           {result&&(
-            <div style={{display:'flex',flexDirection:'column',gap:10}}>
-              {/* Plain-English verdict */}
-              <div style={{background: result.pWin>=.8?'rgba(59,165,93,.1)':result.pWin>=.5?'rgba(250,168,26,.1)':'rgba(237,66,69,.1)', border:`1px solid ${result.pWin>=.8?'rgba(59,165,93,.35)':result.pWin>=.5?'rgba(250,168,26,.35)':'rgba(237,66,69,.35)'}`, borderRadius:10, padding:'12px 16px'}}>
-                <div style={{fontSize:13,fontWeight:700,color:result.pWin>=.8?'var(--success)':result.pWin>=.5?'var(--warning)':'var(--danger)',marginBottom:5}}>
-                  {result.pWin>=.8?'✅ Strong team composition':'⚠️ '+( result.pWin>=.5?'Borderline — may need more counters':'High risk — team likely insufficient')}
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+
+              {/* ── Verdict banner ─────────────────────────────────────── */}
+              <div style={{background:winBg(result.pWin),border:`1px solid ${winBdr(result.pWin)}`,borderRadius:10,padding:'13px 16px'}}>
+                <div style={{fontSize:13,fontWeight:700,color:winColor(result.pWin),marginBottom:5}}>
+                  {result.pWin>=.8 ? '✅ Strong team composition'
+                    : result.pWin>=.5 ? '⚠️ Borderline — may need adjustments'
+                    : '❌ High risk — team likely insufficient'}
                 </div>
-                <div style={{fontSize:12,color:'var(--text-muted)',lineHeight:1.7}}>
-                  In <strong style={{color:'var(--text)'}}>{(result.pWin*100).toFixed(0)}%</strong> of {result.trials.toLocaleString()} simulated raids, your counter team defeated the boss.
-                  {' '}On average you need <strong style={{color:'var(--text)'}}>{result.mean.toFixed(1)}</strong> counter{result.mean!==1?'s':''} to finish the raid.
-                  {result.p90<=counters.length?` In the worst 10% of runs, it still only takes ${result.p90} counter${result.p90!==1?'s':''}.`:` Warning: in the worst 10% of runs, your current ${counters.length} counters may not be enough.`}
+                <div style={{fontSize:12,color:'var(--text-muted)',lineHeight:1.8}}>
+                  <strong style={{color:'var(--text)'}}>{(result.pWin*100).toFixed(1)}%</strong> win rate over{' '}
+                  <strong style={{color:'var(--text)'}}>{result.trials.toLocaleString()}</strong> simulated raids.
+                  {numRaiders>1 && <> Across <strong style={{color:'#c4b5fd'}}>{numRaiders} raider teams</strong> of up to <strong style={{color:'#c4b5fd'}}>{teamSz} Pokémon</strong> each.</>}
+                  {' '}Average Pokémon used per raid: <strong style={{color:'var(--text)'}}>{result.mean.toFixed(1)}</strong>.
+                  {result.p90<=counters.length
+                    ? <> Even in the worst 10% of runs, only <strong style={{color:'var(--text)'}}>{result.p90}</strong> Pokémon needed.</>
+                    : <span style={{color:'var(--warning)'}}> Warning: worst 10% may exceed your {counters.length} available slots.</span>
+                  }
                 </div>
               </div>
 
-              {/* Summary cards */}
+              {/* ── Stat cards ─────────────────────────────────────────── */}
               {(()=>{
-                // Wilson score 95% CI for win rate
-                const n=result.trials, p=result.pWin, z=1.96;
-                const centre=(p + z*z/(2*n))/(1+z*z/n);
-                const margin=z*Math.sqrt(p*(1-p)/n + z*z/(4*n*n))/(1+z*z/n);
-                const lo=Math.max(0,centre-margin), hi=Math.min(1,centre+margin);
-                return (
+                const n=result.trials,p=result.pWin,z=1.96;
+                const centre=(p+z*z/(2*n))/(1+z*z/n);
+                const margin=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n))/(1+z*z/n);
+                const lo=Math.max(0,centre-margin),hi=Math.min(1,centre+margin);
+                return(
                   <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
                     {[
-                      {l:'Win Rate',     v:`${(result.pWin*100).toFixed(1)}%`, sub:`±${((hi-lo)/2*100).toFixed(1)}%`, c:result.pWin>=.8?'var(--success)':result.pWin>=.5?'var(--warning)':'var(--danger)', tip:`95% CI: ${(lo*100).toFixed(1)}%–${(hi*100).toFixed(1)}%`},
-                      {l:'Avg Counters', v:result.mean.toFixed(2),             sub:null,                               c:'var(--text)',  tip:'Typical number of counters used'},
-                      {l:'Median',       v:result.median.toString(),            sub:null,                               c:'#a5b4fc',     tip:'Most common counters needed'},
-                      {l:'Worst 10%',    v:result.p90>counters.length?`>${counters.length}`:result.p90.toString(), sub:null, c:'var(--warning)', tip:'Counters needed in unlucky runs'},
+                      {l:'Win Rate',     v:`${(result.pWin*100).toFixed(1)}%`, sub:`±${((hi-lo)/2*100).toFixed(1)}%`, c:winColor(result.pWin), tip:`95% CI: ${(lo*100).toFixed(1)}%–${(hi*100).toFixed(1)}%`},
+                      {l:'Avg Pokémon',  v:result.mean.toFixed(2),             sub:null, c:'var(--text)',  tip:'Avg Pokémon slots consumed'},
+                      {l:'Median',       v:result.median.toString(),            sub:null, c:'#a5b4fc',     tip:'Most common count needed'},
+                      {l:'Worst 10%',    v:result.p90>counters.length?`>${counters.length}`:result.p90.toString(), sub:null, c:'var(--warning)', tip:'P90 — count needed in unlucky runs'},
                     ].map(({l,v,sub,c,tip})=>(
                       <div key={l} title={tip} style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:9,padding:'10px 12px',textAlign:'center',cursor:'help'}}>
                         <div style={{fontSize:9,color:'var(--text-muted)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>{l}</div>
-                        <div style={{fontSize:20,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:c}}>{v}</div>
+                        <div style={{fontSize:22,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:c}}>{v}</div>
                         {sub&&<div style={{fontSize:9,color:'var(--text-faint)',fontFamily:"'JetBrains Mono',monospace",marginTop:1}}>{sub} 95% CI</div>}
-                        <div style={{fontSize:9,color:'var(--text-faint)',marginTop:sub?1:3}}>{tip}</div>
+                        <div style={{fontSize:9,color:'var(--text-faint)',marginTop:sub?1:4,lineHeight:1.3}}>{tip}</div>
                       </div>
                     ))}
                   </div>
                 );
               })()}
 
-              {/* Histogram */}
-              <div style={{background:'rgba(0,0,0,.2)',borderRadius:9,padding:'12px 14px'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>
-                  How many counters did the raid need?
-                </div>
-                <div style={{fontSize:11,color:'var(--text-faint)',marginBottom:10}}>Each bar = how often that many counters were required. <span style={{color:'var(--danger)'}}>Red = raid failed</span> (ran out of counters).</div>
-                <div style={{display:'flex',gap:6,alignItems:'flex-end',height:80}}>
-                  {hkeys.map(k=>{
-                    const cnt=result.hist[k]||0; const pct=cnt/result.trials;
-                    const bh=Math.max(4,Math.round((cnt/maxH)*72)); const over=k>counters.length;
+              {/* ── View mode tabs ─────────────────────────────────────── */}
+              <div style={{display:'flex',gap:4,borderBottom:'1px solid rgba(255,255,255,.07)',paddingBottom:8}}>
+                {(numRaiders>1?[
+                  {id:'raiders',label:`👥 Raider Teams (${numRaiders})`},
+                  {id:'pokemon',label:'🐾 Per-Pokémon'},
+                  {id:'chart',  label:'📊 Distribution Chart'},
+                ]:[
+                  {id:'pokemon',label:'🐾 Per-Pokémon'},
+                  {id:'chart',  label:'📊 Distribution Chart'},
+                ] as const).map((v:any)=>(
+                  <button key={v.id} onClick={()=>setViewMode(v.id as any)}
+                    style={{padding:'6px 14px',borderRadius:'6px 6px 0 0',border:'1px solid var(--border)',
+                      borderBottom:viewMode===v.id?'2px solid #818cf8':'1px solid transparent',
+                      background:viewMode===v.id?'rgba(99,102,241,.12)':'transparent',
+                      color:viewMode===v.id?'#a5b4fc':'var(--text-muted)',cursor:'pointer',
+                      fontSize:11,fontWeight:viewMode===v.id?700:400,fontFamily:"'Lexend',sans-serif"}}>
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── Raiders view ───────────────────────────────────────── */}
+              {viewMode==='raiders'&&numRaiders>1&&(
+                <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                  {raiderData.map(({r,slots,totalDmgPct,avgOhko,totalHits})=>{
+                    const canSolo = totalDmgPct >= 100;
+                    const likelySolo = totalDmgPct >= 60;
+                    const bdrColor = canSolo?'rgba(59,165,93,.4)':likelySolo?'rgba(250,168,26,.3)':'rgba(237,66,69,.25)';
                     return(
-                      <div key={k} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}} title={`${k} counters: ${(pct*100).toFixed(1)}% of raids`}>
-                        <div style={{fontSize:9,color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace"}}>{(pct*100).toFixed(0)}%</div>
-                        <div style={{width:'100%',height:bh,background:over?'rgba(237,66,69,.45)':'rgba(88,101,242,.65)',borderRadius:'3px 3px 0 0',minHeight:4,transition:'height .3s'}}/>
-                        <div style={{fontSize:10,color:over?'var(--danger)':'#a5b4fc',fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{over?'fail':k}</div>
+                      <div key={r} style={{background:'rgba(0,0,0,.18)',borderRadius:10,
+                        border:`1px solid ${bdrColor}`,overflow:'hidden'}}>
+                        {/* Raider header */}
+                        <div style={{padding:'10px 14px',background:'rgba(255,255,255,.03)',
+                          borderBottom:'1px solid rgba(255,255,255,.06)',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                          <span style={{fontSize:13,fontWeight:800,color:'#c4b5fd'}}>
+                            {r===0?'🥇':r===1?'🥈':r===2?'🥉':'👤'} Raider {r+1}
+                          </span>
+                          <span style={{fontSize:10,color:'var(--text-faint)'}}>{slots.length} Pokémon</span>
+                          <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                            <span style={{fontSize:11,fontWeight:700,padding:'3px 9px',borderRadius:6,
+                              background:canSolo?'rgba(59,165,93,.15)':likelySolo?'rgba(250,168,26,.15)':'rgba(237,66,69,.12)',
+                              color:canSolo?'var(--success)':likelySolo?'var(--warning)':'var(--danger)'}}>
+                              {canSolo?'✅ Can solo':likelySolo?'⚠️ Needs support':'❌ Insufficient'}
+                            </span>
+                            <span style={{fontSize:13,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",
+                              color:dmgColor(totalDmgPct)}}>
+                              {totalDmgPct.toFixed(1)}% dealt
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Damage bar for this team */}
+                        <div style={{padding:'8px 14px',borderBottom:'1px solid rgba(255,255,255,.04)'}}>
+                          <div style={{height:8,background:'rgba(255,255,255,.07)',borderRadius:4,overflow:'hidden',position:'relative'}}>
+                            <div style={{position:'absolute',left:0,top:0,bottom:0,
+                              width:`${Math.min(100,totalDmgPct)}%`,
+                              background:`linear-gradient(90deg,${canSolo?'#22c55e,#4ade80':likelySolo?'#f59e0b,#fbbf24':'#ef4444,#f87171'})`,
+                              borderRadius:4,transition:'width .4s'}}/>
+                            <div style={{position:'absolute',right:0,top:0,bottom:0,width:2,
+                              background:'rgba(255,255,255,.25)',borderRadius:2}}
+                              title="100% boss HP"/>
+                          </div>
+                        </div>
+
+                        {/* Slot table */}
+                        <div style={{padding:'8px 14px'}}>
+                          <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+                            <thead>
+                              <tr style={{borderBottom:'1px solid rgba(255,255,255,.05)'}}>
+                                {['#','Pokémon','Move','Hits Dealt','Dmg %','OHKO Risk','Hits Taken'].map(h=>(
+                                  <th key={h} style={{padding:'3px 6px',textAlign:'center',color:'var(--text-faint)',
+                                    fontSize:9,fontWeight:700,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {slots.map((s,si)=>{
+                                const pct=s.avgDd/bossHP*100;
+                                const cSlot=counters[r*teamSz+si];
+                                return(
+                                  <tr key={si} style={{borderBottom:'1px solid rgba(255,255,255,.03)',
+                                    opacity:s.avgHd===0&&s.avgDd===0?.45:1}}>
+                                    <td style={{padding:'5px 6px',textAlign:'center',color:'var(--text-faint)',fontSize:10}}>{si+1}</td>
+                                    <td style={{padding:'5px 6px',fontWeight:700,color:'var(--text)'}}>
+                                      <div style={{display:'flex',alignItems:'center',gap:5}}>
+                                        {s.name}
+                                        {cSlot&&cSlot.moveData&&<TypeBadge t={cSlot.moveData.type}/>}
+                                      </div>
+                                    </td>
+                                    <td style={{padding:'5px 6px',textAlign:'center',color:'var(--text-muted)',whiteSpace:'nowrap'}}>{cSlot?.moveName||'—'}</td>
+                                    <td style={{padding:'5px 6px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'var(--success)',fontWeight:700}}>{s.avgHd.toFixed(1)}</td>
+                                    <td style={{padding:'5px 6px',textAlign:'center'}}>
+                                      <div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'center'}}>
+                                        <div style={{width:44,height:4,background:'rgba(255,255,255,.07)',borderRadius:2,overflow:'hidden'}}>
+                                          <div style={{width:`${Math.min(100,pct*4)}%`,height:'100%',
+                                            background:pct>=25?'var(--danger)':pct>=10?'var(--warning)':'var(--success)',borderRadius:2}}/>
+                                        </div>
+                                        <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:'var(--text-muted)',minWidth:36}}>{pct.toFixed(1)}%</span>
+                                      </div>
+                                    </td>
+                                    <td style={{padding:'5px 6px',textAlign:'center'}}>
+                                      <span style={{padding:'2px 7px',borderRadius:4,fontSize:10,fontWeight:700,
+                                        background:s.ohko>=.5?'var(--danger-subtle)':s.ohko>=.2?'var(--warning-subtle)':'var(--success-subtle)',
+                                        color:ohkoColor(s.ohko)}}>
+                                        {(s.ohko*100).toFixed(0)}%
+                                      </span>
+                                    </td>
+                                    <td style={{padding:'5px 6px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'#818cf8'}}>{s.avgHs.toFixed(1)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Team summary row */}
+                        <div style={{padding:'7px 14px',background:'rgba(255,255,255,.025)',borderTop:'1px solid rgba(255,255,255,.05)',
+                          display:'flex',gap:16,fontSize:10,color:'var(--text-muted)',flexWrap:'wrap'}}>
+                          <span>Total Damage: <strong style={{color:dmgColor(totalDmgPct),fontFamily:"'JetBrains Mono',monospace"}}>{totalDmgPct.toFixed(1)}%</strong></span>
+                          <span>Total Hits: <strong style={{color:'var(--success)',fontFamily:"'JetBrains Mono',monospace"}}>{totalHits.toFixed(1)}</strong></span>
+                          <span>Avg OHKO Risk: <strong style={{color:ohkoColor(avgOhko),fontFamily:"'JetBrains Mono',monospace"}}>{(avgOhko*100).toFixed(0)}%</strong></span>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
-              </div>
+              )}
 
-              {/* Per-slot table */}
-              <div style={{background:'rgba(0,0,0,.15)',borderRadius:9,padding:'12px 14px'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:2}}>How did each counter perform?</div>
-                <div style={{fontSize:11,color:'var(--text-faint)',marginBottom:8}}>Averaged across all simulations where that counter was used.</div>
-                <div style={{overflowX:'auto'}}>
-                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:420}}>
-                    <thead>
-                      <tr style={{borderBottom:'1px solid var(--border)'}}>
-                        {[
-                          {h:'Counter', tip:'Your attacker'},
-                          {h:'Hits Dealt', tip:'Avg times this counter hit the boss'},
-                          {h:'Dmg to Boss', tip:'Avg % of boss HP removed by this counter'},
-                          {h:'Hits Taken', tip:'Avg times boss hit this counter before it fainted or won'},
-                          {h:'OHKO Risk', tip:'Chance of being one-shot by the boss'},
-                        ].map(({h,tip})=>(
-                          <th key={h} title={tip} style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap',cursor:'help'}}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.perSlot.map((s,i)=>{
-                        const pct=s.avgDd/(bossHP||1)*100;
-                        return(
-                          <tr key={i} style={{borderBottom:'1px solid rgba(255,255,255,.04)',background:i%2===0?'rgba(255,255,255,.01)':'transparent'}}>
-                            <td style={{padding:'5px 8px',fontWeight:700,color:'var(--text)'}}>{s.name}</td>
-                            <td style={{padding:'5px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'var(--success)'}}>{s.avgHd.toFixed(1)}</td>
-                            <td style={{padding:'5px 8px',textAlign:'center'}}>
-                              <div style={{display:'flex',alignItems:'center',gap:4}}>
-                                <div style={{flex:1,height:5,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',minWidth:40}}>
-                                  <div style={{width:`${Math.min(100,pct)}%`,height:'100%',background:pct>=50?'var(--danger)':'var(--success)',borderRadius:3}}/>
-                                </div>
-                                <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:'var(--text-muted)',minWidth:36}}>{pct.toFixed(1)}%</span>
-                              </div>
-                            </td>
-                            <td style={{padding:'5px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'#a5b4fc'}}>{s.avgHs.toFixed(1)}</td>
-                            <td style={{padding:'5px 8px',textAlign:'center'}}>
-                              <span style={{padding:'2px 7px',borderRadius:4,fontSize:11,fontWeight:700,
-                                background:s.ohko>=.5?'var(--danger-subtle)':s.ohko>=.2?'var(--warning-subtle)':'var(--success-subtle)',
-                                color:s.ohko>=.5?'var(--danger)':s.ohko>=.2?'var(--warning)':'var(--success)'}}>
-                                {(s.ohko*100).toFixed(0)}%
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div style={{fontSize:10,color:'var(--text-faint)',marginTop:6,display:'flex',gap:12,flexWrap:'wrap'}}>
-                  <span>Boss move policy: <strong style={{color:'var(--text-muted)'}}>{result.policy==='uniform'?'Uniform (equal chance)'
-  :result.policy==='bpweighted'?'BP-Weighted (stronger moves preferred)'
-  :result.policy==='cyclic'?'Cyclic (fixed order)'
-  :'Custom (user weights)'}</strong></span>
-                  <span>Trials: <strong style={{color:'var(--text-muted)'}}>{result.trials.toLocaleString()}</strong></span>
-                  <span>Effective boss HP: <strong style={{color:'var(--text-muted)'}}>{bossHP.toLocaleString()}</strong>
-                    {boss.numRaiders>1&&<> <span style={{color:'var(--text-faint)'}}>({boss.numRaiders} raiders, {boss.hpScalingMode}, +{boss.hpIncreasePerRaider}%/raider)</span></>}
-                  </span>
-                </div>
-              </div>
-
-              {/* ── Per-Raider Summary ─────────────────────────────────────────── */}
-              {boss.numRaiders > 1 && (()=>{
-                const spr = Math.max(1, Math.ceil(counters.length / boss.numRaiders));
-                const raiders = Array.from({length:boss.numRaiders},(_,r)=>{
-                  const slots = result.perSlot.slice(r*spr,(r+1)*spr);
-                  const active = slots.filter(s=>s.avgHd>0||s.avgDd>0);
-                  const totalDmgPct = slots.reduce((a,s)=>a+s.avgDd/bossHP*100,0);
-                  const avgOhko = active.length ? active.reduce((a,s)=>a+s.ohko,0)/active.length : 0;
-                  const totalHd = slots.reduce((a,s)=>a+s.avgHd,0);
-                  return {r,totalDmgPct,avgOhko,totalHd,slots};
-                });
-                const dc=(p:number)=>p>=40?'var(--danger)':p>=20?'var(--warning)':'var(--success)';
-                return(
-                  <div style={{background:'rgba(0,0,0,.15)',borderRadius:9,padding:'12px 14px'}}>
-                    <div style={{fontSize:10,fontWeight:800,color:'#818cf8',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>
-                      👥 Per-Raider Performance
-                    </div>
-                    <div style={{overflowX:'auto'}}>
-                      <table style={{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:360}}>
-                        <thead><tr style={{borderBottom:'1px solid var(--border)'}}>
-                          {['Raider','Team','Total Dmg %','Avg OHKO Risk','Hits Dealt'].map(h=>(
-                            <th key={h} style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
-                          ))}
-                        </tr></thead>
-                        <tbody>
-                          {raiders.map(({r,totalDmgPct,avgOhko,totalHd,slots})=>(
-                            <tr key={r} style={{borderBottom:'1px solid rgba(255,255,255,.04)',background:r%2===0?'rgba(255,255,255,.015)':'transparent'}}>
-                              <td style={{padding:'6px 8px',fontWeight:700,color:'#818cf8',textAlign:'center',whiteSpace:'nowrap'}}>Raider {r+1}</td>
-                              <td style={{padding:'6px 8px',fontSize:10,color:'var(--text-muted)'}}>
-                                {(()=>{
-                                  const nm:Record<string,number>={};
-                                  slots.forEach(s=>{if(s.name)nm[s.name]=(nm[s.name]||0)+1;});
-                                  return Object.entries(nm).map(([n,cnt])=>(
-                                    <span key={n} style={{display:'inline-block',marginRight:4,whiteSpace:'nowrap',fontWeight:600}}>
-                                      {cnt>1?`${cnt}× `:''}{n}
-                                    </span>
-                                  ));
-                                })()}
-                              </td>
-                              <td style={{padding:'6px 8px',textAlign:'center'}}>
-                                <div style={{display:'flex',alignItems:'center',gap:5}}>
-                                  <div style={{flex:1,height:5,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',minWidth:50}}>
-                                    <div style={{width:`${Math.min(100,totalDmgPct)}%`,height:'100%',background:dc(totalDmgPct),borderRadius:3}}/>
-                                  </div>
-                                  <span style={{fontSize:11,fontWeight:800,fontFamily:"'JetBrains Mono',monospace",color:dc(totalDmgPct),minWidth:44,textAlign:'right'}}>{totalDmgPct.toFixed(1)}%</span>
-                                </div>
-                              </td>
-                              <td style={{padding:'6px 8px',textAlign:'center'}}>
-                                <span style={{padding:'2px 8px',borderRadius:4,fontSize:11,fontWeight:700,
-                                  background:avgOhko>=.5?'var(--danger-subtle)':avgOhko>=.2?'var(--warning-subtle)':'var(--success-subtle)',
-                                  color:avgOhko>=.5?'var(--danger)':avgOhko>=.2?'var(--warning)':'var(--success)'}}>
-                                  {(avgOhko*100).toFixed(0)}%
-                                </span>
-                              </td>
-                              <td style={{padding:'6px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'var(--success)',fontWeight:700}}>{totalHd.toFixed(1)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+              {/* ── Per-Pokémon view ───────────────────────────────────── */}
+              {viewMode==='pokemon'&&(
+                <div style={{background:'rgba(0,0,0,.15)',borderRadius:9,padding:'12px 14px'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>
+                    Individual Pokémon Performance
+                    <span style={{fontWeight:400,textTransform:'none',marginLeft:6,color:'var(--text-faint)'}}>
+                      averaged across {result.trials.toLocaleString()} simulations
+                    </span>
                   </div>
-                );
-              })()}
-
-              {/* ── Per-Species Summary ─────────────────────────────────────────── */}
-              {(()=>{
-                const specMap:Record<string,{count:number;totalDd:number;totalHd:number;totalOhko:number}>={};
-                for(const s of result.perSlot){
-                  const nm=s.name||'—';
-                  if(!specMap[nm])specMap[nm]={count:0,totalDd:0,totalHd:0,totalOhko:0};
-                  specMap[nm].count++;
-                  specMap[nm].totalDd+=s.avgDd;
-                  specMap[nm].totalHd+=s.avgHd;
-                  specMap[nm].totalOhko+=s.ohko;
-                }
-                const species=Object.entries(specMap)
-                  .map(([name,v])=>({name,count:v.count,avgDmgPct:v.totalDd/v.count/bossHP*100,avgHd:v.totalHd/v.count,avgOhko:v.totalOhko/v.count}))
-                  .sort((a,b)=>b.avgDmgPct-a.avgDmgPct);
-                if(species.length<2) return null;
-                const dc=(p:number)=>p>=10?'var(--success)':p>=3?'var(--warning)':'var(--danger)';
-                return(
-                  <div style={{background:'rgba(0,0,0,.15)',borderRadius:9,padding:'12px 14px'}}>
-                    <div style={{fontSize:10,fontWeight:800,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>
-                      🔬 Per-Species Avg Performance
-                      <span style={{fontWeight:400,textTransform:'none',color:'var(--text-faint)',marginLeft:6}}>averaged across {result.trials.toLocaleString()} trials</span>
-                    </div>
-                    <div style={{overflowX:'auto'}}>
-                      <table style={{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:360}}>
-                        <thead><tr style={{borderBottom:'1px solid var(--border)'}}>
-                          {['Species','Count','Avg Dmg%','Avg Hits','Avg OHKO Risk'].map(h=>(
-                            <th key={h} style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',fontWeight:700,fontSize:10,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:460}}>
+                      <thead>
+                        <tr style={{borderBottom:'1px solid var(--border)'}}>
+                          {numRaiders>1&&<th style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',fontSize:9,fontWeight:700,textTransform:'uppercase'}}>Raider</th>}
+                          {['Pokémon','Move','Hits Dealt','Dmg to Boss','Hits Taken','OHKO Risk'].map(h=>(
+                            <th key={h} style={{padding:'4px 8px',textAlign:'center',color:'var(--text-faint)',
+                              fontSize:9,fontWeight:700,textTransform:'uppercase',whiteSpace:'nowrap'}}>{h}</th>
                           ))}
-                        </tr></thead>
-                        <tbody>
-                          {species.map((s,i)=>(
-                            <tr key={s.name} style={{borderBottom:'1px solid rgba(255,255,255,.04)',background:i%2===0?'rgba(255,255,255,.015)':'transparent'}}>
-                              <td style={{padding:'6px 8px',fontWeight:700,color:'var(--text)'}}>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.perSlot.map((s,i)=>{
+                          const pct=s.avgDd/bossHP*100;
+                          const rIdx=numRaiders>1?Math.floor(i/teamSz):null;
+                          const cSlot=counters[i];
+                          return(
+                            <tr key={i} style={{borderBottom:'1px solid rgba(255,255,255,.04)',
+                              background:i%2===0?'rgba(255,255,255,.015)':'transparent'}}>
+                              {numRaiders>1&&<td style={{padding:'5px 8px',textAlign:'center',
+                                fontWeight:700,color:'#818cf8',fontSize:10,whiteSpace:'nowrap'}}>R{(rIdx||0)+1}</td>}
+                              <td style={{padding:'5px 8px',fontWeight:700,color:'var(--text)'}}>
                                 <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
-                                  <span>{s.name}</span>
-                                  {(()=>{const d=lookupPokeWithCustom(s.name);return d?d.types.map(t=><TypeBadge key={t} t={t}/>):null;})()}
+                                  {s.name}
+                                  {cSlot&&lookupPokeWithCustom(s.name)?.types.map(t=><TypeBadge key={t} t={t}/>)}
                                 </div>
                               </td>
-                              <td style={{padding:'6px 8px',textAlign:'center',color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace"}}>×{s.count}</td>
-                              <td style={{padding:'6px 8px',textAlign:'center'}}>
-                                <div style={{display:'flex',alignItems:'center',gap:5}}>
+                              <td style={{padding:'5px 8px',textAlign:'center',color:'var(--text-muted)',whiteSpace:'nowrap'}}>
+                                {cSlot?.moveName&&cSlot.moveData?<span style={{display:'flex',alignItems:'center',gap:4,justifyContent:'center'}}><TypeBadge t={cSlot.moveData.type}/>{cSlot.moveName}</span>:'—'}
+                              </td>
+                              <td style={{padding:'5px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'var(--success)',fontWeight:700}}>{s.avgHd.toFixed(1)}</td>
+                              <td style={{padding:'5px 8px',textAlign:'center'}}>
+                                <div style={{display:'flex',alignItems:'center',gap:4,justifyContent:'center'}}>
                                   <div style={{flex:1,height:5,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',minWidth:50}}>
-                                    <div style={{width:`${Math.min(100,s.avgDmgPct*6)}%`,height:'100%',background:dc(s.avgDmgPct),borderRadius:3}}/>
+                                    <div style={{width:`${Math.min(100,pct*3)}%`,height:'100%',
+                                      background:pct>=25?'var(--danger)':pct>=8?'var(--warning)':'var(--success)',borderRadius:3}}/>
                                   </div>
-                                  <span style={{fontSize:11,fontWeight:800,fontFamily:"'JetBrains Mono',monospace",color:dc(s.avgDmgPct),minWidth:44,textAlign:'right'}}>{s.avgDmgPct.toFixed(2)}%</span>
+                                  <span style={{fontSize:10,fontFamily:"'JetBrains Mono',monospace",color:'var(--text-muted)',minWidth:40}}>{pct.toFixed(1)}%</span>
                                 </div>
                               </td>
-                              <td style={{padding:'6px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'var(--success)',fontWeight:700}}>{s.avgHd.toFixed(1)}</td>
-                              <td style={{padding:'6px 8px',textAlign:'center'}}>
-                                <span style={{padding:'2px 8px',borderRadius:4,fontSize:11,fontWeight:700,
-                                  background:s.avgOhko>=.5?'var(--danger-subtle)':s.avgOhko>=.2?'var(--warning-subtle)':'var(--success-subtle)',
-                                  color:s.avgOhko>=.5?'var(--danger)':s.avgOhko>=.2?'var(--warning)':'var(--success)'}}>
-                                  {(s.avgOhko*100).toFixed(0)}%
+                              <td style={{padding:'5px 8px',textAlign:'center',fontFamily:"'JetBrains Mono',monospace",color:'#a5b4fc'}}>{s.avgHs.toFixed(1)}</td>
+                              <td style={{padding:'5px 8px',textAlign:'center'}}>
+                                <span style={{padding:'2px 7px',borderRadius:4,fontSize:11,fontWeight:700,
+                                  background:s.ohko>=.5?'var(--danger-subtle)':s.ohko>=.2?'var(--warning-subtle)':'var(--success-subtle)',
+                                  color:ohkoColor(s.ohko)}}>
+                                  {(s.ohko*100).toFixed(0)}%
                                 </span>
                               </td>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
-                );
-              })()}
+                  <div style={{fontSize:10,color:'var(--text-faint)',marginTop:8,display:'flex',gap:12,flexWrap:'wrap'}}>
+                    <span>Policy: <strong style={{color:'var(--text-muted)'}}>{
+                      policy==='uniform'?'Uniform':policy==='bpweighted'?'BP-Weighted':policy==='cyclic'?'Cyclic':'Custom'
+                    }</strong></span>
+                    <span>Boss HP: <strong style={{color:'var(--text-muted)'}}>{bossHP.toLocaleString()}</strong></span>
+                    {boss.numRaiders>1&&<span>Raiders: <strong style={{color:'var(--text-muted)'}}>{boss.numRaiders} × {teamSz} slots</strong></span>}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Distribution chart ─────────────────────────────────── */}
+              {viewMode==='chart'&&(
+                <div style={{background:'rgba(0,0,0,.2)',borderRadius:9,padding:'14px 16px'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:4}}>
+                    Raid Outcome Distribution
+                  </div>
+                  <div style={{fontSize:11,color:'var(--text-faint)',marginBottom:12}}>
+                    How many Pokémon slots were needed to defeat the boss.
+                    <span style={{color:'var(--danger)',marginLeft:4}}>Red bars = raid failed</span>
+                    {' '}(ran out of Pokémon).
+                  </div>
+                  <div style={{display:'flex',gap:5,alignItems:'flex-end',height:100}}>
+                    {hkeys.map(k=>{
+                      const cnt=result.hist[k]||0; const pct=cnt/result.trials;
+                      const bh=Math.max(4,Math.round((cnt/maxH)*90));
+                      const over=k>counters.length;
+                      return(
+                        <div key={k} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3,minWidth:20}}
+                          title={`${k} Pokémon: ${(pct*100).toFixed(1)}% of raids (${cnt.toLocaleString()} times)`}>
+                          <div style={{fontSize:9,color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace"}}>{(pct*100).toFixed(0)}%</div>
+                          <div style={{width:'100%',height:bh,
+                            background:over?'linear-gradient(180deg,rgba(237,66,69,.6),rgba(237,66,69,.35))':'linear-gradient(180deg,rgba(99,102,241,.8),rgba(88,101,242,.5))',
+                            borderRadius:'4px 4px 0 0',minHeight:4,transition:'height .3s'}}/>
+                          <div style={{fontSize:10,color:over?'var(--danger)':'#a5b4fc',fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>
+                            {over?'fail':k}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* Legend */}
+                  <div style={{marginTop:12,display:'flex',gap:16,fontSize:10,color:'var(--text-faint)',flexWrap:'wrap'}}>
+                    <span style={{display:'flex',alignItems:'center',gap:4}}>
+                      <div style={{width:10,height:10,background:'rgba(99,102,241,.7)',borderRadius:2}}/> Success
+                    </span>
+                    <span style={{display:'flex',alignItems:'center',gap:4}}>
+                      <div style={{width:10,height:10,background:'rgba(237,66,69,.55)',borderRadius:2}}/> Raid failed
+                    </span>
+                    <span>Hover bars for exact percentages</span>
+                  </div>
+                </div>
+              )}
+
             </div>
           )}
         </div>
@@ -1334,11 +1432,17 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
         </div>
 
         {/* Raider scaling row */}
-        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:10,padding:'10px 12px',background:'rgba(255,255,255,.03)',borderRadius:8,border:'1px solid rgba(255,255,255,.07)'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:10,padding:'10px 12px',background:'rgba(255,255,255,.03)',borderRadius:8,border:'1px solid rgba(255,255,255,.07)'}}>
           <div>
             <label style={LBL}>👥 # Raiders</label>
             <input style={INP} type="number" min={1} max={30} value={boss.numRaiders}
               onChange={e=>setBoss({numRaiders:Math.max(1,parseInt(e.target.value)||1)})}/>
+          </div>
+          <div>
+            <label style={LBL}>🐾 Team Size (per raider)</label>
+            <input style={INP} type="number" min={1} max={12} value={boss.teamSize ?? 6}
+              title="Number of Pokémon in each raider's team"
+              onChange={e=>setBoss({teamSize:Math.max(1,Math.min(12,parseInt(e.target.value)||6))})}/>
           </div>
           <div>
             <label style={LBL}>HP Increase / Raider (%)</label>
@@ -1381,35 +1485,6 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
               {boss.numRaiders>1&&boss.hpIncreasePerRaider===0&&<> <span style={{color:'var(--text-faint)'}}>({boss.numRaiders} raiders, no HP scale)</span></>}
             </span>
           )}
-        </div>
-
-        {/* ── Shield Mechanics ─────────────────────────────────── */}
-        <div style={{marginTop:10,padding:'10px 12px',background:'rgba(59,130,246,.05)',borderRadius:8,border:'1px solid rgba(59,130,246,.15)'}}>
-          <div style={{fontSize:10,fontWeight:700,color:'#60a5fa',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-            🛡 Shield Mechanics
-            <span style={{fontSize:10,color:'var(--text-faint)',fontWeight:400,textTransform:'none'}}>(0 = off)</span>
-          </div>
-          <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-end'}}>
-            <div>
-              <label style={LBL}>Activates at % HP</label>
-              <input style={{...INP,width:70}} type="number" min={0} max={99} step={5}
-                value={boss.shieldActivatesAt}
-                title="Boss gains shield when HP drops below this percentage. 0 = no shield."
-                onChange={e=>setBoss({shieldActivatesAt:Math.max(0,Math.min(99,Number(e.target.value)||0))})}/>
-            </div>
-            <div>
-              <label style={LBL}>Damage Reduction (0–1)</label>
-              <input style={{...INP,width:70}} type="number" min={0} max={0.99} step={0.05}
-                value={boss.shieldDamageReduction}
-                title="While shielded, attacker damage is multiplied by (1 – this value). 0.5 = halve all damage."
-                onChange={e=>setBoss({shieldDamageReduction:Math.max(0,Math.min(0.99,Number(e.target.value)||0))})}/>
-            </div>
-            {boss.shieldActivatesAt>0&&(
-              <div style={{fontSize:11,color:'#60a5fa',padding:'4px 10px',background:'rgba(59,130,246,.1)',borderRadius:6,border:'1px solid rgba(59,130,246,.2)'}}>
-                Shield at {boss.shieldActivatesAt}% HP · {Math.round(boss.shieldDamageReduction*100)}% damage reduction
-              </div>
-            )}
-          </div>
         </div>
 
         {/* ── Custom Boss Movepool ──────────────────────────────── */}
@@ -1462,7 +1537,7 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
       </div>
 
       {/* Custom Pokémon panel — admin only (clients load custom Pokémon silently) */}
-      {isAdmin && <CustomPokemonPanel isAdmin={isAdmin} apiUrl={apiUrl} guildId={guildId}/>}
+      {/* Custom Pokémon panel is managed by admins in BossInfo → ✨ Custom Pokémon tab */}
 
       {/* Auto-Finder panel */}
       {boss.data&&<AutoFinderPanel
@@ -1568,37 +1643,126 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
       {calculated&&boss.data&&<BossSimPanel boss={boss} counters={counters}/>}
       {calculated&&boss.data&&<MCPanel boss={boss} counters={counters} bossHP={effectiveHp()} sdState={sdState}/>}
 
-      {/* Rankings summary */}
-      {calculated&&counters.some(c=>c.result&&!c.result.immune&&c.name)&&(
-        <div style={{background:'rgba(255,255,255,.025)',border:'1px solid rgba(255,255,255,.09)',borderRadius:10,padding:14}}>
-          <div style={{fontSize:10,fontWeight:800,color:'#5865f2',textTransform:'uppercase',letterSpacing:'.09em',marginBottom:10}}>
-            📊 Rankings vs {boss.data?.name||'Boss'}{raidMult>1?` — Raid HP ×${raidMult}`:''}
-            {boss.numRaiders>1&&boss.hpIncreasePerRaider>0&&<span style={{fontWeight:400,color:'#f97316',textTransform:'none',fontSize:9}}> — {boss.numRaiders} raiders → {effectiveHp().toLocaleString()} HP</span>}
-          </div>
-          <div style={{display:'flex',flexDirection:'column',gap:4}}>
-            {ranked.map(({c},i)=>{
-              if (!c.result||c.result.immune||!c.name) return null;
-              const r=c.result;
-              const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
-              const hitStr=r.hitsToKo[0]===r.hitsToKo[1]?`${r.hitsToKo[0]}HKO`:`${r.hitsToKo[0]}–${r.hitsToKo[1]}HKO`;
-              return(
-                <div key={c.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 8px',background:i===0?'rgba(251,191,36,.05)':'rgba(255,255,255,.02)',borderRadius:6,border:'1px solid rgba(255,255,255,.05)'}}>
-                  <span style={{fontSize:14,width:22,textAlign:'center',flexShrink:0}}>{medal||<span style={{fontSize:10,color:'var(--text-faint)'}}>{i+1}</span>}</span>
-                  <span style={{fontSize:12,fontWeight:700,color:'var(--text)',minWidth:100,flexShrink:0}}>{c.name}</span>
-                  {c.moveData&&<TypeBadge t={c.moveData.type}/>}
-                  <span style={{fontSize:11,color:'var(--text-muted)',minWidth:80,flexShrink:0}}>{c.moveName}</span>
-                  <div style={{flex:1,height:5,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',position:'relative',minWidth:60}}>
-                    <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,r.minP)}%`,background:r.maxP>=100?'var(--danger)':r.maxP>=50?'var(--warning)':'var(--primary)',opacity:.4,borderRadius:3}}/>
-                    <div style={{position:'absolute',left:`${Math.min(100,r.minP)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,r.maxP)-Math.min(100,r.minP))}%`,background:r.maxP>=100?'var(--danger)':r.maxP>=50?'var(--warning)':'var(--primary)',borderRadius:3}}/>
+      {/* Per-Raider Team Analysis */}
+      {calculated&&counters.some(c=>c.result&&!c.result.immune&&c.name)&&(()=>{
+        const teamSz = Math.max(1, boss.teamSize ?? 6);
+        const totalSlots = counters.filter(c=>c.name&&c.result&&!c.result.immune);
+        const bHP = effectiveHp();
+
+        // Group counters into raider teams
+        const raiderTeams: Array<{raiderIdx:number; slots:typeof counters}> = [];
+        if (boss.numRaiders > 1) {
+          for (let r = 0; r < boss.numRaiders; r++) {
+            const start = r * teamSz;
+            const team = counters.slice(start, start + teamSz).filter(c=>c.name);
+            if (team.length > 0) raiderTeams.push({ raiderIdx: r, slots: team });
+          }
+        }
+
+        const dcColor = (p:number) => p >= 100 ? 'var(--danger)' : p >= 50 ? 'var(--warning)' : p >= 20 ? '#fbbf24' : 'var(--success)';
+        const hkoColor = (r:any) => r.ohko||r.possibleOhko ? 'var(--danger)' : r.twoHko||r.maxP>=50 ? 'var(--warning)' : 'var(--success)';
+
+        return (
+          <div style={{background:'rgba(255,255,255,.025)',border:'1px solid rgba(255,255,255,.09)',borderRadius:10,padding:14}}>
+            <div style={{fontSize:10,fontWeight:800,color:'#5865f2',textTransform:'uppercase',letterSpacing:'.09em',marginBottom:12,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              📊 Team Analysis vs {boss.data?.name||'Boss'}{raidMult>1?` — Raid HP ×${raidMult}`:''}
+              {boss.numRaiders>1&&<span style={{fontWeight:600,color:'#f97316',textTransform:'none',fontSize:10}}>
+                {boss.numRaiders} Raiders · {teamSz} Pokémon/team · {bHP.toLocaleString()} HP
+              </span>}
+            </div>
+
+            {/* Per-Raider Team Cards */}
+            {raiderTeams.length > 0 && (
+              <div style={{display:'flex',flexDirection:'column',gap:12,marginBottom:16}}>
+                {raiderTeams.map(({raiderIdx, slots})=>{
+                  const validSlots = slots.filter(c=>c.result&&!c.result.immune);
+                  const teamTotalMinPct = validSlots.reduce((s,c)=>(s + (c.result?.minP??0)), 0);
+                  const teamTotalMaxPct = validSlots.reduce((s,c)=>(s + (c.result?.maxP??0)), 0);
+                  const teamAvgPct = (teamTotalMinPct + teamTotalMaxPct) / 2;
+                  const canWin = teamTotalMinPct >= 100;
+                  const likelyWin = teamTotalMaxPct >= 100;
+                  return (
+                    <div key={raiderIdx} style={{background:'rgba(0,0,0,.2)',borderRadius:10,padding:'10px 12px',border:`1px solid ${canWin?'rgba(59,165,93,.35)':likelyWin?'rgba(250,168,26,.3)':'rgba(255,255,255,.07)'}`}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+                        <span style={{fontSize:12,fontWeight:800,color:'#c4b5fd'}}>👤 Raider {raiderIdx+1}</span>
+                        <span style={{fontSize:10,color:'var(--text-faint)'}}>{slots.length} Pokémon</span>
+                        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
+                          <span style={{fontSize:11,fontWeight:700,color:canWin?'var(--success)':likelyWin?'var(--warning)':'var(--danger)'}}>
+                            {canWin?'✅ Can solo':'⚠️ '+(likelyWin?'Likely beats boss':'Needs support')}
+                          </span>
+                          <span style={{fontSize:14,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:dcColor(teamAvgPct)}}>
+                            {teamTotalMinPct.toFixed(0)}–{teamTotalMaxPct.toFixed(0)}% total dmg
+                          </span>
+                        </div>
+                      </div>
+                      {/* Team damage bar */}
+                      <div style={{height:6,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',marginBottom:8,position:'relative'}}>
+                        <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,teamTotalMinPct)}%`,background:dcColor(teamAvgPct),opacity:.4,borderRadius:3}}/>
+                        <div style={{position:'absolute',left:`${Math.min(100,teamTotalMinPct)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,teamTotalMaxPct)-Math.min(100,teamTotalMinPct))}%`,background:dcColor(teamAvgPct),borderRadius:3}}/>
+                        {/* 100% marker */}
+                        <div style={{position:'absolute',left:'100%',top:0,bottom:0,width:2,background:'rgba(255,255,255,.4)',borderRadius:2,transform:'translateX(-50%)'}}/>
+                      </div>
+                      {/* Per-slot rows */}
+                      <div style={{display:'flex',flexDirection:'column',gap:3}}>
+                        {slots.map((c,si)=>{
+                          if (!c.result||c.result.immune||!c.name) return (
+                            <div key={c.id} style={{fontSize:11,color:'var(--text-faint)',padding:'3px 6px'}}>— {c.name||'Empty slot'}</div>
+                          );
+                          const r=c.result;
+                          const hitStr=r.hitsToKo[0]===r.hitsToKo[1]?`${r.hitsToKo[0]}HKO`:`${r.hitsToKo[0]}–${r.hitsToKo[1]}HKO`;
+                          return(
+                            <div key={c.id} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 6px',background:'rgba(255,255,255,.03)',borderRadius:6}}>
+                              <span style={{fontSize:10,color:'var(--text-faint)',width:16,textAlign:'center',flexShrink:0}}>{si+1}</span>
+                              <span style={{fontSize:12,fontWeight:600,color:'var(--text)',minWidth:90,flexShrink:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</span>
+                              {c.moveData&&<TypeBadge t={c.moveData.type}/>}
+                              <span style={{fontSize:10,color:'var(--text-muted)',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.moveName}</span>
+                              <div style={{display:'flex',alignItems:'center',gap:4,flexShrink:0}}>
+                                <div style={{width:50,height:4,background:'rgba(255,255,255,.07)',borderRadius:2,overflow:'hidden',position:'relative'}}>
+                                  <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,r.minP)}%`,background:dcColor(r.maxP),opacity:.4,borderRadius:2}}/>
+                                  <div style={{position:'absolute',left:`${Math.min(100,r.minP)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,r.maxP)-Math.min(100,r.minP))}%`,background:dcColor(r.maxP),borderRadius:2}}/>
+                                </div>
+                                <span style={{fontSize:11,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:'#fff',minWidth:85,textAlign:'right'}}>{r.minP.toFixed(1)}%–{r.maxP.toFixed(1)}%</span>
+                                <span style={{fontSize:10,fontWeight:700,minWidth:55,textAlign:'right',color:hkoColor(r)}}>{hitStr}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Single-raider flat list (or totals overview) */}
+            <div style={{fontSize:10,fontWeight:700,color:'var(--text-faint)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>
+              {raiderTeams.length > 0 ? 'All Slots (Individual)' : 'Individual Rankings'}
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:4}}>
+              {ranked.map(({c},i)=>{
+                if (!c.result||c.result.immune||!c.name) return null;
+                const r=c.result;
+                const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
+                const hitStr=r.hitsToKo[0]===r.hitsToKo[1]?`${r.hitsToKo[0]}HKO`:`${r.hitsToKo[0]}–${r.hitsToKo[1]}HKO`;
+                return(
+                  <div key={c.id} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 8px',background:i===0?'rgba(251,191,36,.05)':'rgba(255,255,255,.02)',borderRadius:6,border:'1px solid rgba(255,255,255,.04)'}}>
+                    <span style={{fontSize:13,width:22,textAlign:'center',flexShrink:0}}>{medal||<span style={{fontSize:10,color:'var(--text-faint)'}}>{i+1}</span>}</span>
+                    <span style={{fontSize:12,fontWeight:700,color:'var(--text)',minWidth:100,flexShrink:0}}>{c.name}</span>
+                    {c.moveData&&<TypeBadge t={c.moveData.type}/>}
+                    <span style={{fontSize:11,color:'var(--text-muted)',minWidth:80,flexShrink:0}}>{c.moveName}</span>
+                    <div style={{flex:1,height:5,background:'rgba(255,255,255,.07)',borderRadius:3,overflow:'hidden',position:'relative',minWidth:60}}>
+                      <div style={{position:'absolute',left:0,top:0,bottom:0,width:`${Math.min(100,r.minP)}%`,background:r.maxP>=100?'var(--danger)':r.maxP>=50?'var(--warning)':'var(--primary)',opacity:.4,borderRadius:3}}/>
+                      <div style={{position:'absolute',left:`${Math.min(100,r.minP)}%`,top:0,bottom:0,width:`${Math.max(0,Math.min(100,r.maxP)-Math.min(100,r.minP))}%`,background:r.maxP>=100?'var(--danger)':r.maxP>=50?'var(--warning)':'var(--primary)',borderRadius:3}}/>
+                    </div>
+                    <span style={{fontSize:12,fontWeight:800,color:'#fff',fontFamily:"'JetBrains Mono',monospace",minWidth:105,textAlign:'right',flexShrink:0}}>{r.minP.toFixed(1)}%–{r.maxP.toFixed(1)}%</span>
+                    <span style={{fontSize:11,fontWeight:700,minWidth:65,textAlign:'right',flexShrink:0,color:hkoColor(r)}}>{hitStr}</span>
                   </div>
-                  <span style={{fontSize:12,fontWeight:800,color:'#fff',fontFamily:"'JetBrains Mono',monospace",minWidth:105,textAlign:'right',flexShrink:0}}>{r.minP.toFixed(1)}%–{r.maxP.toFixed(1)}%</span>
-                  <span style={{fontSize:11,fontWeight:700,minWidth:65,textAlign:'right',flexShrink:0,color:r.ohko||r.possibleOhko?'var(--danger)':r.twoHko||r.maxP>=50?'var(--warning)':'var(--success)'}}>{hitStr}</span>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

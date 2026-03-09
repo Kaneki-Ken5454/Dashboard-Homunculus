@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { apiCall } from '../lib/db';
+import {
+  injectCustomPokemon, removeCustomPokemon, getCustomPokemonNames,
+  type PokeData as EnginePoke, type MoveData as EngineMv,
+} from '../lib/engine_pokemon';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface PokeStat { hp:number; atk:number; def:number; spa:number; spd:number; spe:number }
@@ -2340,10 +2344,267 @@ function CounterCalcSection({ sdState }: { sdState:'loading'|'ready'|'error' }) 
   );
 }
 
+// ── Custom Pokémon Panel (Admin Only) ─────────────────────────────────────────
+interface CustomPokeEntry {
+  name: string;
+  types: [string, string?];
+  stats: PokeStat;
+  moves: Array<{ name: string; type: string; cat: string; bp: number }>;
+  _serverId?: number;
+}
+
+const CUSTOM_LS_KEY = 'pktool_custom_pokemon_v1';
+const ALL_TYPES_CP = ['Normal','Fire','Water','Grass','Electric','Ice','Fighting','Poison','Ground','Flying','Psychic','Bug','Rock','Ghost','Dragon','Dark','Steel','Fairy'];
+
+function loadCustomLS(): CustomPokeEntry[] {
+  try { const r=localStorage.getItem(CUSTOM_LS_KEY); return r?JSON.parse(r):[]; } catch{return [];}
+}
+function saveCustomLS(es: CustomPokeEntry[]) {
+  try{localStorage.setItem(CUSTOM_LS_KEY,JSON.stringify(es));}catch{}
+}
+function syncCustom(entries: CustomPokeEntry[]) {
+  for(const n of getCustomPokemonNames()) removeCustomPokemon(n);
+  for(const e of entries){
+    const data:EnginePoke={name:e.name,types:e.types.filter(Boolean) as string[],
+      stats:e.stats,bst:Object.values(e.stats).reduce((a,b)=>a+b,0),abilities:[],weaknesses:{}};
+    const moves:EngineMv[]=e.moves.map(m=>({name:m.name,bp:m.bp,cat:m.cat,type:m.type}));
+    injectCustomPokemon(data,moves);
+  }
+}
+const BLANK_CP=():CustomPokeEntry=>({name:'',types:['Normal',undefined],stats:{hp:80,atk:80,def:80,spa:80,spd:80,spe:80},moves:[{name:'',type:'Normal',cat:'Physical',bp:80}]});
+
+function CustomPokemonAdminPanel({guildId, apiUrl}:{guildId:string; apiUrl:string}) {
+  const [entries,setEntries]=useState<CustomPokeEntry[]>(()=>{const l=loadCustomLS();syncCustom(l);return l;});
+  const [editing,setEditing]=useState<CustomPokeEntry|null>(null);
+  const [editIdx,setEditIdx]=useState<number|null>(null);
+  const [saved,setSaved]=useState(false);
+  const [loading,setLoading]=useState(false);
+  const [serverErr,setServerErr]=useState('');
+
+  useEffect(()=>{
+    if(!apiUrl) return;
+    setLoading(true);
+    fetch(`${apiUrl}/api/custompokemon?guild_id=${encodeURIComponent(guildId)}`)
+      .then(r=>r.ok?r.json():null)
+      .then(data=>{
+        if(data?.entries){
+          const mapped:CustomPokeEntry[]=data.entries.map((e:any)=>({
+            name:e.name,types:(e.types||['Normal']) as [string,string?],
+            stats:e.stats||{hp:80,atk:80,def:80,spa:80,spd:80,spe:80},
+            moves:e.moves||[],_serverId:e.id,
+          }));
+          saveCustomLS(mapped); syncCustom(mapped); setEntries(mapped);
+        }
+      }).catch(()=>{}).finally(()=>setLoading(false));
+  },[apiUrl,guildId]);
+
+  const sessionToken=()=>{try{return localStorage.getItem('hom_session')||'';}catch{return '';}};
+
+  const persistToServer=async(updated:CustomPokeEntry[])=>{
+    setServerErr('');
+    if(!apiUrl){saveCustomLS(updated);syncCustom(updated);setEntries(updated);setSaved(true);setTimeout(()=>setSaved(false),1500);return;}
+    try{
+      for(const e of updated){
+        await fetch(`${apiUrl}/api/custompokemon`,{method:'POST',
+          headers:{'Content-Type':'application/json','x-session-token':sessionToken()},
+          body:JSON.stringify({guild_id:guildId,name:e.name,types:e.types.filter(Boolean),stats:e.stats,moves:e.moves})});
+      }
+      const refreshed=await fetch(`${apiUrl}/api/custompokemon?guild_id=${encodeURIComponent(guildId)}`).then(r=>r.json());
+      if(refreshed?.entries){
+        const mapped:CustomPokeEntry[]=refreshed.entries.map((e:any)=>({
+          name:e.name,types:e.types as [string,string?],stats:e.stats,moves:e.moves,_serverId:e.id,
+        }));
+        saveCustomLS(mapped);syncCustom(mapped);setEntries(mapped);
+      }else{saveCustomLS(updated);syncCustom(updated);setEntries(updated);}
+      setSaved(true);setTimeout(()=>setSaved(false),1500);
+    }catch{setServerErr('Failed to save to server — check your session.');}
+  };
+
+  const deleteFromServer=async(idx:number)=>{
+    const entry=entries[idx];
+    const copy=entries.filter((_,i)=>i!==idx);
+    if(apiUrl&&(entry as any)._serverId){
+      try{await fetch(`${apiUrl}/api/custompokemon/${(entry as any)._serverId}?guild_id=${encodeURIComponent(guildId)}`,
+        {method:'DELETE',headers:{'x-session-token':sessionToken()}});}catch{}
+    }
+    saveCustomLS(copy);syncCustom(copy);setEntries(copy);
+  };
+
+  const startEdit=(idx:number|null)=>{
+    setEditing(idx===null?BLANK_CP():{...entries[idx],types:[...entries[idx].types] as [string,string?],moves:entries[idx].moves.map(m=>({...m}))});
+    setEditIdx(idx);
+  };
+  const saveEdit=()=>{
+    if(!editing||!editing.name.trim()) return;
+    const copy=[...entries];
+    if(editIdx===null) copy.push(editing); else copy[editIdx]=editing;
+    persistToServer(copy);
+    setEditing(null);setEditIdx(null);
+  };
+  const upd=(p:Partial<CustomPokeEntry>)=>setEditing(prev=>prev?{...prev,...p}:prev);
+  const updStat=(k:keyof PokeStat,v:number)=>setEditing(prev=>prev?{...prev,stats:{...prev.stats,[k]:v}}:prev);
+  const updMove=(i:number,p:Partial<{name:string;type:string;cat:string;bp:number}>)=>
+    setEditing(prev=>{if(!prev)return prev;const mv=[...prev.moves];mv[i]={...mv[i],...p};return{...prev,moves:mv};});
+  const addMove=()=>setEditing(prev=>prev?{...prev,moves:[...prev.moves,{name:'',type:'Normal',cat:'Physical',bp:80}]}:prev);
+  const delMove=(i:number)=>setEditing(prev=>{if(!prev)return prev;return{...prev,moves:prev.moves.filter((_,j)=>j!==i)};});
+
+  const inputStyle={...INP};
+  const labelStyle={...LBL};
+
+  return(
+    <div style={{maxWidth:860}}>
+      {/* Header */}
+      <div style={{marginBottom:18}}>
+        <div style={{fontSize:18,fontWeight:800,color:'#fbbf24',marginBottom:6}}>✨ Custom Pokémon Registry</div>
+        <div style={{fontSize:12,color:'var(--text-muted)',lineHeight:1.7}}>
+          Define custom or fan-made Pokémon for use in all raid tools. Entries are stored server-side and available to all raiders immediately.
+          Raiders will see custom Pokémon appear in Pokémon search and counter calculations.
+        </div>
+      </div>
+
+      {loading&&<div style={{fontSize:12,color:'var(--text-faint)',display:'flex',alignItems:'center',gap:6,marginBottom:12}}>⏳ Loading from server…</div>}
+      {serverErr&&<div style={{fontSize:12,color:'var(--danger)',padding:'8px 12px',background:'var(--danger-subtle)',borderRadius:8,marginBottom:12}}>{serverErr}</div>}
+      {saved&&<div style={{fontSize:12,color:'var(--success)',padding:'8px 12px',background:'rgba(74,222,128,.1)',borderRadius:8,marginBottom:12}}>✓ Saved successfully!</div>}
+
+      {/* Entry list */}
+      <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:14}}>
+        {entries.length===0&&!loading&&(
+          <div style={{padding:'24px',textAlign:'center',color:'var(--text-faint)',fontSize:12,
+            background:'rgba(255,255,255,.03)',borderRadius:10,border:'1px dashed rgba(255,255,255,.1)'}}>
+            No custom Pokémon registered yet. Click "Add" below to create one.
+          </div>
+        )}
+        {entries.map((e,i)=>(
+          <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',
+            background:'rgba(255,255,255,.035)',borderRadius:9,border:'1px solid var(--border)'}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700,color:'var(--text)',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                {e.name}
+                {e.types.filter(Boolean).map(t=>(
+                  <span key={t} style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:4,
+                    background:`rgba(var(--type-${(t||'').toLowerCase()}-rgb,100,100,100),.25)`,
+                    color:'var(--text)',border:'1px solid rgba(255,255,255,.15)'}}>{t}</span>
+                ))}
+              </div>
+              <div style={{fontSize:10,color:'var(--text-faint)',marginTop:3}}>
+                BST {Object.values(e.stats).reduce((a,b)=>a+b,0)} · {e.moves.length} move{e.moves.length!==1?'s':''}{' '}
+                <span style={{color:'var(--text-muted)'}}>({e.moves.map(m=>m.name||'unnamed').join(', ')})</span>
+              </div>
+            </div>
+            <button onClick={()=>startEdit(i)} style={{padding:'6px 14px',background:'rgba(251,191,36,.1)',
+              border:'1px solid rgba(251,191,36,.3)',borderRadius:7,color:'#fbbf24',
+              cursor:'pointer',fontSize:12,fontFamily:"'Lexend',sans-serif"}}>Edit</button>
+            <button onClick={()=>deleteFromServer(i)} style={{padding:'6px 10px',background:'rgba(239,68,68,.1)',
+              border:'1px solid rgba(239,68,68,.3)',borderRadius:7,color:'#ef4444',
+              cursor:'pointer',fontSize:12,fontFamily:"'Lexend',sans-serif"}}>✕</button>
+          </div>
+        ))}
+      </div>
+
+      <button onClick={()=>startEdit(null)}
+        style={{padding:'9px 20px',background:'rgba(251,191,36,.12)',border:'1px solid rgba(251,191,36,.35)',
+          borderRadius:9,color:'#fbbf24',cursor:'pointer',fontSize:13,fontWeight:700,
+          fontFamily:"'Lexend',sans-serif",marginBottom:editing?16:0}}>
+        + Add Custom Pokémon
+      </button>
+
+      {/* Editor */}
+      {editing&&(
+        <div style={{background:'var(--elevated)',border:'1px solid rgba(251,191,36,.2)',
+          borderRadius:12,padding:16,display:'flex',flexDirection:'column',gap:14,marginTop:14}}>
+          <div style={{fontSize:14,fontWeight:700,color:'#fbbf24'}}>
+            {editIdx===null ? '🆕 New Custom Pokémon' : `✏️ Edit: ${entries[editIdx]?.name}`}
+          </div>
+
+          {/* Name + Types */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
+            <div>
+              <label style={labelStyle}>Name *</label>
+              <input style={inputStyle} placeholder="e.g. Shadow Mewtwo" value={editing.name} onChange={e=>upd({name:e.target.value})}/>
+            </div>
+            <div>
+              <label style={labelStyle}>Type 1</label>
+              <select style={inputStyle} value={editing.types[0]} onChange={e=>upd({types:[e.target.value as string,editing.types[1]]})}>
+                {ALL_TYPES_CP.map(t=><option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Type 2 (optional)</label>
+              <select style={inputStyle} value={editing.types[1]||''} onChange={e=>upd({types:[editing.types[0],e.target.value||undefined]})}>
+                <option value="">— None —</option>
+                {ALL_TYPES_CP.map(t=><option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Base Stats */}
+          <div>
+            <label style={labelStyle}>Base Stats</label>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:8}}>
+              {(['hp','atk','def','spa','spd','spe'] as (keyof PokeStat)[]).map(k=>(
+                <div key={k} style={{textAlign:'center'}}>
+                  <div style={{fontSize:9,color:'var(--text-faint)',marginBottom:4,textTransform:'uppercase',fontWeight:700}}>{k}</div>
+                  <input type="number" style={{...inputStyle,padding:'5px 4px',textAlign:'center'}} min={1} max={999}
+                    value={editing.stats[k]} onChange={e=>updStat(k,Math.max(1,Math.min(999,Number(e.target.value))))}/>
+                </div>
+              ))}
+            </div>
+            <div style={{fontSize:10,color:'var(--text-faint)',marginTop:5,textAlign:'right'}}>
+              Total BST: <strong style={{color:'var(--text-muted)'}}>{Object.values(editing.stats).reduce((a,b)=>a+b,0)}</strong>
+            </div>
+          </div>
+
+          {/* Moves */}
+          <div>
+            <label style={labelStyle}>Damaging Moves (available in all raid tools)</label>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {editing.moves.map((mv,i)=>(
+                <div key={i} style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 80px 36px',gap:6,alignItems:'center'}}>
+                  <input style={inputStyle} placeholder="Move name (e.g. Shadow Storm)" value={mv.name} onChange={e=>updMove(i,{name:e.target.value})}/>
+                  <select style={inputStyle} value={mv.type} onChange={e=>updMove(i,{type:e.target.value})}>
+                    {ALL_TYPES_CP.map(t=><option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <select style={inputStyle} value={mv.cat} onChange={e=>updMove(i,{cat:e.target.value})}>
+                    <option value="Physical">Physical</option>
+                    <option value="Special">Special</option>
+                  </select>
+                  <input type="number" style={{...inputStyle,padding:'5px 6px'}} placeholder="BP" min={1} max={300}
+                    value={mv.bp} onChange={e=>updMove(i,{bp:Math.max(1,Number(e.target.value))})}/>
+                  <button onClick={()=>delMove(i)} style={{padding:'6px 8px',background:'rgba(239,68,68,.1)',
+                    border:'1px solid rgba(239,68,68,.25)',borderRadius:6,color:'#ef4444',cursor:'pointer',fontSize:13}}>✕</button>
+                </div>
+              ))}
+              <button onClick={addMove} style={{padding:'6px 14px',background:'transparent',
+                border:'1px dashed rgba(255,255,255,.15)',borderRadius:7,color:'var(--text-faint)',
+                cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif",width:'fit-content'}}>
+                + Add Move
+              </button>
+            </div>
+          </div>
+
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end',borderTop:'1px solid rgba(255,255,255,.07)',paddingTop:12}}>
+            <button onClick={()=>{setEditing(null);setEditIdx(null);}}
+              style={{padding:'8px 18px',background:'transparent',border:'1px solid var(--border)',
+                borderRadius:8,color:'var(--text-muted)',cursor:'pointer',fontSize:12,fontFamily:"'Lexend',sans-serif"}}>
+              Cancel
+            </button>
+            <button onClick={saveEdit} disabled={!editing.name.trim()}
+              style={{padding:'8px 22px',background:'rgba(251,191,36,.85)',border:'none',borderRadius:8,
+                color:'#000',cursor:'pointer',fontSize:12,fontWeight:700,fontFamily:"'Lexend',sans-serif",
+                opacity:!editing.name.trim()?.5:1}}>
+              ✓ Save Pokémon
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
-export default function BossInfoPage({ guildId }: { guildId: string }) {
+export default function BossInfoPage({ guildId, apiUrl = '' }: { guildId: string; apiUrl?: string }) {
   const sdState = useShowdownData();
-  const [tab,setTab]      = useState<'calc'|'weakness'|'counter'>('calc');
+  const [tab,setTab]      = useState<'calc'|'weakness'|'counter'|'custompoke'>('calc');
   const [atk,setAtkRaw]   = useState<PanelState>(mkPanel);
   const [def,setDefRaw]   = useState<PanelState>(mkPanel);
   const [field,setField]  = useState({weather:'None',terrain:'None',doubles:false,atkScreen:false,defScreen:false});
@@ -2387,9 +2648,10 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
   };
 
   const TABS = [
-    {id:'calc',    label:'⚔️ Damage Calculator'},
-    {id:'weakness',label:'🛡️ Weakness Lookup'},
-    {id:'counter', label:'👹 Counter Calculator'},
+    {id:'calc',       label:'⚔️ Damage Calculator'},
+    {id:'weakness',   label:'🛡️ Weakness Lookup'},
+    {id:'counter',    label:'👹 Counter Calculator'},
+    {id:'custompoke', label:'✨ Custom Pokémon'},
   ];
 
   return (
@@ -2426,6 +2688,10 @@ export default function BossInfoPage({ guildId }: { guildId: string }) {
       </div>
 
       {tab==='weakness' && <WeaknessSection guildId={guildId}/>}
+
+      {tab==='custompoke' && (
+        <CustomPokemonAdminPanel guildId={guildId} apiUrl={apiUrl}/>
+      )}
 
       {tab==='counter' && (
         sdState!=='ready'

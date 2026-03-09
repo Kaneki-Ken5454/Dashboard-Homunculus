@@ -109,37 +109,64 @@ export function computeCandidate(
   const avgDmgPct = bossBaseHP > 0 ? avgDmg / bossBaseHP * 100 : 0;
   if (avgDmgPct < 0.1) return null;
 
-  // Compute survivability (boss → attacker)
+  // Compute survivability against ALL boss moves (weighted by BP)
   const bossMoves = (boss.customMoves?.length) ? boss.customMoves : getLevelUpMoves(boss.name);
   const atkHP     = calcStat(data.stats.hp, 0, 31, true, 1, 100);
   let ohkoRisk = 0, turnsSurvived = 99;
+  let worstOhkoRisk = 0; // worst-case move
   if (bossMoves.length) {
-    const strongestBossMove = bossMoves.reduce((a, b) => a.bp > b.bp ? a : b);
-    const defRes = runCalc({
-      atkPoke: bossFake, defPoke: data,
-      bp: strongestBossMove.bp, cat: strongestBossMove.cat, mtyp: strongestBossMove.type,
-      atkEvs: boss.evs, defEvs: DEFAULT_EVS, atkIvs: boss.ivs, defIvs: DEFAULT_IVS,
-      atkNat: boss.nature, defNat: 'Hardy', atkTera: boss.teraType, defTera: '',
-      atkItem: '(none)', atkStatus: 'Healthy', weather: boss.weather, doubles: boss.doubles,
-      atkScreen: false, defScreen: false, isCrit: false, zmove: false,
-      atkLv: boss.level || 100, defLv: 100,
-    });
-    if (defRes && !defRes.immune) {
-      const avgBossDmg = ((defRes.minD ?? 0) + (defRes.maxD ?? 0)) / 2;
-      if (avgBossDmg > 0) {
-        turnsSurvived = Math.max(1, Math.floor(atkHP / avgBossDmg));
-        ohkoRisk      = Math.min(1, (defRes.maxD ?? 0) / atkHP);
+    let totalBP = 0, weightedOhko = 0, weightedTurns = 0;
+    for (const bm of bossMoves) {
+      const defRes = runCalc({
+        atkPoke: bossFake, defPoke: data,
+        bp: bm.bp, cat: bm.cat, mtyp: bm.type,
+        atkEvs: boss.evs, defEvs: DEFAULT_EVS, atkIvs: boss.ivs, defIvs: DEFAULT_IVS,
+        atkNat: boss.nature, defNat: 'Hardy', atkTera: boss.teraType, defTera: '',
+        atkItem: '(none)', atkStatus: 'Healthy', weather: boss.weather, doubles: boss.doubles,
+        atkScreen: false, defScreen: false, isCrit: false, zmove: false,
+        atkLv: boss.level || 100, defLv: 100,
+      });
+      if (defRes && !defRes.immune) {
+        const avgBossDmg = ((defRes.minD ?? 0) + (defRes.maxD ?? 0)) / 2;
+        const thisOhko = Math.min(1, (defRes.maxD ?? 0) / Math.max(1, atkHP));
+        const thisTurns = avgBossDmg > 0 ? Math.max(0, Math.floor(atkHP / avgBossDmg)) : 99;
+        weightedOhko += thisOhko * bm.bp;
+        weightedTurns += thisTurns * bm.bp;
+        totalBP += bm.bp;
+        if (thisOhko > worstOhkoRisk) worstOhkoRisk = thisOhko;
+      } else {
+        // Immune to this move — counts as 0 damage
+        weightedTurns += 99 * bm.bp;
+        totalBP += bm.bp;
       }
     }
+    if (totalBP > 0) {
+      ohkoRisk      = weightedOhko / totalBP;
+      turnsSurvived = Math.max(0, Math.round(weightedTurns / totalBP));
+    }
   }
+
+  // Discard counters that get OHKOd by the boss's worst move with high probability —
+  // they're too fragile to be reliable even if their damage output looks good.
+  if (worstOhkoRisk >= 0.98) return null;
 
   // Speed — faster Pokémon get an extra hit in
   const atkSpe  = calcStat(data.stats.spe, 0, 31, false, 1, 100);
   const bossSpe = calcStat(boss.data.stats.spe, boss.evs.spe, boss.ivs.spe, false, getNat(boss.nature, 'spe'), boss.level || 100);
   const extraHit   = atkSpe >= bossSpe ? 1 : 0;
-  const totalHits  = Math.min(turnsSurvived + extraHit, 30);
+  const totalHits  = Math.min(Math.max(1, turnsSurvived) + extraHit, 30);
   const avgTotalPct = avgDmgPct * totalHits;
-  const estRaiders  = Math.max(1, analyticalRaiders(avgTotalPct / 100, inc, mode));
+
+  // Survival penalty: Pokémon frequently OHKOd are less reliable in practice
+  // A high ohkoRisk means the attacker often faints before delivering its hits
+  const survivalPenalty =
+    worstOhkoRisk >= 0.85 ? 3.0 :   // almost certain OHKO — strongly penalise
+    worstOhkoRisk >= 0.65 ? 2.0 :   // likely OHKO
+    worstOhkoRisk >= 0.45 ? 1.5 :   // risky
+    1.0;
+
+  const baseRaiders  = Math.max(1, analyticalRaiders(avgTotalPct / 100, inc, mode));
+  const estRaiders   = Math.max(1, Math.ceil(baseRaiders * survivalPenalty));
 
   return { name, data, bestMove, eff, avgDmgPct, avgTotalPct, ohkoRisk, turnsSurvived, estRaiders };
 }

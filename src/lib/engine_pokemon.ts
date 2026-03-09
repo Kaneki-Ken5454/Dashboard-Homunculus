@@ -182,6 +182,25 @@ export function searchMoves(q: string, limit = 25): string[] {
   return results;
 }
 
+/** Search moves including custom Pokémon learnsets (so custom moves like Shadow Storm appear). */
+export function searchMovesWithCustom(q: string, limit = 25): string[] {
+  const base = searchMoves(q, limit);
+  if (!q) return base;
+  const k = _key(q);
+  const customMoveNames: string[] = [];
+  const seen = new Set(base.map(_key));
+  for (const moves of Object.values(_customLearnsets)) {
+    for (const mv of moves) {
+      const mk = _key(mv.name);
+      if (!seen.has(mk) && mk.includes(k)) {
+        customMoveNames.push(mv.name);
+        seen.add(mk);
+      }
+    }
+  }
+  return [...customMoveNames, ...base].slice(0, limit);
+}
+
 export function getLevelUpMoves(pokeName: string): Array<{level:number;name:string;type:string;cat:string;bp:number}> {
   if (!_lrn || !_mvs) return [];
   const k = _key(pokeName);

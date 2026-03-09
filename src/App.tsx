@@ -403,7 +403,7 @@ function AdminDashboard({user,onLogout,appearance}:{user:DiscordUser;onLogout:()
           {page==='events'     &&<EventsPage   guildId={guildId}/>}
           {page==='info'       &&<InfoTopics   guildId={guildId}/>}
           {page==='help'       &&<HelpPage     guildId={guildId}/>}
-          {page==='bossinfo'   &&<BossInfoPage  guildId={guildId}/>}
+          {page==='bossinfo'   &&<BossInfoPage  guildId={guildId} apiUrl={((import.meta.env.VITE_API_URL as string|undefined)??'').replace(/\/$/,'')}/>}
           {page==='clienttools'&&<ClientToolsPage guildId={guildId}/>}
           {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
           {page==='weakness'&&<WeaknessLookupTool guildId={guildId}/>}

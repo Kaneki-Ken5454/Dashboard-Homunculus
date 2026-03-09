@@ -59,11 +59,10 @@ export interface BossConfig {
   numRaiders: number;
   hpIncreasePerRaider: number;
   hpScalingMode: 'additive' | 'multiplicative';
-  // Shield mechanics
-  shieldActivatesAt: number;       // % HP threshold (0 = off)
-  shieldDamageReduction: number;   // fraction 0–1 (e.g. 0.5 = halve damage)
   // Custom movepool override (replaces level-up moves in sim when non-empty)
   customMoves: MoveData[];
+  // Slots per raider team (default 6)
+  teamSize: number;
 }
 
 /** Per-slot stats from one Monte Carlo run. */
@@ -86,6 +85,16 @@ export interface SimResult {
   hist: Record<number, number>;
   policy: string;
   perSlot: PerSlotStats[];
+  perRaider?: PerRaiderStats[];
+}
+
+/** Aggregated stats for one raider's full team. */
+export interface PerRaiderStats {
+  raiderIdx: number;       // 0-based
+  totalDmgPct: number;     // % of boss HP dealt by this team
+  avgOhkoRisk: number;
+  slotsUsed: number;
+  teamNames: string[];
 }
 
 /** One candidate entry from the Auto-Finder. */
