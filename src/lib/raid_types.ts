@@ -34,6 +34,8 @@ export interface CounterSlot {
   moveData: MoveData | null;
   zmove: boolean;
   isCrit: boolean;
+  /** How many copies of this Pokémon to include in the team (default 1). */
+  count: number;
   /** raiderId: which raider this slot belongs to (1-based, 0 = unassigned) */
   raiderId: number;
   result: CalcResult | null;

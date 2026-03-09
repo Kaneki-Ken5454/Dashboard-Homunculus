@@ -44,12 +44,13 @@ const TYPECHART: Record<string,Record<string,number>> = (() => {
     for (const dt of (nve[at]||[])) tc[dt][at] = 0.5;
     for (const dt of (imm[at]||[])) tc[dt][at] = 0;
   }
-  // Shadow: hits every defensive type for 4× (including itself and all types hitting Shadow for 2×)
+  // Shadow: hits every defensive type for 4× (including itself)
+  // tc[defType][atkType] = multiplier — so for Shadow attacker we set tc[dt]['Shadow'] = 4 for every dt
   const allDef = [...ALL, 'Shadow'];
-  tc['Shadow'] = Object.fromEntries(allDef.map(d => [d, 4]));
-  for (const at of ALL) {
+  tc['Shadow'] = Object.fromEntries(allDef.map(d => [d, 4])); // when defending AS Shadow, everything hits for 4×
+  for (const at of allDef) {
     if (!tc[at]) tc[at] = {};
-    tc[at]['Shadow'] = 2;
+    tc[at]['Shadow'] = 4; // Shadow attacking ANY type deals 4× damage
   }
   return tc;
 })();
@@ -262,6 +263,19 @@ export function getAllLearnableMoveNamesWithCustom(pokeName: string): MoveData[]
   const k = _key(pokeName);
   if (_customLearnsets[k]) return _customLearnsets[k];
   return _origGetAllLearnable(pokeName);
+}
+
+/** Look up a move by name, falling back to custom Pokémon learnsets. */
+export function lookupMoveWithCustom(name: string): MoveData | null {
+  const regular = lookupMove(name);
+  if (regular) return regular;
+  // Scan custom learnsets for a matching move
+  const k = _key(name);
+  for (const moves of Object.values(_customLearnsets)) {
+    const found = moves.find(m => _key(m.name) === k);
+    if (found) return found;
+  }
+  return null;
 }
 
 // Patch getAllPokemonNames to include custom entries

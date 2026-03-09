@@ -43,6 +43,7 @@ import {
   searchPokemonWithCustom,
   getAllPokemonNamesWithCustom,
   getAllLearnableMoveNamesWithCustom,
+  lookupMoveWithCustom,
   type PokeStat,
   type PokeData,
   type MoveData,
@@ -62,7 +63,7 @@ const mkSlot = (): CounterSlot => ({
   id: _slotId++, name: '', data: null, level: 100, nature: 'Hardy', item: '(none)',
   evs: { ...DEFAULT_EVS }, ivs: { ...DEFAULT_IVS }, teraType: '',
   moveName: '', moveData: null, zmove: false, isCrit: false,
-  raiderId: 0, result: null, error: '',
+  count: 1, raiderId: 0, result: null, error: '',
 });
 
 const mkBoss = (): BossConfig => ({
@@ -646,11 +647,17 @@ function CounterRow({ slot, onChange, onRemove, rank }: {
           {medal || <span style={{fontSize:9,color:'var(--text-faint)',fontWeight:700}}>#{slot.id}</span>}
         </span>
         <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.name} searchFn={searchPokemonWithCustom} onChange={v=>{const d=lookupPokeWithCustom(v);upd({name:v,data:d,result:null,error:''});}} placeholder="Attacker Pokémon…"/></div>
-        <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.moveName} searchFn={searchMoves} onChange={v=>{const mv=lookupMove(v);upd({moveName:v,moveData:mv,result:null,error:''});}} placeholder="Move…"/></div>
+        <div style={{flex:'1 1 140px'}}><AutoInput label="" value={slot.moveName} searchFn={searchMoves} onChange={v=>{const mv=lookupMoveWithCustom(v);upd({moveName:v,moveData:mv,result:null,error:''});}} placeholder="Move…"/></div>
         <select style={{...SEL,width:'auto',minWidth:100,fontSize:11}} value={slot.nature} onChange={e=>upd({nature:e.target.value,result:null})}>{Object.keys(NATURES).map(n=><option key={n}>{n}</option>)}</select>
         <select style={{...SEL,width:'auto',minWidth:90,fontSize:11}} value={slot.teraType} onChange={e=>upd({teraType:e.target.value,result:null})}><option value="">No Tera</option>{ALL_TYPES.map(t=><option key={t}>{t}</option>)}</select>
         <label style={{display:'flex',alignItems:'center',gap:3,fontSize:11,color:'var(--text-muted)',cursor:'pointer',whiteSpace:'nowrap'}}><input type="checkbox" checked={slot.isCrit} onChange={e=>upd({isCrit:e.target.checked,result:null})}/> Crit</label>
         <label style={{display:'flex',alignItems:'center',gap:3,fontSize:11,color:'var(--text-muted)',cursor:'pointer',whiteSpace:'nowrap'}}><input type="checkbox" checked={slot.zmove} onChange={e=>upd({zmove:e.target.checked,result:null})}/> Z</label>
+        <div style={{display:'flex',alignItems:'center',gap:3,flexShrink:0}} title="Number of copies of this Pokémon in the team">
+          <span style={{fontSize:10,color:'var(--text-faint)',fontWeight:700}}>×</span>
+          <input type="number" min={1} max={30} value={slot.count ?? 1}
+            onChange={e=>upd({count:Math.max(1,Math.min(30,parseInt(e.target.value)||1)),result:null})}
+            style={{...NUM,width:42,fontSize:12}}/>
+        </div>
         <button onClick={()=>onRemove(slot.id)} style={{background:'rgba(237,66,69,.12)',border:'1px solid rgba(237,66,69,.25)',color:'var(--danger)',borderRadius:5,padding:'3px 8px',cursor:'pointer',fontSize:11,fontWeight:700}}>✕</button>
       </div>
       {/* Row 2: level + EVs */}
@@ -1159,6 +1166,25 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
   const apiUrl = ((import.meta.env.VITE_API_URL as string | undefined) ?? '').replace(/\/$/, '');
   const guildId = guildIdProp || (import.meta.env.VITE_GUILD_ID as string | undefined) || 'global';
 
+  // For non-admin users: silently load custom Pokémon from server so they appear in searches
+  // (admin users get this through CustomPokemonPanel)
+  useEffect(() => {
+    if (isAdmin || !apiUrl) return;
+    fetch(`${apiUrl}/api/custompokemon?guild_id=${encodeURIComponent(guildId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.entries) {
+          const mapped = data.entries.map((e: any) => ({
+            name: e.name, types: (e.types || ['Normal']) as [string, string?],
+            stats: e.stats || { hp:80, atk:80, def:80, spa:80, spd:80, spe:80 },
+            moves: e.moves || [],
+          }));
+          syncCustomPokemon(mapped);
+        }
+      })
+      .catch(() => {});
+  }, [isAdmin, apiUrl, guildId]);
+
   useEffect(() => {
     if (!apiUrl) return;
     fetch(`${apiUrl}/api/bossinfo/raidbosses?guild_id=${encodeURIComponent(guildId)}`)
@@ -1202,9 +1228,17 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
     setGlErr('');
     const bHP = effectiveHp();
     const bossFake: PokeData = {...boss.data, stats:{...boss.data.stats, hp:Math.round(boss.data.stats.hp*raidMult)}};
-    const updated = counters.map(slot => {
+    // Expand slots by their count before calculating
+    const expanded: CounterSlot[] = [];
+    for (const slot of counters) {
+      const n = Math.max(1, slot.count ?? 1);
+      for (let i = 0; i < n; i++) {
+        expanded.push(i === 0 ? slot : { ...slot, id: _slotId++, result: null, error: '' });
+      }
+    }
+    const updated = expanded.map(slot => {
       if (!slot.name||!slot.moveName) return {...slot,error:'',result:null};
-      const ad=slot.data||lookupPokeWithCustom(slot.name), mv=slot.moveData||lookupMove(slot.moveName);
+      const ad=slot.data||lookupPokeWithCustom(slot.name), mv=slot.moveData||lookupMoveWithCustom(slot.moveName);
       if (!ad) return {...slot,error:`"${slot.name}" not found`,result:null};
       if (!mv||!mv.bp) return {...slot,error:`"${slot.moveName}" not found/status`,result:null};
       const res = runCalc({atkPoke:ad,defPoke:bossFake,bp:mv.bp,cat:mv.cat,mtyp:mv.type,
@@ -1220,6 +1254,8 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
       }
       return {...slot,error:'',result:res};
     });
+    // Merge results back — original slots keep their result; count>1 slots are expanded in display
+    // We update counters to the expanded set so all copies appear
     setCounters(updated); setCalc(true);
   };
 
@@ -1425,8 +1461,8 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
         </div>
       </div>
 
-      {/* Custom Pokémon panel */}
-      <CustomPokemonPanel isAdmin={isAdmin} apiUrl={apiUrl} guildId={guildId}/>
+      {/* Custom Pokémon panel — admin only (clients load custom Pokémon silently) */}
+      {isAdmin && <CustomPokemonPanel isAdmin={isAdmin} apiUrl={apiUrl} guildId={guildId}/>}
 
       {/* Auto-Finder panel */}
       {boss.data&&<AutoFinderPanel
