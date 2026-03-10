@@ -1036,24 +1036,9 @@ function ResultsPanel({ slots, boss, totalHp }: { slots: TeamSlot[]; boss: BossS
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
         <Stat label="Boss Total HP" value={totalHp.toLocaleString()} />
-        <Stat label="Team DMG / Pass" value={`${teamPctPerPass.toFixed(1)}%`} sub={`${totalTeamDamage.toLocaleString()} dmg`} />
-        <Stat label="Team Total Damage" value={totalTeamDamage.toLocaleString()} sub="single team pass" />
+        <Stat label="Team DMG / Pass" value={`${teamPctPerPass.toFixed(1)}%`} sub={`${Math.round(teamDmgPerPass).toLocaleString()} dmg`} />
         <Stat label="All Raiders / Pass" value={`${allRaidersPctPerPass.toFixed(1)}%`} sub={`${boss.numRaiders} raiders x team`} />
-        <Stat label="Raid Damage / Pass" value={allRaidersDamagePerPass.toLocaleString()} sub="all raiders combined" />
         <Stat label="Passes to KO" value={passesNeeded >= 999 ? 'inf' : String(passesNeeded)} color={passesNeeded <= 1 ? '#34d399' : passesNeeded <= 2 ? '#fbbf24' : '#f87171'} />
-      </div>
-
-
-      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>Estimated survivability</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
-        {survivalStats.map(({ slot, surv }) => (
-          <div key={`survive-${slot.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
-            <span style={{ color: 'var(--text)', fontWeight: 600 }}>{slot.data?.name ?? slot.name}</span>
-            <span style={{ color: 'var(--text-muted)', fontFamily: "'JetBrains Mono',monospace" }}>
-              {surv ? `${surv.survivableMoves} boss moves survived` : 'N/A'}
-            </span>
-          </div>
-        ))}
       </div>
 
       {/* Per-slot summary */}
