@@ -67,7 +67,8 @@ export function computeCandidate(
   boss: BossConfig,
   bossBaseHP: number,
   inc: number,
-  mode: 'additive' | 'multiplicative'
+  mode: 'additive' | 'multiplicative',
+  preferredCat?: 'Physical' | 'Special' | null
 ): CandidateMetrics | null {
   const data = lookupPokeWithCustom(name);
   if (!data || !boss.data) return null;
@@ -89,7 +90,8 @@ export function computeCandidate(
     const eff = typeEff(mv.type, bossTypes);
     if (eff === 0) continue;
     const stab  = data.types.includes(mv.type) ? 1.5 : 1;
-    const score = eff * mv.bp * stab;
+    const catBonus = preferredCat ? (mv.cat === preferredCat ? 1.0 : 0.5) : 1.0;
+    const score = eff * mv.bp * stab * catBonus;
     if (score > bestScore) { bestScore = score; bestMove = mv; }
   }
   if (!bestMove) return null;
@@ -206,18 +208,22 @@ export async function runAutoFinder(
   mode: 'additive' | 'multiplicative',
   maxResults: number,
   onProgress: (pct: number) => void,
-  sortMetric: SortMetric = 'raiders'
+  sortMetric: SortMetric = 'raiders',
+  preferredCat?: 'Physical' | 'Special' | null,
+  shouldCancel?: () => boolean
 ): Promise<CandidateMetrics[]> {
   const names = getAllPokemonNamesWithCustom();
   const results: CandidateMetrics[] = [];
   const CHUNK = 40;
 
   for (let i = 0; i < names.length; i += CHUNK) {
+    if (shouldCancel && shouldCancel()) break;
     // Yield to browser event loop
     await new Promise<void>(r => setTimeout(r, 0));
     onProgress(Math.round(i / names.length * 100));
     for (let j = i; j < Math.min(i + CHUNK, names.length); j++) {
-      const cand = computeCandidate(names[j], boss, bossBaseHP, inc, mode);
+      if (shouldCancel && shouldCancel()) break;
+      const cand = computeCandidate(names[j], boss, bossBaseHP, inc, mode, preferredCat);
       if (cand && cand.estRaiders < 500) results.push(cand);
     }
   }

@@ -201,10 +201,26 @@ export function searchMovesWithCustom(q: string, limit = 25): string[] {
   return [...customMoveNames, ...base].slice(0, limit);
 }
 
+function _learnsetEntry(pokeName: string): any {
+  if (!_lrn) return {};
+  const k = _key(pokeName);
+  let entry = (_lrn as any)[k] || (_lrn as any)[k + 'base'];
+  if (entry) return entry;
+  if (_dex) {
+    const dexEntry = (_dex as any)[k];
+    const baseSpecies = dexEntry?.baseSpecies;
+    if (typeof baseSpecies === 'string') {
+      const bk = _key(baseSpecies);
+      entry = (_lrn as any)[bk] || (_lrn as any)[bk + 'base'];
+      if (entry) return entry;
+    }
+  }
+  return {};
+}
+
 export function getLevelUpMoves(pokeName: string): Array<{level:number;name:string;type:string;cat:string;bp:number}> {
   if (!_lrn || !_mvs) return [];
-  const k = _key(pokeName);
-  const entry = (_lrn as any)[k] || (_lrn as any)[k+'base'] || {};
+  const entry = _learnsetEntry(pokeName);
   const learnset = (entry.learnset || {}) as Record<string,string[]>;
   const result: Record<string,{level:number;name:string;type:string;cat:string;bp:number}> = {};
   for (const [moveKey, sources] of Object.entries(learnset)) {
@@ -232,8 +248,7 @@ export function getAllPokemonNames(): string[] {
 /** All damaging moves a Pokémon can learn (any generation, any method). */
 export function getAllLearnableMoveNames(pokeName: string): MoveData[] {
   if (!_lrn || !_mvs) return [];
-  const k = _key(pokeName);
-  const entry = (_lrn as any)[k] || (_lrn as any)[k + 'base'] || {};
+  const entry = _learnsetEntry(pokeName);
   const learnset = (entry.learnset || {}) as Record<string, string[]>;
   const moves: MoveData[] = [];
   const seen = new Set<string>();
@@ -438,4 +453,3 @@ export const LBL: React.CSSProperties = {
   display:'block',fontSize:10,color:'var(--text-muted)',fontWeight:700,
   textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3,
 };
-

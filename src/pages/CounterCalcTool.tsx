@@ -1,12 +1,12 @@
-/**
- * CounterCalcTool.tsx – Raid Counter Calculator (Complete Rewrite)
+﻿/**
+ * CounterCalcTool.tsx â€“ Raid Counter Calculator (Complete Rewrite)
  *
  * Core concept:
  *   - One shared team, all raiders use the same team.
  *   - Full EV/IV/Nature/Item customization per slot.
  *   - Boss HP scales with number of raiders.
  *   - Monte Carlo simulation for realistic win probabilities.
- *   - Improved auto‑finder based on type matchups and boss defense.
+ *   - Improved autoâ€‘finder based on type matchups and boss defense.
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
@@ -17,8 +17,6 @@ import {
   lookupMoveWithCustom,
   searchPokemonWithCustom,
   searchMovesWithCustom,
-  getAllPokemonNamesWithCustom,
-  getAllLearnableMoveNamesWithCustom,
   getLevelUpMoves,
   runCalc,
   calcStat,
@@ -37,6 +35,8 @@ import {
   type MoveData,
   type PokeStat,
 } from '../lib/engine_pokemon';
+import { runAutoFinder } from '../lib/auto_finder';
+import type { CandidateMetrics, BossConfig } from '../lib/raid_types';
 import { TypeBadge, AutoInput } from '../lib/pokemon_components';
 
 // ----------------------------------------------------------------------
@@ -97,16 +97,7 @@ interface BossState {
   hpPerRaider: number; // % HP increase per extra raider
 }
 
-interface AutoCandidate {
-  name: string;
-  data: PokeData;
-  move: MoveData;
-  eff: number;
-  stab: boolean;
-  cat: string;
-  dmgPct: number; // % of boss total HP per hit (using current numRaiders)
-  score: number;
-}
+type AutoCandidate = CandidateMetrics;
 
 // ----------------------------------------------------------------------
 // Constants & Helpers
@@ -139,7 +130,7 @@ const mkBoss = (): BossState => ({
   evs: { ...DEFAULT_EVS },
   ivs: { ...DEFAULT_IVS },
   teraType: '',
-  raidTier: '5★ Raid (×6.8 HP)',
+  raidTier: '5â˜… Raid (Ã—6.8 HP)',
   weather: 'None',
   doubles: false,
   defScreen: false,
@@ -355,11 +346,11 @@ const effColor = (eff: number) =>
   eff >= 4 ? '#f87171' : eff >= 2 ? '#fbbf24' : eff === 1 ? 'var(--text-muted)' : '#6ee7b7';
 
 const effLabel = (eff: number) =>
-  eff >= 4 ? '4×' : eff >= 2 ? '2×' : eff === 1 ? '1×' : eff > 0 ? '½×' : '0×';
+  eff >= 4 ? '4Ã—' : eff >= 2 ? '2Ã—' : eff === 1 ? '1Ã—' : eff > 0 ? 'Â½Ã—' : '0Ã—';
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Monte Carlo Engine
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function makePRNG(seed: number): () => number {
   let s = (seed >>> 0) || 0xcafe1234;
@@ -441,7 +432,7 @@ function runMonteCarlo(boss: BossState, slots: TeamSlot[], bossHP: number, opts:
   if (!bossMoves.length) return null;
 
   const numRaiders = Math.max(1, boss.numRaiders);
-  // All raiders use the same team — expand slots × raiders
+  // All raiders use the same team â€” expand slots Ã— raiders
   const counters: TeamSlot[] = [];
   for (let r = 0; r < numRaiders; r++) for (const s of slots) counters.push(s);
   const K = counters.length;
@@ -570,7 +561,7 @@ function runMonteCarlo(boss: BossState, slots: TeamSlot[], bossHP: number, opts:
 
   const perSlot: PerSlotMC[] = counters.map((slot, si) => {
     const a = sAcc[si], u = Math.max(1, a.used);
-    return { name: slot.name || '—', used: a.used, avgHitsDealt: a.hd / u, avgDmgDealt: a.dd / u, avgDmgTaken: a.dt / u, pctBossHp: (a.dd / u) / (bossHP || 1), ohkoChance: a.ot > 0 ? a.ok / a.ot : 0, survivalPct: a.used > 0 ? a.survived / a.used : 0, exactKoPmf: exactKoPmfs[si] || [] };
+    return { name: slot.name || 'â€”', used: a.used, avgHitsDealt: a.hd / u, avgDmgDealt: a.dd / u, avgDmgTaken: a.dt / u, pctBossHp: (a.dd / u) / (bossHP || 1), ohkoChance: a.ot > 0 ? a.ok / a.ot : 0, survivalPct: a.used > 0 ? a.survived / a.used : 0, exactKoPmf: exactKoPmfs[si] || [] };
   });
 
   const totalMoveDmg = mAcc.reduce((s, m) => s + m.totalDmg, 0);
@@ -590,25 +581,21 @@ function runMonteCarlo(boss: BossState, slots: TeamSlot[], bossHP: number, opts:
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Custom Pokémon types + helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Custom Pokemon registry sync (read-only in Counter Calc)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface CustomPokeEntry {
   name: string;
   types: [string, string?];
   stats: PokeStat;
   moves: Array<{ name: string; type: string; cat: string; bp: number }>;
-  _serverId?: number;
 }
 
 const CUSTOM_LS_KEY = 'pktool_custom_pokemon_v1';
 
 function loadCustomLS(): CustomPokeEntry[] {
   try { const r = localStorage.getItem(CUSTOM_LS_KEY); return r ? JSON.parse(r) : []; } catch { return []; }
-}
-function saveCustomLS(es: CustomPokeEntry[]) {
-  try { localStorage.setItem(CUSTOM_LS_KEY, JSON.stringify(es)); } catch {}
 }
 function syncCustom(entries: CustomPokeEntry[]) {
   for (const n of getCustomPokemonNames()) removeCustomPokemon(n);
@@ -617,11 +604,10 @@ function syncCustom(entries: CustomPokeEntry[]) {
     injectCustomPokemon(data, e.moves.map(m => ({ name: m.name, bp: m.bp, cat: m.cat, type: m.type })));
   }
 }
-const BLANK_CP = (): CustomPokeEntry => ({ name: '', types: ['Normal', undefined], stats: { hp: 80, atk: 80, def: 80, spa: 80, spd: 80, spe: 80 }, moves: [{ name: '', type: 'Normal', cat: 'Physical', bp: 80 }] });
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Advanced Slot Row (with EVs, nature, item, etc.)
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
   slot: TeamSlot;
@@ -656,12 +642,12 @@ function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
         {/* Rank badge */}
         <div style={{ width: 24, height: 24, borderRadius: '50%', background: rank !== null ? 'var(--primary)' : 'rgba(255,255,255,.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800, color: '#fff', flexShrink: 0, marginTop: 18 }}>
-          {rank !== null ? rank + 1 : '—'}
+          {rank !== null ? rank + 1 : 'â€”'}
         </div>
 
-        {/* Pokémon */}
+        {/* PokÃ©mon */}
         <div style={{ flex: '1 1 160px', minWidth: 140 }}>
-          <label style={LBL}>Pokémon</label>
+          <label style={LBL}>PokÃ©mon</label>
           <AutoInput value={slot.name} onChange={handlePokeChange} searchFn={searchPokemonWithCustom} placeholder="e.g. Garchomp" />
           {slot.data && (
             <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
@@ -691,7 +677,7 @@ function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
             <div style={{ display: 'flex', gap: 4, marginTop: 4, alignItems: 'center' }}>
               <TypeBadge t={slot.moveData.type} />
               <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                {slot.moveData.cat} · {slot.zmove ? zPower(slot.moveData.bp) : slot.moveData.bp}BP
+                {slot.moveData.cat} Â· {slot.zmove ? zPower(slot.moveData.bp) : slot.moveData.bp}BP
                 {slot.zmove ? ' (Z)' : ''}
               </span>
             </div>
@@ -747,15 +733,15 @@ function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
 
         {/* EV toggle */}
         <button onClick={() => setShowEvIv(v => !v)} style={{ ...BTN('ghost'), padding: '5px 7px', marginTop: 18, fontSize: 10 }} title="Show/hide EVs & IVs">
-          {showEvIv ? '▲EV' : '▼EV'}
+          {showEvIv ? 'â–²EV' : 'â–¼EV'}
         </button>
 
         {/* Action buttons */}
-        <button onClick={onDuplicate} style={{ ...BTN('ghost'), padding: '5px 8px', marginTop: 18 }} title="Duplicate slot">📋</button>
-        <button onClick={onRemove} style={{ ...BTN('danger'), padding: '5px 8px', marginTop: 18 }} title="Remove">✕</button>
+        <button onClick={onDuplicate} style={{ ...BTN('ghost'), padding: '5px 8px', marginTop: 18 }} title="Duplicate slot">ðŸ“‹</button>
+        <button onClick={onRemove} style={{ ...BTN('danger'), padding: '5px 8px', marginTop: 18 }} title="Remove">âœ•</button>
       </div>
 
-      {/* EV/IV grid — collapsible */}
+      {/* EV/IV grid â€” collapsible */}
       {showEvIv && (
         <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(0,0,0,.2)', borderRadius: 8 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '6px 14px', alignItems: 'center' }}>
@@ -779,12 +765,12 @@ function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
             })}
           </div>
           <div style={{ fontSize: 10, color: evTotal > 510 ? '#f87171' : 'var(--text-muted)', marginTop: 6 }}>
-            Total EVs: {evTotal}/510{evTotal > 510 ? ' ⚠ Exceeds limit' : ''}
+            Total EVs: {evTotal}/510{evTotal > 510 ? ' âš  Exceeds limit' : ''}
           </div>
         </div>
       )}
 
-      {slot.error && <div style={{ fontSize: 11, color: '#f87171', marginTop: 6 }}>⚠ {slot.error}</div>}
+      {slot.error && <div style={{ fontSize: 11, color: '#f87171', marginTop: 6 }}>âš  {slot.error}</div>}
 
       {/* Result display */}
       {r && !r.immune && (
@@ -792,10 +778,10 @@ function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ fontSize: 18, fontWeight: 900, color: '#fff', fontFamily: "'JetBrains Mono',monospace" }}>
-                {r.minP.toFixed(1)}%–{r.maxP.toFixed(1)}%
+                {r.minP.toFixed(1)}%â€“{r.maxP.toFixed(1)}%
               </span>
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                {r.minD}–{r.maxD} / {bossHp.toLocaleString()} HP
+                {r.minD}â€“{r.maxD} / {bossHp.toLocaleString()} HP
               </span>
             </div>
             <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
@@ -809,13 +795,13 @@ function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
             <div style={{ height: '100%', width: `${Math.min(100, r.maxP)}%`, background: r.maxP >= 100 ? '#ef4444' : r.maxP >= 50 ? '#f59e0b' : 'var(--primary)', borderRadius: 3 }} />
           </div>
           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
-            KO in {r.hitsToKo[0]}–{r.hitsToKo[1]} hits
+            KO in {r.hitsToKo[0]}â€“{r.hitsToKo[1]} hits
           </div>
         </div>
       )}
       {r?.immune && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
-          🛡 Immune — {slot.data?.name} deals 0 damage with {slot.moveName}
+          ðŸ›¡ Immune â€” {slot.data?.name} deals 0 damage with {slot.moveName}
         </div>
       )}
     </div>
@@ -845,12 +831,12 @@ function BossPanel({ boss, onChange }: { boss: BossState; onChange: (p: Partial<
   return (
     <div style={{ ...CARD, border: '1px solid rgba(220,38,38,.2)', background: 'rgba(220,38,38,.03)' }}>
       <div style={{ fontSize: 11, fontWeight: 800, color: '#f87171', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 12 }}>
-        👹 Raid Boss
+        ðŸ‘¹ Raid Boss
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10 }}>
         {/* Name */}
         <div style={{ gridColumn: 'span 2' }}>
-          <label style={LBL}>Boss Pokémon</label>
+          <label style={LBL}>Boss PokÃ©mon</label>
           <AutoInput value={boss.name} onChange={handleNameChange} searchFn={searchPokemonWithCustom} placeholder="e.g. Nihilego" />
           {boss.data && (
             <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
@@ -878,7 +864,7 @@ function BossPanel({ boss, onChange }: { boss: BossState; onChange: (p: Partial<
         <div>
           <label style={LBL}>Tera Type</label>
           <select style={SEL} value={boss.teraType} onChange={e => onChange({ teraType: e.target.value })}>
-            <option value="">— None —</option>
+            <option value="">â€” None â€”</option>
             {ALL_TYPES.map(t => <option key={t}>{t}</option>)}
           </select>
         </div>
@@ -968,7 +954,7 @@ function BossPanel({ boss, onChange }: { boss: BossState; onChange: (p: Partial<
           {boss.numRaiders > 1 && (
             <span>Total HP ({boss.numRaiders} raiders): <strong style={{ color: '#f87171', fontSize: 14 }}>{totalHp.toLocaleString()}</strong></span>
           )}
-          {boss.customHp > 0 && <span style={{ color: '#fbbf24', fontSize: 11 }}>⚠ Custom HP active</span>}
+          {boss.customHp > 0 && <span style={{ color: '#fbbf24', fontSize: 11 }}>âš  Custom HP active</span>}
         </div>
       )}
     </div>
@@ -994,14 +980,14 @@ function ResultsPanel({ slots, boss, totalHp }: { slots: TeamSlot[]; boss: BossS
   return (
     <div style={{ ...CARD, border: `1px solid ${winLikely ? 'rgba(52,211,153,.3)' : winPossible ? 'rgba(251,191,36,.3)' : 'rgba(248,113,113,.3)'}`, background: winLikely ? 'rgba(52,211,153,.04)' : winPossible ? 'rgba(251,191,36,.04)' : 'rgba(248,113,113,.04)' }}>
       <div style={{ fontSize: 11, fontWeight: 800, color: winLikely ? '#34d399' : winPossible ? '#fbbf24' : '#f87171', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 12 }}>
-        {winLikely ? '✅ Team can win' : winPossible ? '⚠️ Marginal — might need more raids' : '❌ Not enough damage'}
+        {winLikely ? 'âœ… Team can win' : winPossible ? 'âš ï¸ Marginal â€” might need more raids' : 'âŒ Not enough damage'}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
         <Stat label="Boss Total HP" value={totalHp.toLocaleString()} />
         <Stat label="Team DMG / Pass" value={`${teamPctPerPass.toFixed(1)}%`} sub={`${Math.round(teamDmgPerPass).toLocaleString()} dmg`} />
-        <Stat label="All Raiders / Pass" value={`${allRaidersPctPerPass.toFixed(1)}%`} sub={`${boss.numRaiders} raiders × team`} />
-        <Stat label="Passes to KO" value={passesNeeded >= 999 ? '∞' : String(passesNeeded)} color={passesNeeded <= 1 ? '#34d399' : passesNeeded <= 2 ? '#fbbf24' : '#f87171'} />
+        <Stat label="All Raiders / Pass" value={`${allRaidersPctPerPass.toFixed(1)}%`} sub={`${boss.numRaiders} raiders Ã— team`} />
+        <Stat label="Passes to KO" value={passesNeeded >= 999 ? 'âˆž' : String(passesNeeded)} color={passesNeeded <= 1 ? '#34d399' : passesNeeded <= 2 ? '#fbbf24' : '#f87171'} />
       </div>
 
       {/* Per-slot summary */}
@@ -1034,7 +1020,7 @@ function Stat({ label, value, sub, color }: { label: string; value: string; sub?
 }
 
 // ----------------------------------------------------------------------
-// Auto‑Find Panel (improved)
+// Autoâ€‘Find Panel (improved)
 // ----------------------------------------------------------------------
 
 function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (slots: Partial<TeamSlot>[]) => void }) {
@@ -1070,102 +1056,48 @@ function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (s
     setRunning(true);
     setProgress(0);
     setResults([]);
-
-    const totalHp = getTotalHp(boss);
-    const bossFake: PokeData = {
-      ...boss.data,
-      stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * (RAID_TIERS[boss.raidTier] ?? 1)) },
+    const bossConfig: BossConfig = {
+      name: boss.name,
+      data: boss.data,
+      level: boss.level,
+      nature: boss.nature,
+      evs: boss.evs,
+      ivs: boss.ivs,
+      teraType: boss.teraType,
+      raidTier: boss.raidTier,
+      weather: boss.weather,
+      doubles: boss.doubles,
+      defScreen: boss.defScreen,
+      numRaiders: boss.numRaiders,
+      hpIncreasePerRaider: boss.hpPerRaider,
+      hpScalingMode: 'additive',
+      customMoves: [],
+      teamSize: 6,
+      shadowMultiplierOnDualType: 4,
+      simpleBaseHp: 0,
     };
-    const allNames = getAllPokemonNamesWithCustom();
-    const CHUNK = 50;
-    const candidates: AutoCandidate[] = [];
 
-    for (let i = 0; i < allNames.length; i += CHUNK) {
-      if (cancelRef.current) break;
-      await new Promise(r => setTimeout(r, 0));
-      setProgress(Math.round(i / allNames.length * 100));
+    const baseHp = getBossHp(boss);
 
-      for (let j = i; j < Math.min(i + CHUNK, allNames.length); j++) {
-        const name = allNames[j];
-        const data = lookupPokeWithCustom(name);
-        if (!data) continue;
-        // BST filter
-        const bst = Object.values(data.stats).reduce((a, b) => a + b, 0);
-        if (bst < 340) continue;
-
-        const moves = getAllLearnableMoveNamesWithCustom(name);
-        if (!moves.length) continue;
-
-        // Find best move: prefer super‑effective type + preferred category
-        let bestMove: MoveData | null = null;
-        let bestScore = -1;
-
-        for (const move of moves) {
-          if (!move.bp) continue;
-          const eff = typeEff(move.type, bossTypes);
-          if (eff === 0) continue;
-          const stab = data.types.includes(move.type) ? 1.5 : 1;
-          const catBonus = move.cat === effectiveCat ? 1.0 : 0.5;
-          const score = eff * move.bp * stab * catBonus;
-          if (score > bestScore) {
-            bestScore = score;
-            bestMove = move;
-          }
-        }
-
-        if (!bestMove) continue;
-
-        const finalEff = typeEff(bestMove.type, bossTypes);
-        if (finalEff < 1) continue; // skip resisted moves
-
-        const res = runCalc({
-          atkPoke: data,
-          defPoke: bossFake,
-          bp: bestMove.bp,
-          cat: bestMove.cat,
-          mtyp: bestMove.type,
-          atkEvs: DEFAULT_EVS,
-          defEvs: boss.evs,
-          atkIvs: DEFAULT_IVS,
-          defIvs: boss.ivs,
-          atkNat: 'Hardy',
-          defNat: boss.nature,
-          atkTera: '',
-          defTera: boss.teraType,
-          atkItem: '(none)',
-          atkStatus: 'Healthy',
-          weather: boss.weather,
-          doubles: boss.doubles,
-          atkScreen: false,
-          defScreen: boss.defScreen,
-          isCrit: false,
-          zmove: false,
-          atkLv: 100,
-          defLv: boss.level,
-        });
-
-        if (!res || res.immune) continue;
-        const avgD = (res.minD + res.maxD) / 2;
-        const dmgPct = totalHp > 0 ? (avgD / totalHp) * 100 : 0;
-        if (dmgPct < 0.05) continue;
-
-        candidates.push({
-          name: data.name,
-          data,
-          move: bestMove,
-          eff: finalEff,
-          stab: data.types.includes(bestMove.type),
-          cat: bestMove.cat,
-          dmgPct,
-          score: dmgPct * finalEff,
-        });
+    try {
+      const found = await runAutoFinder(
+        bossConfig,
+        baseHp,
+        boss.hpPerRaider / 100,
+        'additive',
+        20,
+        (pct) => setProgress(pct),
+        'damage',
+        effectiveCat,
+        () => cancelRef.current
+      );
+      if (!cancelRef.current) {
+        setResults(found);
+        setProgress(100);
       }
+    } finally {
+      setRunning(false);
     }
-
-    candidates.sort((a, b) => b.dmgPct - a.dmgPct);
-    setResults(candidates.slice(0, 20));
-    setProgress(100);
-    setRunning(false);
   }, [boss, effectiveCat]);
 
   return (
@@ -1176,25 +1108,25 @@ function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (s
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {weaknesses.quad.length > 0 && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 10, color: '#f87171', fontWeight: 800, width: 28 }}>4×</span>
+              <span style={{ fontSize: 10, color: '#f87171', fontWeight: 800, width: 28 }}>4Ã—</span>
               {weaknesses.quad.map(t => <TypeBadge key={t} t={t} />)}
             </div>
           )}
           {weaknesses.double.length > 0 && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 10, color: '#fbbf24', fontWeight: 800, width: 28 }}>2×</span>
+              <span style={{ fontSize: 10, color: '#fbbf24', fontWeight: 800, width: 28 }}>2Ã—</span>
               {weaknesses.double.map(t => <TypeBadge key={t} t={t} />)}
             </div>
           )}
           {weaknesses.half.length > 0 && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 10, color: '#6ee7b7', fontWeight: 700, width: 28 }}>½×</span>
+              <span style={{ fontSize: 10, color: '#6ee7b7', fontWeight: 700, width: 28 }}>Â½Ã—</span>
               {weaknesses.half.map(t => <TypeBadge key={t} t={t} />)}
             </div>
           )}
           {weaknesses.immune.length > 0 && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, width: 28 }}>0×</span>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, width: 28 }}>0Ã—</span>
               {weaknesses.immune.map(t => <TypeBadge key={t} t={t} />)}
             </div>
           )}
@@ -1202,7 +1134,7 @@ function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (s
         <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <span>Def: <strong>{boss.data.stats.def}</strong></span>
           <span>SpD: <strong>{boss.data.stats.spd}</strong></span>
-          <span style={{ color: '#818cf8', fontWeight: 700 }}>→ Use {autoCat} moves (weaker defense)</span>
+          <span style={{ color: '#818cf8', fontWeight: 700 }}>â†’ Use {autoCat} moves (weaker defense)</span>
         </div>
       </div>
 
@@ -1221,7 +1153,7 @@ function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (s
           ))}
         </div>
         <button onClick={run} disabled={running} style={{ ...BTN('primary'), marginLeft: 'auto' }}>
-          {running ? `🔍 Scanning… ${progress}%` : '🔍 Find Best Counters'}
+          {running ? `ðŸ” Scanningâ€¦ ${progress}%` : 'ðŸ” Find Best Counters'}
         </button>
         {running && <button onClick={() => { cancelRef.current = true; setRunning(false); }} style={BTN('danger')}>Stop</button>}
       </div>
@@ -1230,33 +1162,44 @@ function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (s
       {results.length > 0 && (
         <div style={CARD}>
           <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 }}>
-            Top Counters — sorted by damage output vs this boss
+            Top Counters - sorted by total damage output and survivability
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {results.map((c, i) => (
-              <div key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'rgba(0,0,0,.2)', borderRadius: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 18, fontWeight: 800 }}>#{i + 1}</span>
-                <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                  {c.data.types.map(t => <TypeBadge key={t} t={t} />)}
+            {results.map((c, i) => {
+              const move = c.bestMove;
+              const stab = c.data.types.includes(move.type);
+              const ohkoPct = Math.round(c.ohkoRisk * 100);
+              return (
+                <div key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'rgba(0,0,0,.2)', borderRadius: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', width: 18, fontWeight: 800 }}>#{i + 1}</span>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    {c.data.types.map(t => <TypeBadge key={t} t={t} />)}
+                  </div>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: '#fff', minWidth: 100 }}>{c.name}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    <TypeBadge t={move.type} /> {move.name} ({move.cat[0]}) Â· {move.bp}BP Â· avg hit {c.avgDmgPct.toFixed(1)}%
+                  </span>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: effColor(c.eff) }}>{effLabel(c.eff)}</span>
+                    {stab && <span style={{ fontSize: 10, fontWeight: 800, color: '#818cf8' }}>STAB</span>}
+                  </div>
+                  <span style={{ fontSize: 14, fontWeight: 900, color: '#fff', fontFamily: "'JetBrains Mono',monospace", minWidth: 70, textAlign: 'right' }}>
+                    {c.avgTotalPct.toFixed(1)}%
+                  </span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', minWidth: 70 }}>
+                    {c.turnsSurvived} turns
+                  </span>
+                  <span style={{ fontSize: 10, color: ohkoPct >= 80 ? '#f87171' : ohkoPct >= 50 ? '#fb923c' : '#4ade80', minWidth: 70 }}>
+                    {ohkoPct}% OHKO
+                  </span>
+                  <button
+                    onClick={() => onLoadSlots([{ name: c.name, data: c.data, moveName: move.name, moveData: move, level: 100, zmove: false }])}
+                    style={{ ...BTN('ghost'), padding: '3px 8px', fontSize: 11 }}>
+                    + Add
+                  </button>
                 </div>
-                <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: '#fff', minWidth: 100 }}>{c.name}</span>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                  <TypeBadge t={c.move.type} /> {c.move.name} ({c.move.cat[0]}) · {c.move.bp}BP
-                </span>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  <span style={{ fontSize: 11, fontWeight: 800, color: effColor(c.eff) }}>{effLabel(c.eff)}</span>
-                  {c.stab && <span style={{ fontSize: 10, fontWeight: 800, color: '#818cf8' }}>STAB</span>}
-                </div>
-                <span style={{ fontSize: 14, fontWeight: 900, color: '#fff', fontFamily: "'JetBrains Mono',monospace", minWidth: 50, textAlign: 'right' }}>
-                  {c.dmgPct.toFixed(1)}%
-                </span>
-                <button
-                  onClick={() => onLoadSlots([{ name: c.name, data: c.data, moveName: c.move.name, moveData: c.move, level: 100, zmove: false }])}
-                  style={{ ...BTN('ghost'), padding: '3px 8px', fontSize: 11 }}>
-                  + Add
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -1265,9 +1208,9 @@ function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (s
 }
 
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Main Component
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export default function CounterCalcTool({ isAdmin = false }: {
   isAdmin?: boolean;
@@ -1279,7 +1222,11 @@ export default function CounterCalcTool({ isAdmin = false }: {
   const [boss, setBoss] = useState<BossState>(mkBoss);
   const [slots, setSlots] = useState<TeamSlot[]>([mkSlot(), mkSlot(), mkSlot()]);
   const [calculated, setCalculated] = useState(false);
-  const [activeTab, setActiveTab] = useState<'team' | 'finder' | 'custompoke'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'finder'>('team');
+
+  useEffect(() => {
+    syncCustom(loadCustomLS());
+  }, []);
 
   const updateBoss = (p: Partial<BossState>) => {
     setBoss(b => ({ ...b, ...p }));
@@ -1346,12 +1293,12 @@ export default function CounterCalcTool({ isAdmin = false }: {
   if (sdState === 'loading') return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200, gap: 12, color: 'var(--text-muted)' }}>
       <div style={{ width: 20, height: 20, border: '2px solid var(--primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-      Loading Pokémon data…
+      Loading PokÃ©mon dataâ€¦
     </div>
   );
   if (sdState === 'error') return (
     <div style={{ padding: 24, color: '#f87171', textAlign: 'center' }}>
-      ❌ Failed to load Pokémon data. Check your connection and refresh.
+      âŒ Failed to load PokÃ©mon data. Check your connection and refresh.
     </div>
   );
 
@@ -1359,9 +1306,9 @@ export default function CounterCalcTool({ isAdmin = false }: {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 960 }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 900 }}>⚔️ Raid Counter Calculator</h2>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 900 }}>âš”ï¸ Raid Counter Calculator</h2>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          Build one team — all raiders use the same team
+          Build one team â€” all raiders use the same team
         </span>
       </div>
 
@@ -1370,7 +1317,7 @@ export default function CounterCalcTool({ isAdmin = false }: {
 
       {/* Tab switcher */}
       <div style={{ display: 'flex', gap: 6, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
-        {([['team', '👥 Team Builder'], ['finder', '🔍 Auto-Find Counters'], ...(isAdmin ? [['custompoke', '✨ Custom Pokémon']] : [])] as const).map(([tab, label]) => (
+        {([['team', 'ðŸ‘¥ Team Builder'], ['finder', 'ðŸ” Auto-Find Counters']] as const).map(([tab, label]) => (
           <button key={tab} onClick={() => setActiveTab(tab as any)} style={{
             padding: '8px 16px', borderRadius: '8px 8px 0 0',
             border: '1px solid var(--border)', borderBottom: activeTab === tab ? '2px solid var(--primary)' : '1px solid transparent',
@@ -1408,7 +1355,7 @@ export default function CounterCalcTool({ isAdmin = false }: {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {slots.length < 6 && (
               <button onClick={addSlot} style={BTN('ghost')}>
-                + Add Pokémon {slots.length}/6
+                + Add PokÃ©mon {slots.length}/6
               </button>
             )}
             <button
@@ -1416,10 +1363,10 @@ export default function CounterCalcTool({ isAdmin = false }: {
               disabled={!boss.data || slots.every(s => !s.name || !s.moveName)}
               style={{ ...BTN('primary'), opacity: (!boss.data || slots.every(s => !s.name || !s.moveName)) ? 0.5 : 1 }}
             >
-              ⚡ Calculate Damage
+              âš¡ Calculate Damage
             </button>
             <button onClick={() => { setSlots([mkSlot(), mkSlot(), mkSlot()]); setCalculated(false); }} style={BTN('danger')}>
-              🗑 Clear Team
+              ðŸ—‘ Clear Team
             </button>
           </div>
 
@@ -1431,15 +1378,15 @@ export default function CounterCalcTool({ isAdmin = false }: {
           {/* Tips */}
           <div style={{ ...CARD, background: 'rgba(88,101,242,.04)', border: '1px solid rgba(88,101,242,.15)' }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: '#818cf8', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 8 }}>
-              💡 Raid Tips
+              ðŸ’¡ Raid Tips
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              <div>1️⃣ Use the <strong>Auto-Find</strong> tab to see which Pokémon hit hardest against this boss.</div>
-              <div>2️⃣ If boss <strong>Def &lt; SpD</strong>, prefer Physical moves. If <strong>SpD &lt; Def</strong>, prefer Special.</div>
-              <div>3️⃣ <strong>STAB + Super Effective</strong> = 3× damage. Always try to match both.</div>
-              <div>4️⃣ Raids have <strong>no items, no abilities, no status</strong> — raw stats and type matchups only.</div>
-              <div>5️⃣ Boss HP <strong>scales up</strong> per raider. The more people join, the tankier the boss gets.</div>
-              <div>6️⃣ Z-Moves deal <strong>massive burst damage</strong> — enable the Z toggle for relevant slots.</div>
+              <div>1ï¸âƒ£ Use the <strong>Auto-Find</strong> tab to see which PokÃ©mon hit hardest against this boss.</div>
+              <div>2ï¸âƒ£ If boss <strong>Def &lt; SpD</strong>, prefer Physical moves. If <strong>SpD &lt; Def</strong>, prefer Special.</div>
+              <div>3ï¸âƒ£ <strong>STAB + Super Effective</strong> = 3Ã— damage. Always try to match both.</div>
+              <div>4ï¸âƒ£ Raids have <strong>no items, no abilities, no status</strong> â€” raw stats and type matchups only.</div>
+              <div>5ï¸âƒ£ Boss HP <strong>scales up</strong> per raider. The more people join, the tankier the boss gets.</div>
+              <div>6ï¸âƒ£ Z-Moves deal <strong>massive burst damage</strong> â€” enable the Z toggle for relevant slots.</div>
             </div>
           </div>
         </>
@@ -1455,17 +1402,13 @@ export default function CounterCalcTool({ isAdmin = false }: {
         <MonteCarloPanel boss={boss} slots={slots.filter(s => s.result && !s.result.immune)} totalHp={totalHp} />
       )}
 
-      {/* Custom Pokémon Admin (admin only) */}
-      {activeTab === 'custompoke' && isAdmin && (
-        <CustomPokemonAdminPanel />
-      )}
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Monte Carlo Panel
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: TeamSlot[]; totalHp: number }) {
   const [open, setOpen] = React.useState(false);
@@ -1494,7 +1437,7 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
     setTimeout(() => {
       try {
         const r = runMonteCarlo(boss, slots, totalHp, { maxTrials: overrideMax ?? maxTrials, targetMargin: margin, policy, antithetic, stratified, seed: 0, exactMode });
-        if (r) setResult(r); else setErr('Simulation returned null — check boss/counter config.');
+        if (r) setResult(r); else setErr('Simulation returned null â€” check boss/counter config.');
       } catch (e: any) { setErr(e.message || 'Unknown error'); }
       setRunning(false);
     }, 20);
@@ -1530,12 +1473,12 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
     <div style={{ border: '1px solid rgba(99,102,241,0.35)', borderRadius: 12, overflow: 'hidden', background: 'rgba(10,11,24,0.4)' }}>
       <button onClick={() => setOpen(o => !o)} style={{ width: '100%', padding: '12px 16px', background: 'rgba(99,102,241,0.08)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontFamily: 'inherit' }}>
         <span style={{ fontSize: 11, fontWeight: 800, color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.09em', display: 'flex', alignItems: 'center', gap: 8 }}>
-          🎲 Monte-Carlo Battle Simulation
+          ðŸŽ² Monte-Carlo Battle Simulation
           {R && <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'none', color: R.pWin >= 0.8 ? '#4ade80' : R.pWin >= 0.5 ? '#fb923c' : '#f87171' }}>
-            · {(R.pWin * 100).toFixed(0)}% win · mean {R.mean.toFixed(2)} atk
+            Â· {(R.pWin * 100).toFixed(0)}% win Â· mean {R.mean.toFixed(2)} atk
           </span>}
         </span>
-        <span style={{ color: '#374151' }}>{open ? '▲' : '▼'}</span>
+        <span style={{ color: '#374151' }}>{open ? 'â–²' : 'â–¼'}</span>
       </button>
 
       {open && (
@@ -1553,11 +1496,11 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
               </div>
             </div>
             <div>
-              <label style={LBL}>Target Margin (±attackers)</label>
+              <label style={LBL}>Target Margin (Â±attackers)</label>
               <div style={{ display: 'flex', gap: 3 }}>
                 {[0.10, 0.05, 0.02].map(m => (
                   <button key={m} onClick={() => setMargin(m)} style={{ padding: '4px 9px', borderRadius: 5, border: '1px solid rgba(255,255,255,0.09)', background: margin === m ? 'rgba(99,102,241,0.3)' : 'transparent', color: margin === m ? '#a5b4fc' : '#4b5563', cursor: 'pointer', fontSize: 11, fontWeight: margin === m ? 700 : 400, fontFamily: 'inherit' }}>
-                    ±{m}
+                    Â±{m}
                   </button>
                 ))}
               </div>
@@ -1581,12 +1524,12 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button onClick={() => run()} disabled={running} style={{ ...BTN('primary'), opacity: running ? 0.6 : 1 }}>
-              {running ? <><div style={{ width: 12, height: 12, border: '2px solid #fff', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} /> Running…</> : '▶ Run Simulation'}
+              {running ? <><div style={{ width: 12, height: 12, border: '2px solid #fff', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} /> Runningâ€¦</> : 'â–¶ Run Simulation'}
             </button>
             {R && <>
               <button onClick={() => run(10000)} style={{ padding: '7px 14px', background: 'rgba(251,146,60,0.08)', border: '1px solid rgba(251,146,60,0.2)', borderRadius: 7, color: '#fb923c', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit' }}>Run 10k (accurate)</button>
-              <button onClick={() => setSaved(R)} style={{ padding: '7px 14px', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)', borderRadius: 7, color: '#4ade80', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit' }}>💾 Save snapshot</button>
-              {saved && <span style={{ fontSize: 10, color: '#4b5563' }}>Saved: {saved.trials.toLocaleString()} trials · mean {saved.mean.toFixed(2)}</span>}
+              <button onClick={() => setSaved(R)} style={{ padding: '7px 14px', background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)', borderRadius: 7, color: '#4ade80', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit' }}>ðŸ’¾ Save snapshot</button>
+              {saved && <span style={{ fontSize: 10, color: '#4b5563' }}>Saved: {saved.trials.toLocaleString()} trials Â· mean {saved.mean.toFixed(2)}</span>}
             </>}
           </div>
 
@@ -1594,9 +1537,9 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
 
           {!R && !running && (
             <div style={{ fontSize: 11, color: '#374151', lineHeight: 1.65, padding: '10px 12px', background: 'rgba(0,0,0,0.18)', borderRadius: 8 }}>
-              <strong style={{ color: '#6b7280' }}>How it works:</strong> Pilot run of 1 000 trials → estimates σ → computes N = (1.96σ/margin)² → continues until CI width ≤ target or max trials.
+              <strong style={{ color: '#6b7280' }}>How it works:</strong> Pilot run of 1 000 trials â†’ estimates Ïƒ â†’ computes N = (1.96Ïƒ/margin)Â² â†’ continues until CI width â‰¤ target or max trials.
               Each of the {boss.numRaiders} raiders sends the same team sequentially vs {totalHp.toLocaleString()} total boss HP.
-              Boss retaliates with level-up moves each turn. Faster Pokémon attack first.
+              Boss retaliates with level-up moves each turn. Faster PokÃ©mon attack first.
               {antithetic ? ' Antithetic variates pairs complement trials to halve variance.' : ''}
               {stratified ? ' Stratified sampling proportionally distributes boss move trials.' : ''}
             </div>
@@ -1606,7 +1549,7 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(92px, 1fr))', gap: 6 }}>
                 {PILL('Win Rate', `${(R.pWin * 100).toFixed(1)}%`, R.pWin >= 0.8 ? '#4ade80' : R.pWin >= 0.5 ? '#fb923c' : '#f87171')}
-                {PILL('Mean', R.mean.toFixed(2), '#e4e6ef', `±${R.se.toFixed(3)} SE`)}
+                {PILL('Mean', R.mean.toFixed(2), '#e4e6ef', `Â±${R.se.toFixed(3)} SE`)}
                 {PILL('Median', R.median.toString(), '#a5b4fc')}
                 {PILL('Mode', R.mode.toString(), '#818cf8')}
                 {PILL('Std Dev', R.stdDev.toFixed(3), '#9ca3af')}
@@ -1618,9 +1561,9 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
                 <span style={{ fontSize: 10, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: '0.07em' }}>95% CI</span>
                 <span style={{ fontFamily: 'monospace', fontSize: 14, color: '#e4e6ef', fontWeight: 700 }}>[{R.ci95[0].toFixed(3)},&thinsp;{R.ci95[1].toFixed(3)}]</span>
                 <span style={{ fontSize: 11, color: ciColor, fontWeight: 700, padding: '2px 8px', background: `${ciColor}18`, borderRadius: 5, border: `1px solid ${ciColor}44` }}>
-                  {R.metMargin ? '✓ Margin met' : `Width ${R.ciWidth.toFixed(3)}`}
+                  {R.metMargin ? 'âœ“ Margin met' : `Width ${R.ciWidth.toFixed(3)}`}
                 </span>
-                <span style={{ fontSize: 10, color: '#374151', marginLeft: 'auto' }}>{R.trials.toLocaleString()} trials · {R.numRaiders}×{R.numSlots} slots · seed {R.seed}</span>
+                <span style={{ fontSize: 10, color: '#374151', marginLeft: 'auto' }}>{R.trials.toLocaleString()} trials Â· {R.numRaiders}Ã—{R.numSlots} slots Â· seed {R.seed}</span>
                 <button onClick={() => setDiag(d => !d)} style={{ fontSize: 10, color: '#4b5563', background: 'none', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 5, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>
                   {showDiag ? 'Hide' : 'Show'} diagnostics
                 </button>
@@ -1629,7 +1572,7 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
               {showDiag && (
                 <div style={{ background: 'rgba(0,0,0,0.18)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 9, padding: '13px 15px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 7 }}>
-                    {[['Pilot σ', R.pilotStdDev.toFixed(4)], ['Required N', R.trialsRequired.toLocaleString()], ['Actual N', R.trials.toLocaleString()], ['CI Width', R.ciWidth.toFixed(4)]].map(([l, v]) => (
+                    {[['Pilot Ïƒ', R.pilotStdDev.toFixed(4)], ['Required N', R.trialsRequired.toLocaleString()], ['Actual N', R.trials.toLocaleString()], ['CI Width', R.ciWidth.toFixed(4)]].map(([l, v]) => (
                       <div key={l} style={{ textAlign: 'center', padding: '7px 8px', background: 'rgba(255,255,255,0.02)', borderRadius: 6 }}>
                         <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#374151', marginBottom: 2 }}>{l}</div>
                         <div style={{ fontSize: 13, fontFamily: 'monospace', color: '#9ca3af', fontWeight: 700 }}>{v}</div>
@@ -1637,7 +1580,7 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
                     ))}
                   </div>
                   <div style={{ fontSize: 10, color: '#374151', lineHeight: 1.5 }}>
-                    P5={R.p5} P25={R.p25} P50={R.median} P75={R.p75} P95={R.p95} · Policy: {R.policy}
+                    P5={R.p5} P25={R.p25} P50={R.median} P75={R.p75} P95={R.p95} Â· Policy: {R.policy}
                   </div>
                   {cpts.length >= 3 && (
                     <div>
@@ -1657,18 +1600,18 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
 
               {/* Sub-tabs */}
               <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-                {TABL('hist', '📊 Distribution')}
-                {TABL('patk', 'P(≤k) Table')}
-                {TABL('moves', '⚔️ Boss Moves')}
-                {TABL('slots', '🧑‍🤝‍🧑 Per Attacker')}
-                {exactMode && TABL('exact', '🔬 Exact PMF')}
+                {TABL('hist', 'ðŸ“Š Distribution')}
+                {TABL('patk', 'P(â‰¤k) Table')}
+                {TABL('moves', 'âš”ï¸ Boss Moves')}
+                {TABL('slots', 'ðŸ§‘â€ðŸ¤â€ðŸ§‘ Per Attacker')}
+                {exactMode && TABL('exact', 'ðŸ”¬ Exact PMF')}
               </div>
 
               {activeTab === 'hist' && (
                 <div style={{ background: 'rgba(0,0,0,0.22)', borderRadius: 9, padding: '14px 14px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Attackers Needed — {R.trials.toLocaleString()} trials</span>
-                    <span style={{ fontSize: 10, color: '#374151' }}>σ={R.stdDev.toFixed(3)} IQR=[{R.p25},{R.p75}]</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Attackers Needed â€” {R.trials.toLocaleString()} trials</span>
+                    <span style={{ fontSize: 10, color: '#374151' }}>Ïƒ={R.stdDev.toFixed(3)} IQR=[{R.p25},{R.p75}]</span>
                   </div>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 90, position: 'relative' }}>
                     {histKeys.map(k => {
@@ -1692,21 +1635,21 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
                     <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'rgba(129,140,248,0.85)', marginRight: 3, borderRadius: 1 }} />mode={R.mode}</span>
                     <span><span style={{ display: 'inline-block', width: 8, height: 8, background: 'rgba(74,222,128,0.6)', marginRight: 3, borderRadius: 1 }} />median={R.median}</span>
                     <span><span style={{ display: 'inline-block', width: 8, height: 3, background: 'rgba(251,191,36,0.7)', marginRight: 3 }} />CDF strip</span>
-                    <span style={{ color: '#818cf8' }}>K={K} ({R.numRaiders}r×{R.numSlots}s)</span>
+                    <span style={{ color: '#818cf8' }}>K={K} ({R.numRaiders}rÃ—{R.numSlots}s)</span>
                   </div>
                 </div>
               )}
 
               {activeTab === 'patk' && (
                 <div style={{ background: 'rgba(0,0,0,0.18)', borderRadius: 9, padding: '14px' }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 8 }}>P(defeat boss with ≤ k attacker slots)</div>
-                  {confK && <div style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 700, marginBottom: 8 }}>≤{confK} slots at {((R.pAtMostK.find(x => x.k === confK)?.p ?? 0) * 100).toFixed(1)}%</div>}
+                  <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 8 }}>P(defeat boss with â‰¤ k attacker slots)</div>
+                  {confK && <div style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 700, marginBottom: 8 }}>â‰¤{confK} slots at {((R.pAtMostK.find(x => x.k === confK)?.p ?? 0) * 100).toFixed(1)}%</div>}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))', gap: 5 }}>
                     {R.pAtMostK.map(({ k, p }) => {
                       const col = p >= 0.9 ? '#4ade80' : p >= 0.7 ? '#a3e635' : p >= 0.5 ? '#fb923c' : '#f87171';
                       return (
                         <div key={k} onClick={() => setConfK(confK === k ? null : k)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 9px', cursor: 'pointer', background: confK === k ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.02)', borderRadius: 6, border: `1px solid ${confK === k ? 'rgba(99,102,241,0.5)' : 'rgba(255,255,255,0.05)'}` }}>
-                          <span style={{ fontSize: 11, color: '#9ca3af', minWidth: 24, fontWeight: 700 }}>≤{k}</span>
+                          <span style={{ fontSize: 11, color: '#9ca3af', minWidth: 24, fontWeight: 700 }}>â‰¤{k}</span>
                           <div style={{ flex: 1, height: 5, background: 'rgba(255,255,255,0.07)', borderRadius: 3, overflow: 'hidden' }}><div style={{ width: `${p * 100}%`, height: '100%', background: col, borderRadius: 3 }} /></div>
                           <span style={{ fontSize: 12, fontFamily: 'monospace', color: col, fontWeight: 700, minWidth: 38, textAlign: 'right' }}>{(p * 100).toFixed(1)}%</span>
                         </div>
@@ -1800,11 +1743,11 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
                   {R.exactKoPmfs.slice(0, slots.length).map((pmf, si) => {
                     const slot = slots[si];
                     const nonZero = pmf.map((p, k) => ({ k, p })).filter(x => x.p > 0.001);
-                    if (!nonZero.length) return <div key={si} style={{ padding: '8px 10px', color: '#374151', fontSize: 11 }}>{slot.name || '—'}: immune or no valid move</div>;
+                    if (!nonZero.length) return <div key={si} style={{ padding: '8px 10px', color: '#374151', fontSize: 11 }}>{slot.name || 'â€”'}: immune or no valid move</div>;
                     const maxP = Math.max(...nonZero.map(x => x.p));
                     return (
                       <div key={si} style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: '#a5b4fc', marginBottom: 5 }}>{slot.name || '—'}</div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#a5b4fc', marginBottom: 5 }}>{slot.name || 'â€”'}</div>
                         <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 52 }}>
                           {nonZero.map(({ k, p }) => (
                             <div key={k} title={`P(KO in ${k} hits) = ${(p * 100).toFixed(2)}%`} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 0, maxWidth: 40 }}>
@@ -1827,149 +1770,4 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Custom Pokémon Admin Panel
-// ─────────────────────────────────────────────────────────────────────────────
-
-function CustomPokemonAdminPanel() {
-  const [entries, setEntries] = React.useState<CustomPokeEntry[]>(() => { const l = loadCustomLS(); syncCustom(l); return l; });
-  const [editing, setEditing] = React.useState<CustomPokeEntry | null>(null);
-  const [editIdx, setEditIdx] = React.useState<number | null>(null);
-  const [saved, setSaved] = React.useState(false);
-
-  const persist = (updated: CustomPokeEntry[]) => {
-    saveCustomLS(updated); syncCustom(updated); setEntries(updated);
-    setSaved(true); setTimeout(() => setSaved(false), 1500);
-  };
-
-  const startEdit = (idx: number | null) => {
-    setEditing(idx === null ? BLANK_CP() : { ...entries[idx], types: [...entries[idx].types] as [string, string?], moves: entries[idx].moves.map(m => ({ ...m })) });
-    setEditIdx(idx);
-  };
-  const saveEdit = () => {
-    if (!editing || !editing.name.trim()) return;
-    const copy = [...entries];
-    if (editIdx === null) copy.push(editing); else copy[editIdx] = editing;
-    persist(copy); setEditing(null); setEditIdx(null);
-  };
-  const del = (idx: number) => persist(entries.filter((_, i) => i !== idx));
-  const upd = (p: Partial<CustomPokeEntry>) => setEditing(prev => prev ? { ...prev, ...p } : prev);
-  const updStat = (k: keyof PokeStat, v: number) => setEditing(prev => prev ? { ...prev, stats: { ...prev.stats, [k]: v } } : prev);
-  const updMove = (i: number, p: Partial<{ name: string; type: string; cat: string; bp: number }>) =>
-    setEditing(prev => { if (!prev) return prev; const mv = [...prev.moves]; mv[i] = { ...mv[i], ...p }; return { ...prev, moves: mv }; });
-  const addMove = () => setEditing(prev => prev ? { ...prev, moves: [...prev.moves, { name: '', type: 'Normal', cat: 'Physical', bp: 80 }] } : prev);
-  const delMove = (i: number) => setEditing(prev => prev ? { ...prev, moves: prev.moves.filter((_, j) => j !== i) } : prev);
-
-  return (
-    <div style={{ maxWidth: 860 }}>
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 18, fontWeight: 800, color: '#fbbf24', marginBottom: 6 }}>✨ Custom Pokémon Registry</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-          Define custom or fan-made Pokémon for use in all raid tools. Entries are saved locally and injected into search and damage calculations immediately.
-        </div>
-      </div>
-
-      {saved && <div style={{ fontSize: 12, color: '#4ade80', padding: '8px 12px', background: 'rgba(74,222,128,.1)', borderRadius: 8, marginBottom: 12 }}>✓ Saved successfully!</div>}
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
-        {entries.length === 0 && !editing && (
-          <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, background: 'rgba(255,255,255,.03)', borderRadius: 10, border: '1px dashed rgba(255,255,255,.1)' }}>
-            No custom Pokémon yet. Click "Add" below to create one.
-          </div>
-        )}
-        {entries.map((e, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'rgba(255,255,255,.035)', borderRadius: 9, border: '1px solid var(--border)' }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                {e.name}
-                {e.types.filter(Boolean).map(t => <TypeBadge key={t} t={t!} />)}
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
-                BST {Object.values(e.stats).reduce((a, b) => a + b, 0)} · {e.moves.length} move{e.moves.length !== 1 ? 's' : ''}{' '}
-                <span style={{ color: 'var(--text-muted)', opacity: 0.7 }}>({e.moves.map(m => m.name || 'unnamed').join(', ')})</span>
-              </div>
-            </div>
-            <button onClick={() => startEdit(i)} style={{ ...BTN('warn'), padding: '5px 12px', fontSize: 12 }}>Edit</button>
-            <button onClick={() => del(i)} style={{ ...BTN('danger'), padding: '5px 10px', fontSize: 12 }}>✕</button>
-          </div>
-        ))}
-      </div>
-
-      <button onClick={() => startEdit(null)} style={{ ...BTN('warn'), padding: '9px 20px', fontSize: 13, marginBottom: editing ? 16 : 0 }}>
-        + Add Custom Pokémon
-      </button>
-
-      {editing && (
-        <div style={{ background: 'rgba(255,255,255,.025)', border: '1px solid rgba(251,191,36,.2)', borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 14, marginTop: 14 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#fbbf24' }}>
-            {editIdx === null ? '🆕 New Custom Pokémon' : `✏️ Edit: ${entries[editIdx]?.name}`}
-          </div>
-
-          {/* Name + Types */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-            <div>
-              <label style={LBL}>Name *</label>
-              <input style={INP} placeholder="e.g. Shadow Mewtwo" value={editing.name} onChange={e => upd({ name: e.target.value })} />
-            </div>
-            <div>
-              <label style={LBL}>Type 1</label>
-              <select style={SEL} value={editing.types[0]} onChange={e => upd({ types: [e.target.value, editing.types[1]] })}>
-                {ALL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={LBL}>Type 2 (optional)</label>
-              <select style={SEL} value={editing.types[1] || ''} onChange={e => upd({ types: [editing.types[0], e.target.value || undefined] })}>
-                <option value="">— None —</option>
-                {ALL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-          </div>
-
-          {/* Base Stats */}
-          <div>
-            <label style={LBL}>Base Stats</label>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 8 }}>
-              {(['hp', 'atk', 'def', 'spa', 'spd', 'spe'] as (keyof PokeStat)[]).map(k => (
-                <div key={k} style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', fontWeight: 700 }}>{k}</div>
-                  <input type="number" style={{ ...INP, padding: '5px 4px', textAlign: 'center' }} min={1} max={999} value={editing.stats[k]} onChange={e => updStat(k, Math.max(1, Math.min(999, Number(e.target.value))))} />
-                </div>
-              ))}
-            </div>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 5, textAlign: 'right' }}>
-              BST: <strong>{Object.values(editing.stats).reduce((a, b) => a + b, 0)}</strong>
-            </div>
-          </div>
-
-          {/* Moves */}
-          <div>
-            <label style={LBL}>Damaging Moves</label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {editing.moves.map((mv, i) => (
-                <div key={i} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 80px 36px', gap: 6, alignItems: 'center' }}>
-                  <input style={INP} placeholder="Move name" value={mv.name} onChange={e => updMove(i, { name: e.target.value })} />
-                  <select style={SEL} value={mv.type} onChange={e => updMove(i, { type: e.target.value })}>
-                    {ALL_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                  <select style={SEL} value={mv.cat} onChange={e => updMove(i, { cat: e.target.value })}>
-                    <option value="Physical">Physical</option>
-                    <option value="Special">Special</option>
-                  </select>
-                  <input type="number" style={{ ...INP, padding: '5px 6px' }} placeholder="BP" min={1} max={300} value={mv.bp} onChange={e => updMove(i, { bp: Math.max(1, Number(e.target.value)) })} />
-                  <button onClick={() => delMove(i)} style={{ ...BTN('danger'), padding: '6px 8px', justifyContent: 'center' }}>✕</button>
-                </div>
-              ))}
-              <button onClick={addMove} style={{ ...BTN('ghost'), width: 'fit-content', fontSize: 11 }}>+ Add Move</button>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '1px solid rgba(255,255,255,.07)', paddingTop: 12 }}>
-            <button onClick={() => { setEditing(null); setEditIdx(null); }} style={{ ...BTN('ghost'), padding: '8px 18px' }}>Cancel</button>
-            <button onClick={saveEdit} disabled={!editing.name.trim()} style={{ ...BTN('warn'), padding: '8px 22px', fontWeight: 700, opacity: !editing.name.trim() ? 0.5 : 1 }}>✓ Save Pokémon</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
