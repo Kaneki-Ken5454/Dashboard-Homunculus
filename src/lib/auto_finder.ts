@@ -20,6 +20,15 @@ import type { BossConfig } from './raid_types';
 import type { CandidateMetrics } from './raid_types';
 import type { MoveData } from './engine_pokemon';
 
+const RAID_DEF_MULT: Record<string, number> = {
+  'Normal (×1 HP)': 1,
+  '3★ Raid (×2 HP)': 1.2,
+  '4★ Raid (×3 HP)': 1.45,
+  '5★ Raid (×6.8 HP)': 1.85,
+  '6★ Raid (×10 HP)': 2.2,
+  '7★ Raid (×22 HP)': 2.6,
+};
+
 // ── Raider estimation formulas ────────────────────────────────────────────────
 
 /**
@@ -78,8 +87,17 @@ export function computeCandidate(
   if (bst < 330) return null;
 
   const raidMult = RAID_TIERS[boss.raidTier] ?? 1;
+  const defMult = RAID_DEF_MULT[boss.raidTier] ?? 1;
   const bossTypes = boss.teraType ? [boss.teraType] : boss.data.types;
-  const bossFake = { ...boss.data, stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * raidMult) } };
+  const bossFake = {
+    ...boss.data,
+    stats: {
+      ...boss.data.stats,
+      hp: Math.round(boss.data.stats.hp * raidMult),
+      def: Math.round(boss.data.stats.def * defMult),
+      spd: Math.round(boss.data.stats.spd * defMult),
+    },
+  };
 
   // Pick the best damaging move (highest eff × BP × STAB score)
   const moves: MoveData[] = getAllLearnableMoveNamesWithCustom(name);

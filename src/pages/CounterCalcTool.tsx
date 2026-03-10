@@ -183,6 +183,30 @@ const zPower = (bp: number) => {
   return 195;
 };
 
+const RAID_DEF_MULT: Record<string, number> = {
+  'Normal (×1 HP)': 1,
+  '3★ Raid (×2 HP)': 1.2,
+  '4★ Raid (×3 HP)': 1.45,
+  '5★ Raid (×6.8 HP)': 1.85,
+  '6★ Raid (×10 HP)': 2.2,
+  '7★ Raid (×22 HP)': 2.6,
+};
+
+function getBossBattleStats(boss: BossState): PokeData | null {
+  if (!boss.data) return null;
+  const hpMult = RAID_TIERS[boss.raidTier] ?? 1;
+  const defMult = RAID_DEF_MULT[boss.raidTier] ?? 1;
+  return {
+    ...boss.data,
+    stats: {
+      ...boss.data.stats,
+      hp: Math.round(boss.data.stats.hp * hpMult),
+      def: Math.round(boss.data.stats.def * defMult),
+      spd: Math.round(boss.data.stats.spd * defMult),
+    },
+  };
+}
+
 function getBossHp(boss: BossState): number {
   if (boss.customHp > 0) return boss.customHp;
   if (!boss.data) return 0;
@@ -204,6 +228,8 @@ function estimateSurvivableBossMoves(slot: TeamSlot, boss: BossState): { surviva
   const bossMoves = getLevelUpMoves(boss.name).filter(m => m.bp > 0);
   if (!bossMoves.length) return null;
 
+  const bossFake = getBossBattleStats(boss);
+  if (!bossFake) return null;
   const bossFake: PokeData = {
     ...boss.data,
     stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * (RAID_TIERS[boss.raidTier] ?? 1)) },
@@ -260,10 +286,8 @@ function calcSlotResult(slot: TeamSlot, boss: BossState): SlotResult | null {
     };
   }
 
-  const bossFake: PokeData = {
-    ...boss.data,
-    stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * (RAID_TIERS[boss.raidTier] ?? 1)) },
-  };
+  const bossFake = getBossBattleStats(boss);
+  if (!bossFake) return null;
 
   const res = runCalc({
     atkPoke: slot.data,
@@ -484,8 +508,8 @@ function runMonteCarlo(boss: BossState, slots: TeamSlot[], bossHP: number, opts:
   for (let r = 0; r < numRaiders; r++) for (const s of slots) counters.push(s);
   const K = counters.length;
   const M = bossMoves.length;
-  const raidMult = RAID_TIERS[boss.raidTier] ?? 1;
-  const bossFake: PokeData = { ...boss.data, stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * raidMult) } };
+  const bossFake = getBossBattleStats(boss);
+  if (!bossFake) return null;
 
   // Precompute roll tables
   const atkToB: (MCRollTable | null)[] = counters.map(slot => {
@@ -501,7 +525,7 @@ function runMonteCarlo(boss: BossState, slots: TeamSlot[], bossHP: number, opts:
     counters.map(slot => {
       const ad = slot.data || lookupPokeWithCustom(slot.name);
       if (!ad) return null;
-      const res = runCalc({ atkPoke: bossFake, defPoke: ad, bp: mv.bp, cat: mv.cat, mtyp: mv.type, atkEvs: boss.evs, defEvs: slot.evs, atkIvs: boss.ivs, defIvs: slot.ivs, atkNat: boss.nature, defNat: slot.nature, atkTera: boss.teraType, defTera: slot.teraType, atkItem: '(none)', atkStatus: 'Healthy', weather: boss.weather, doubles: boss.doubles, atkScreen: boss.defScreen, defScreen: false, isCrit: false, zmove: false, atkLv: boss.level || 100, defLv: slot.level || 100 });
+      const res = runCalc({ atkPoke: bossFake, defPoke: ad, bp: mv.bp, cat: mv.cat, mtyp: mv.type, atkEvs: boss.evs, defEvs: slot.evs, atkIvs: boss.ivs, defIvs: slot.ivs, atkNat: boss.nature, defNat: slot.nature, atkTera: boss.teraType, defTera: slot.teraType, atkItem: '(none)', atkStatus: 'Healthy', weather: boss.weather, doubles: boss.doubles, atkScreen: false, defScreen: false, isCrit: false, zmove: false, atkLv: boss.level || 100, defLv: slot.level || 100 });
       return toMCRollTable(res);
     })
   );
@@ -1002,6 +1026,7 @@ function BossPanel({ boss, onChange }: { boss: BossState; onChange: (p: Partial<
             <span>Total HP ({boss.numRaiders} raiders): <strong style={{ color: '#f87171', fontSize: 14 }}>{totalHp.toLocaleString()}</strong></span>
           )}
           {boss.customHp > 0 && <span style={{ color: '#fbbf24', fontSize: 11 }}>Warning: Custom HP active</span>}
+          <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Raid defense scaling is applied by tier.</span>
         </div>
       )}
     </div>
@@ -1036,6 +1061,24 @@ function ResultsPanel({ slots, boss, totalHp }: { slots: TeamSlot[]; boss: BossS
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
         <Stat label="Boss Total HP" value={totalHp.toLocaleString()} />
+        <Stat label="Team DMG / Pass" value={`${teamPctPerPass.toFixed(1)}%`} sub={`${totalTeamDamage.toLocaleString()} dmg`} />
+        <Stat label="Team Total Damage" value={totalTeamDamage.toLocaleString()} sub="single team pass" />
+        <Stat label="All Raiders / Pass" value={`${allRaidersPctPerPass.toFixed(1)}%`} sub={`${boss.numRaiders} raiders x team`} />
+        <Stat label="Raid Damage / Pass" value={allRaidersDamagePerPass.toLocaleString()} sub="all raiders combined" />
+        <Stat label="Passes to KO" value={passesNeeded >= 999 ? 'inf' : String(passesNeeded)} color={passesNeeded <= 1 ? '#34d399' : passesNeeded <= 2 ? '#fbbf24' : '#f87171'} />
+      </div>
+
+
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 6 }}>Estimated survivability</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
+        {survivalStats.map(({ slot, surv }) => (
+          <div key={`survive-${slot.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
+            <span style={{ color: 'var(--text)', fontWeight: 600 }}>{slot.data?.name ?? slot.name}</span>
+            <span style={{ color: 'var(--text-muted)', fontFamily: "'JetBrains Mono',monospace" }}>
+              {surv ? `${surv.survivableMoves} boss moves survived` : 'N/A'}
+            </span>
+          </div>
+        ))}
         <Stat label="Team DMG / Pass" value={`${teamPctPerPass.toFixed(1)}%`} sub={`${Math.round(teamDmgPerPass).toLocaleString()} dmg`} />
         <Stat label="All Raiders / Pass" value={`${allRaidersPctPerPass.toFixed(1)}%`} sub={`${boss.numRaiders} raiders x team`} />
         <Stat label="Passes to KO" value={passesNeeded >= 999 ? 'inf' : String(passesNeeded)} color={passesNeeded <= 1 ? '#34d399' : passesNeeded <= 2 ? '#fbbf24' : '#f87171'} />
