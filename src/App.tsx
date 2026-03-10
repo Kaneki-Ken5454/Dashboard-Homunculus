@@ -464,9 +464,9 @@ export default function App() {
               setToken(checkToken);
               // For client users: auto-discover top guild for Activity page
               if(!u.is_admin){
-                import('./lib/db').then(({discoverAllGuildIds})=>{
-                  discoverAllGuildIds().then(list=>{if(list.length&&!cancelled)setClientGuildId(list[0].guild_id);}).catch(()=>{});
-                });
+                discoverAllGuildIds()
+                  .then(list=>{if(list.length&&!cancelled)setClientGuildId(list[0].guild_id);})
+                  .catch(()=>{});
               }
             } else {
               removeToken();

@@ -76,7 +76,7 @@ function FeatureToggle({ feature, flags, guildId, onToggle }: {
 
   return (
     <div style={{
-      display:'flex', alignItems:'center', gap:14, padding:'13px 16px',
+      display:'flex', gap:14, padding:'13px 16px',
       background:'var(--elevated)', border:`1px solid ${enabled?'rgba(59,165,93,.3)':'var(--border)'}`,
       borderRadius:10, transition:'border-color .2s', flexDirection:'column', alignItems:'stretch',
     }}>
