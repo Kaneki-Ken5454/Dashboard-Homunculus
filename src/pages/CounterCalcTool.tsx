@@ -56,6 +56,7 @@ import { runMCViaWorker } from '../lib/mc_engine';
 import { runAutoFinder, type SortMetric } from '../lib/auto_finder';
 import type {
   CounterSlot, BossConfig, SimResult, CandidateMetrics, CalcResult,
+  MinRaidersResult, SlotDamageBreakdown, SimpleMonteCarloResult, MinRaidersStatus,
 } from '../lib/raid_types';
 
 // ── Slot/Boss factories ───────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ const mkSlot = (): CounterSlot => ({
   evs: { ...DEFAULT_EVS }, ivs: { ...DEFAULT_IVS }, teraType: '',
   moveName: '', moveData: null, zmove: false, isCrit: false,
   count: 1, raiderId: 0, result: null, error: '',
+  avgDamagePerFight: 0, isShadow: false, activeInSimple: true,
 });
 
 const mkBoss = (): BossConfig => ({
@@ -73,7 +75,648 @@ const mkBoss = (): BossConfig => ({
   raidTier: 'Normal (×1 HP)', weather: 'None', doubles: false, defScreen: false,
   numRaiders: 1, hpIncreasePerRaider: 0, hpScalingMode: 'additive',
   customMoves: [], teamSize: 6,
+  shadowMultiplierOnDualType: 4, simpleBaseHp: 0,
 });
+
+// ── Min-Raiders Solver ────────────────────────────────────────────────────────
+
+/** Compute per-raider damage d from slots, applying shadow multiplier for dual-type bosses. */
+function calcPerRaiderDamage(
+  slots: CounterSlot[],
+  isDualType: boolean,
+  shadowMult: number
+): { d: number; breakdown: SlotDamageBreakdown[] } {
+  let d = 0;
+  const breakdown: SlotDamageBreakdown[] = [];
+  for (const slot of slots) {
+    if (!slot.activeInSimple) continue;
+    const base = slot.avgDamagePerFight;
+    const mult = slot.isShadow && isDualType ? shadowMult : 1;
+    const effective = base * mult;
+    const subtotal = (slot.count ?? 1) * effective;
+    breakdown.push({
+      slotId: slot.id,
+      name: slot.name || '(unnamed)',
+      count: slot.count ?? 1,
+      baseDmg: base,
+      effectiveDmg: effective,
+      isShadow: slot.isShadow,
+      multiplierApplied: mult,
+      subtotal,
+    });
+    d += subtotal;
+  }
+  return { d, breakdown };
+}
+
+/** Solve for minimum n — linear (additive) scaling mode. */
+function solveLinear(b: number, p: number, d: number): MinRaidersResult {
+  const breakdown: SlotDamageBreakdown[] = [];
+  if (d <= 0) {
+    return { status: 'needs_more_data', n: null, bossHpAtN: null, perRaiderDamage: d, totalDamageAtN: null,
+      formula: 'n = ⌈b(1−p) / (d − b·p)⌉', warning: 'Per-raider damage is 0 — fill in avgDamagePerFight for each slot.', breakdown };
+  }
+  if (p === 0) {
+    const n = Math.ceil(b / d);
+    const hp = b;
+    return { status: 'solved', n, bossHpAtN: hp, perRaiderDamage: d, totalDamageAtN: n * d,
+      numerator: b, denominator: d,
+      formula: `p=0 → n = ⌈${b.toLocaleString()} / ${d.toLocaleString()}⌉ = ${n}`, breakdown };
+  }
+  const denom = d - b * p;
+  const numer = b * (1 - p);
+  if (denom <= 0) {
+    return { status: 'impossible', n: null, bossHpAtN: null, perRaiderDamage: d, totalDamageAtN: null,
+      numerator: numer, denominator: denom,
+      formula: `n = ⌈${numer.toLocaleString()} / (${d.toLocaleString()} − ${(b*p).toLocaleString()})⌉`,
+      warning: `Denominator = d − b·p = ${denom.toFixed(2)} ≤ 0 — boss scales faster than each raider's contribution. Increase damage or reduce scaling%.`, breakdown };
+  }
+  const nRaw = numer / denom;
+  const n = Math.ceil(nRaw);
+  const hp = b * (1 + p * (n - 1));
+  return { status: 'solved', n, bossHpAtN: Math.round(hp), perRaiderDamage: d, totalDamageAtN: n * d,
+    numerator: numer, denominator: denom,
+    formula: `n = ⌈${numer.toLocaleString()} / ${denom.toLocaleString()}⌉ = ⌈${nRaw.toFixed(4)}⌉ = ${n}`,
+    breakdown };
+}
+
+/** Solve for minimum n — multiplicative scaling mode (exponential + binary search). */
+function solveMultiplicative(b: number, p: number, d: number, maxIter = 10000): MinRaidersResult {
+  const breakdown: SlotDamageBreakdown[] = [];
+  if (d <= 0) {
+    return { status: 'needs_more_data', n: null, bossHpAtN: null, perRaiderDamage: d, totalDamageAtN: null,
+      formula: 'n·d ≥ b·(1+p)^(n−1)', warning: 'Per-raider damage is 0.', breakdown };
+  }
+  const feasible = (n: number) => n * d >= b * Math.pow(1 + p, n - 1);
+  // Exponential search for upper bound
+  let hi = Math.max(1, Math.ceil(b / d));
+  while (!feasible(hi) && hi <= maxIter) hi *= 2;
+  if (hi > maxIter && !feasible(hi)) {
+    return { status: 'impossible', n: null, bossHpAtN: null, perRaiderDamage: d, totalDamageAtN: null,
+      formula: 'n·d ≥ b·(1+p)^(n−1)', warning: `No solution found up to n=${maxIter.toLocaleString()} — boss diverges.`, breakdown };
+  }
+  // Binary search between lo=1 and hi
+  let lo = 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (feasible(mid)) hi = mid; else lo = mid + 1;
+  }
+  const n = lo;
+  const hp = b * Math.pow(1 + p, n - 1);
+  return { status: 'solved', n, bossHpAtN: Math.round(hp), perRaiderDamage: d, totalDamageAtN: n * d,
+    formula: `n = ${n} (numerical — exponential/binary search, max ${maxIter.toLocaleString()})`, breakdown };
+}
+
+/** Run full min-raiders calculation. */
+function runMinRaiders(boss: BossConfig, slots: CounterSlot[], baseHp: number): MinRaidersResult {
+  const bossTypes = boss.teraType ? [boss.teraType] : (boss.data?.types ?? []);
+  const isDualType = bossTypes.length >= 2;
+  const shadowMult = boss.shadowMultiplierOnDualType ?? 4;
+  const { d, breakdown } = calcPerRaiderDamage(slots, isDualType, shadowMult);
+  const b = baseHp;
+  const p = (boss.hpIncreasePerRaider ?? 0) / 100;
+  const mode = boss.hpScalingMode;
+  const result = mode === 'multiplicative'
+    ? solveMultiplicative(b, p, d)
+    : solveLinear(b, p, d);
+  result.breakdown = breakdown;
+  return result;
+}
+
+/** Simple Monte Carlo for min-raiders: samples variance and crits. */
+function runSimpleMC(
+  boss: BossConfig, slots: CounterSlot[], baseHp: number,
+  trials = 1000, varianceRange = 0.1, critChance = 0.0625
+): SimpleMonteCarloResult {
+  const bossTypes = boss.teraType ? [boss.teraType] : (boss.data?.types ?? []);
+  const isDualType = bossTypes.length >= 2;
+  const shadowMult = boss.shadowMultiplierOnDualType ?? 4;
+  const p = (boss.hpIncreasePerRaider ?? 0) / 100;
+  const mode = boss.hpScalingMode;
+  const ns: number[] = [];
+  const histogram: Record<number, number> = {};
+  const activeSlots = slots.filter(s => s.activeInSimple && (s.count ?? 1) > 0);
+
+  for (let t = 0; t < trials; t++) {
+    // Sample d with variance per slot
+    let sampledD = 0;
+    for (const slot of activeSlots) {
+      const base = slot.avgDamagePerFight;
+      const mult = slot.isShadow && isDualType ? shadowMult : 1;
+      const isCrit = Math.random() < critChance;
+      const variance = (Math.random() * 2 - 1) * varianceRange;
+      const effective = base * mult * (1 + variance) * (isCrit ? 1.5 : 1);
+      sampledD += (slot.count ?? 1) * Math.max(0, effective);
+    }
+    if (sampledD <= 0) { ns.push(9999); histogram[9999] = (histogram[9999] ?? 0) + 1; continue; }
+    // Solve for this d
+    const r = mode === 'multiplicative'
+      ? solveMultiplicative(baseHp, p, sampledD, 500)
+      : solveLinear(baseHp, p, sampledD);
+    const n = r.status === 'solved' ? (r.n ?? 9999) : 9999;
+    ns.push(n);
+    histogram[n] = (histogram[n] ?? 0) + 1;
+  }
+  ns.sort((a, b) => a - b);
+  const meanN = ns.reduce((a, b) => a + b, 0) / trials;
+  const medianN = ns[Math.floor(trials / 2)];
+  const p5 = ns[Math.floor(trials * 0.05)];
+  const p95 = ns[Math.floor(trials * 0.95)];
+  // Compute the deterministic n from unsampled d to define "success"
+  const { d: deterministicD } = calcPerRaiderDamage(slots, isDualType, shadowMult);
+  const baseResult = mode === 'multiplicative'
+    ? solveMultiplicative(baseHp, p, deterministicD, 500)
+    : solveLinear(baseHp, p, deterministicD);
+  const baseN = baseResult.status === 'solved' ? (baseResult.n ?? 9999) : 9999;
+  const pSuccess = ns.filter(n => n <= baseN).length / trials;
+  return { trials, meanN, medianN, p5, p95, pSuccess, histogram };
+}
+
+// ── What-If Slider ────────────────────────────────────────────────────────────
+
+function WhatIfSlider({ boss, slots, baseHp }: { boss: BossConfig; slots: CounterSlot[]; baseHp: number }) {
+  const [pct, setPct] = React.useState(boss.hpIncreasePerRaider ?? 0);
+  const [mode, setMode] = React.useState<'additive' | 'multiplicative'>(boss.hpScalingMode);
+
+  const fakeBoss: BossConfig = { ...boss, hpIncreasePerRaider: pct, hpScalingMode: mode };
+  const result = runMinRaiders(fakeBoss, slots, baseHp);
+
+  // Build SVG curve: plot HP(n) and n*d for n=1..max
+  const maxN = Math.min(20, (result.n ?? 5) + 5);
+  const p = pct / 100;
+  const bossTypes = boss.teraType ? [boss.teraType] : (boss.data?.types ?? []);
+  const isDualType = bossTypes.length >= 2;
+  const { d } = calcPerRaiderDamage(slots, isDualType, boss.shadowMultiplierOnDualType ?? 4);
+  const hpPoints: number[] = [];
+  const dmgPoints: number[] = [];
+  for (let n = 1; n <= maxN; n++) {
+    const hp = mode === 'multiplicative'
+      ? baseHp * Math.pow(1 + p, n - 1)
+      : baseHp * (1 + p * (n - 1));
+    hpPoints.push(hp);
+    dmgPoints.push(n * d);
+  }
+  const allVals = [...hpPoints, ...dmgPoints].filter(v => isFinite(v) && v > 0);
+  const yMax = allVals.length ? Math.max(...allVals) * 1.1 : 1;
+  const yMin = 0;
+  const W = 280, H = 80;
+  const toX = (i: number) => (i / (maxN - 1)) * (W - 20) + 10;
+  const toY = (v: number) => H - 8 - ((v - yMin) / (yMax - yMin)) * (H - 16);
+  const pathD = (pts: number[]) => pts.map((v, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ');
+
+  const nColor = result.status === 'solved'
+    ? (result.n! <= 3 ? '#22c55e' : result.n! <= 8 ? '#f59e0b' : '#ef4444')
+    : '#6b7280';
+
+  return (
+    <div style={{ background: 'rgba(99,102,241,.06)', border: '1px solid rgba(99,102,241,.2)', borderRadius: 10, padding: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+        📈 What-If Scaling Slider
+        <span style={{ fontSize: 10, fontWeight: 400, textTransform: 'none', color: 'var(--text-faint)' }}>— drag to see how scaling % changes min raiders</span>
+      </div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {(['additive', 'multiplicative'] as const).map(m => (
+            <button key={m} onClick={() => setMode(m)}
+              style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 11,
+                background: mode === m ? 'rgba(99,102,241,.3)' : 'transparent',
+                color: mode === m ? '#a5b4fc' : 'var(--text-muted)', cursor: 'pointer',
+                fontWeight: mode === m ? 700 : 400, fontFamily: "'Lexend',sans-serif" }}>
+              {m === 'additive' ? 'Linear' : 'Multiplicative'}
+            </button>
+          ))}
+        </div>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <input type="range" min={0} max={50} step={0.5} value={pct}
+            onChange={e => setPct(Number(e.target.value))}
+            style={{ width: '100%', accentColor: '#818cf8' }} />
+        </div>
+        <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, fontWeight: 700, color: '#a5b4fc', minWidth: 46 }}>{pct.toFixed(1)}%</span>
+        <span style={{ fontSize: 22, fontWeight: 900, fontFamily: "'JetBrains Mono',monospace", color: nColor, minWidth: 28 }}>
+          n={result.status === 'solved' ? result.n : '∞'}
+        </span>
+      </div>
+      {/* SVG chart */}
+      {d > 0 && (
+        <svg width={W} height={H} style={{ display: 'block', overflow: 'visible' }}>
+          {/* Grid lines */}
+          {[0.25, 0.5, 0.75, 1].map(f => (
+            <line key={f} x1={10} x2={W - 10} y1={toY(yMax * f)} y2={toY(yMax * f)}
+              stroke="rgba(255,255,255,.05)" strokeWidth={1} />
+          ))}
+          {/* Boss HP curve (red) */}
+          <path d={pathD(hpPoints)} fill="none" stroke="#f87171" strokeWidth={2} strokeLinejoin="round" />
+          <text x={W - 8} y={toY(hpPoints[hpPoints.length - 1]) - 4} fontSize={8} fill="#f87171" textAnchor="end">Boss HP</text>
+          {/* Total damage curve (green) */}
+          <path d={pathD(dmgPoints)} fill="none" stroke="#4ade80" strokeWidth={2} strokeLinejoin="round" />
+          <text x={W - 8} y={toY(dmgPoints[dmgPoints.length - 1]) + 10} fontSize={8} fill="#4ade80" textAnchor="end">n×d</text>
+          {/* Crossover dot */}
+          {result.status === 'solved' && result.n != null && result.n <= maxN && (() => {
+            const ni = result.n - 1;
+            return <circle cx={toX(ni)} cy={toY(dmgPoints[ni])} r={4} fill="#fbbf24" stroke="#000" strokeWidth={1.5} />;
+          })()}
+        </svg>
+      )}
+      <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 6, display: 'flex', gap: 16 }}>
+        <span style={{ color: '#f87171' }}>━ Boss HP(n)</span>
+        <span style={{ color: '#4ade80' }}>━ Total damage n×d</span>
+        <span style={{ color: '#fbbf24' }}>● Crossover point</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Min-Raiders Panel ─────────────────────────────────────────────────────────
+
+function MinRaidersPanel({ boss, slots, baseHp, onBossChange }: {
+  boss: BossConfig;
+  slots: CounterSlot[];
+  baseHp: number;
+  onBossChange: (p: Partial<BossConfig>) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [mcOpen, setMcOpen] = React.useState(false);
+  const [mcTrials, setMcTrials] = React.useState(1000);
+  const [mcVariance, setMcVariance] = React.useState(10);
+  const [mcCritChance, setMcCritChance] = React.useState(6.25);
+  const [mcResult, setMcResult] = React.useState<SimpleMonteCarloResult | null>(null);
+  const [mcRunning, setMcRunning] = React.useState(false);
+  const [showWhatIf, setShowWhatIf] = React.useState(false);
+
+  const bossTypes = boss.teraType ? [boss.teraType] : (boss.data?.types ?? []);
+  const isDualType = bossTypes.length >= 2;
+  const shadowMult = boss.shadowMultiplierOnDualType ?? 4;
+  const { d, breakdown } = calcPerRaiderDamage(slots, isDualType, shadowMult);
+  const b = baseHp;
+
+  const result = b > 0 ? runMinRaiders(boss, slots, b) : null;
+
+  const runMC = () => {
+    if (!result || result.status === 'needs_more_data') return;
+    setMcRunning(true);
+    setMcResult(null);
+    setTimeout(() => {
+      const r = runSimpleMC(boss, slots, b, mcTrials, mcVariance / 100, mcCritChance / 100);
+      setMcResult(r);
+      setMcRunning(false);
+    }, 10);
+  };
+
+  const statusColor = !result ? '#6b7280'
+    : result.status === 'solved' ? '#22c55e'
+    : result.status === 'impossible' ? '#ef4444' : '#f59e0b';
+  const statusIcon = !result ? '—'
+    : result.status === 'solved' ? '✅'
+    : result.status === 'impossible' ? '❌' : '⚠️';
+
+  const nColor = result?.status === 'solved'
+    ? ((result.n ?? 0) <= 3 ? '#22c55e' : (result.n ?? 0) <= 8 ? '#f59e0b' : '#ef4444')
+    : '#6b7280';
+
+  const activeSlots = slots.filter(s => s.activeInSimple);
+  const hasData = activeSlots.some(s => s.avgDamagePerFight > 0);
+
+  return (
+    <div style={{ border: '1px solid rgba(251,191,36,.3)', borderRadius: 12, overflow: 'hidden' }}>
+      {/* Header */}
+      <button onClick={() => setOpen(o => !o)}
+        style={{ width: '100%', padding: '11px 16px', background: 'rgba(251,191,36,.07)', border: 'none',
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontFamily: "'Lexend',sans-serif" }}>
+        <span style={{ fontSize: 11, fontWeight: 800, color: '#fbbf24', textTransform: 'uppercase', letterSpacing: '.09em', display: 'flex', alignItems: 'center', gap: 8 }}>
+          ⚡ Min-Raiders Calculator
+          {result?.status === 'solved' && (
+            <span style={{ fontSize: 12, color: nColor, fontWeight: 900, fontFamily: "'JetBrains Mono',monospace",
+              textTransform: 'none', background: 'rgba(0,0,0,.2)', padding: '1px 8px', borderRadius: 5 }}>
+              n = {result.n}
+            </span>
+          )}
+          {!hasData && <span style={{ fontSize: 10, color: 'var(--text-faint)', fontWeight: 400, textTransform: 'none' }}>— fill in Avg Dmg/Fight per slot below</span>}
+        </span>
+        <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+          {/* Simple Mode Config */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, padding: '10px 12px',
+            background: 'rgba(251,191,36,.04)', borderRadius: 8, border: '1px solid rgba(251,191,36,.12)' }}>
+            <div>
+              <label style={LBL}>Shadow Multiplier (dual-type boss)</label>
+              <input style={INP} type="number" min={1} max={10} step={0.5}
+                value={boss.shadowMultiplierOnDualType ?? 4}
+                onChange={e => onBossChange({ shadowMultiplierOnDualType: Math.max(1, Number(e.target.value)) })} />
+              <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 3 }}>
+                Applied to shadow slots when boss has 2 types {isDualType ? '✓ dual-type' : '(boss is single-type)'}
+              </div>
+            </div>
+            <div>
+              <label style={LBL}>Base HP (simple mode override)</label>
+              <input style={INP} type="number" min={0} value={boss.simpleBaseHp ?? 0}
+                placeholder={b > 0 ? `auto (${b.toLocaleString()})` : 'enter HP'}
+                onChange={e => onBossChange({ simpleBaseHp: Math.max(0, Number(e.target.value)) })} />
+              <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 3 }}>
+                Leave 0 to use auto-computed boss HP
+              </div>
+            </div>
+            <div>
+              <label style={LBL}>Scaling Mode</label>
+              <select style={SEL} value={boss.hpScalingMode}
+                onChange={e => onBossChange({ hpScalingMode: e.target.value as 'additive' | 'multiplicative' })}>
+                <option value="additive">Linear (additive)</option>
+                <option value="multiplicative">Multiplicative</option>
+              </select>
+              <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 3 }}>
+                {boss.hpScalingMode === 'additive'
+                  ? `HP(n) = b × (1 + p×(n−1))`
+                  : `HP(n) = b × (1+p)^(n−1)`}
+              </div>
+            </div>
+          </div>
+
+          {/* Per-raider damage summary */}
+          {breakdown.length > 0 && (
+            <div style={{ background: 'rgba(0,0,0,.2)', borderRadius: 9, padding: '10px 14px' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>
+                Per-Raider Damage Breakdown
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
+                {breakdown.map(bd => (
+                  <div key={bd.slotId} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                    <span style={{ minWidth: 110, color: 'var(--text)', fontWeight: 600 }}>{bd.name}</span>
+                    <span style={{ color: 'var(--text-faint)', fontSize: 10 }}>×{bd.count}</span>
+                    {bd.isShadow && isDualType && (
+                      <span style={{ fontSize: 9, background: 'rgba(34,211,238,.12)', color: '#22d3ee',
+                        border: '1px solid rgba(34,211,238,.25)', borderRadius: 4, padding: '1px 5px' }}>
+                        Shadow ×{bd.multiplierApplied}
+                      </span>
+                    )}
+                    <div style={{ flex: 1, height: 4, background: 'rgba(255,255,255,.07)', borderRadius: 2, overflow: 'hidden', minWidth: 40 }}>
+                      <div style={{ width: `${d > 0 ? Math.min(100, (bd.subtotal / d) * 100) : 0}%`,
+                        height: '100%', background: bd.isShadow ? '#22d3ee' : '#818cf8', borderRadius: 2 }} />
+                    </div>
+                    <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, color: 'var(--text-muted)', minWidth: 80, textAlign: 'right' }}>
+                      {bd.subtotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                    </span>
+                  </div>
+                ))}
+                <div style={{ borderTop: '1px solid rgba(255,255,255,.07)', paddingTop: 6, marginTop: 2,
+                  display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 700 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Total d per raider</span>
+                  <span style={{ fontFamily: "'JetBrains Mono',monospace", color: '#fbbf24' }}>
+                    {d.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Results */}
+          {result && b > 0 && (
+            <div style={{ background: result.status === 'solved' ? 'rgba(34,197,94,.07)' : result.status === 'impossible' ? 'rgba(239,68,68,.07)' : 'rgba(245,158,11,.07)',
+              border: `1px solid ${result.status === 'solved' ? 'rgba(34,197,94,.3)' : result.status === 'impossible' ? 'rgba(239,68,68,.3)' : 'rgba(245,158,11,.3)'}`,
+              borderRadius: 10, padding: '14px 16px' }}>
+
+              {/* Status banner */}
+              <div style={{ fontSize: 12, fontWeight: 700, color: statusColor, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>{statusIcon}</span>
+                <span>{result.status === 'solved' ? 'Solved — minimum raiders found'
+                  : result.status === 'impossible' ? 'No finite solution — boss scales too fast'
+                  : 'Needs more data — fill in avg damage per fight'}</span>
+              </div>
+
+              {result.warning && (
+                <div style={{ fontSize: 11, color: '#fbbf24', background: 'rgba(251,191,36,.08)', borderRadius: 6,
+                  padding: '6px 10px', marginBottom: 10 }}>
+                  ⚠️ {result.warning}
+                </div>
+              )}
+
+              {result.status === 'solved' && (
+                <>
+                  {/* Hero n */}
+                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+                    <div style={{ textAlign: 'center', flex: 1 }}>
+                      <div style={{ fontSize: 9, color: 'var(--text-faint)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 3 }}>Min Raiders</div>
+                      <div style={{ fontSize: 48, fontWeight: 900, fontFamily: "'JetBrains Mono',monospace", color: nColor, lineHeight: 1 }}>{result.n}</div>
+                    </div>
+                    <div style={{ flex: 3, display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8 }}>
+                      {[
+                        { l: 'Boss HP at n', v: result.bossHpAtN?.toLocaleString() ?? '—', c: '#f87171' },
+                        { l: 'Per-raider damage d', v: result.perRaiderDamage.toLocaleString(undefined, { maximumFractionDigits: 0 }), c: '#a5b4fc' },
+                        { l: `Total damage (${result.n}×d)`, v: result.totalDamageAtN?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? '—', c: '#4ade80' },
+                        { l: 'Surplus', v: ((result.totalDamageAtN ?? 0) - (result.bossHpAtN ?? 0)).toLocaleString(undefined, { maximumFractionDigits: 0 }), c: '#fbbf24' },
+                      ].map(({ l, v, c }) => (
+                        <div key={l} style={{ background: 'rgba(0,0,0,.2)', borderRadius: 7, padding: '8px 10px', textAlign: 'center' }}>
+                          <div style={{ fontSize: 9, color: 'var(--text-faint)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>{l}</div>
+                          <div style={{ fontSize: 16, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace", color: c }}>{v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Damage vs HP bar */}
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4 }}>
+                      Total damage vs boss HP — surplus margin
+                    </div>
+                    <div style={{ height: 10, background: '#1e2030', borderRadius: 5, overflow: 'hidden', position: 'relative' }}>
+                      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0,
+                        width: `${result.totalDamageAtN && result.bossHpAtN ? Math.min(100, (result.bossHpAtN / result.totalDamageAtN) * 100) : 0}%`,
+                        background: 'linear-gradient(90deg,#f87171,#fb923c)', borderRadius: 5 }} />
+                      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0,
+                        width: `${result.totalDamageAtN && result.bossHpAtN ? Math.min(100, ((result.totalDamageAtN - result.bossHpAtN) / result.totalDamageAtN) * 100) : 0}%`,
+                        left: `${result.totalDamageAtN && result.bossHpAtN ? Math.min(100, (result.bossHpAtN / result.totalDamageAtN) * 100) : 0}%`,
+                        background: 'linear-gradient(90deg,#4ade80,#22c55e)', borderRadius: '0 5px 5px 0' }} />
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-faint)', marginTop: 2 }}>
+                      <span style={{ color: '#f87171' }}>Boss HP: {result.bossHpAtN?.toLocaleString()}</span>
+                      <span style={{ color: '#4ade80' }}>Surplus: {((result.totalDamageAtN ?? 0) - (result.bossHpAtN ?? 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                    </div>
+                  </div>
+
+                  {/* HP scaling table */}
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ fontSize: 11, borderCollapse: 'collapse', width: '100%' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid rgba(255,255,255,.06)' }}>
+                          {['n', 'Boss HP(n)', 'n×d', 'Δ (damage − HP)', 'Status'].map(h => (
+                            <th key={h} style={{ padding: '4px 8px', textAlign: 'center', color: 'var(--text-faint)', fontSize: 9, fontWeight: 700, textTransform: 'uppercase' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Array.from({ length: Math.min((result.n ?? 1) + 2, 12) }, (_, i) => i + 1).map(n => {
+                          const p = (boss.hpIncreasePerRaider ?? 0) / 100;
+                          const hp = boss.hpScalingMode === 'multiplicative'
+                            ? b * Math.pow(1 + p, n - 1)
+                            : b * (1 + p * (n - 1));
+                          const dmg = n * d;
+                          const delta = dmg - hp;
+                          const wins = delta >= 0;
+                          const isTarget = n === result.n;
+                          return (
+                            <tr key={n} style={{ background: isTarget ? 'rgba(251,191,36,.07)' : n % 2 === 0 ? 'rgba(255,255,255,.015)' : 'transparent',
+                              border: isTarget ? '1px solid rgba(251,191,36,.25)' : '1px solid transparent' }}>
+                              <td style={{ padding: '4px 8px', textAlign: 'center', fontWeight: isTarget ? 900 : 400,
+                                fontFamily: "'JetBrains Mono',monospace", color: isTarget ? '#fbbf24' : 'var(--text-muted)' }}>{n}{isTarget ? ' ★' : ''}</td>
+                              <td style={{ padding: '4px 8px', textAlign: 'center', fontFamily: "'JetBrains Mono',monospace", color: '#f87171' }}>{Math.round(hp).toLocaleString()}</td>
+                              <td style={{ padding: '4px 8px', textAlign: 'center', fontFamily: "'JetBrains Mono',monospace", color: '#a5b4fc' }}>{Math.round(dmg).toLocaleString()}</td>
+                              <td style={{ padding: '4px 8px', textAlign: 'center', fontFamily: "'JetBrains Mono',monospace", color: wins ? '#4ade80' : '#f87171' }}>
+                                {delta >= 0 ? '+' : ''}{Math.round(delta).toLocaleString()}
+                              </td>
+                              <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+                                  background: wins ? 'rgba(34,197,94,.12)' : 'rgba(239,68,68,.12)',
+                                  color: wins ? '#4ade80' : '#f87171' }}>{wins ? '✓ Win' : '✗ Fail'}</span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Formula annotation */}
+                  <div style={{ marginTop: 10, padding: '8px 10px', background: 'rgba(0,0,0,.2)', borderRadius: 6,
+                    fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: 'var(--text-faint)', wordBreak: 'break-all' }}>
+                    {result.formula}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {!b && (
+            <div style={{ fontSize: 12, color: 'var(--text-faint)', textAlign: 'center', padding: '12px 0' }}>
+              Set a boss Pokémon (or set Base HP Override in the boss panel) to enable the solver.
+            </div>
+          )}
+
+          {/* What-If Slider */}
+          {b > 0 && (
+            <div>
+              <button onClick={() => setShowWhatIf(w => !w)}
+                style={{ padding: '5px 12px', background: 'transparent', border: '1px solid rgba(99,102,241,.3)', borderRadius: 6,
+                  color: '#a5b4fc', cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: "'Lexend',sans-serif", marginBottom: showWhatIf ? 8 : 0 }}>
+                {showWhatIf ? '▲ Hide' : '▼ Show'} What-If Slider
+              </button>
+              {showWhatIf && <WhatIfSlider boss={boss} slots={slots} baseHp={b} />}
+            </div>
+          )}
+
+          {/* Monte Carlo */}
+          {result?.status === 'solved' && (
+            <div style={{ border: '1px solid rgba(99,102,241,.2)', borderRadius: 9, overflow: 'hidden' }}>
+              <button onClick={() => setMcOpen(o => !o)}
+                style={{ width: '100%', padding: '9px 14px', background: 'rgba(99,102,241,.06)', border: 'none',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontFamily: "'Lexend',sans-serif" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#a5b4fc', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  🎲 Monte Carlo (Variance & Crits)
+                  {mcResult && <span style={{ fontSize: 10, fontWeight: 600, color: mcResult.pSuccess >= .8 ? '#4ade80' : '#f59e0b' }}>
+                    · {(mcResult.pSuccess * 100).toFixed(0)}% success · p5–p95: {mcResult.p5}–{mcResult.p95}
+                  </span>}
+                </span>
+                <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>{mcOpen ? '▲' : '▼'}</span>
+              </button>
+              {mcOpen && (
+                <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                    <div>
+                      <label style={LBL}>Trials</label>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        {[500, 1000, 5000, 10000].map(n => (
+                          <button key={n} onClick={() => setMcTrials(n)}
+                            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)',
+                              background: mcTrials === n ? 'rgba(99,102,241,.3)' : 'transparent',
+                              color: mcTrials === n ? '#a5b4fc' : 'var(--text-muted)', cursor: 'pointer', fontSize: 11,
+                              fontWeight: mcTrials === n ? 700 : 400, fontFamily: "'Lexend',sans-serif" }}>
+                            {n >= 1000 ? n / 1000 + 'k' : n}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label style={LBL}>Variance ±%</label>
+                      <input style={{ ...INP, width: 60 }} type="number" min={0} max={50} value={mcVariance}
+                        onChange={e => setMcVariance(Math.max(0, Math.min(50, Number(e.target.value))))} />
+                    </div>
+                    <div>
+                      <label style={LBL}>Crit Chance %</label>
+                      <input style={{ ...INP, width: 60 }} type="number" min={0} max={100} step={0.5} value={mcCritChance}
+                        onChange={e => setMcCritChance(Math.max(0, Math.min(100, Number(e.target.value))))} />
+                    </div>
+                    <button onClick={runMC} disabled={mcRunning}
+                      style={{ padding: '7px 16px', background: 'linear-gradient(135deg,#4f46e5,#7c3aed)', border: 'none',
+                        borderRadius: 8, color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                        fontFamily: "'Lexend',sans-serif", opacity: mcRunning ? .5 : 1 }}>
+                      {mcRunning ? '⚙️ Running…' : '▶ Run MC'}
+                    </button>
+                  </div>
+                  {mcResult && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {/* Stat cards */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
+                        {[
+                          { l: 'Success Rate', v: `${(mcResult.pSuccess * 100).toFixed(1)}%`, c: mcResult.pSuccess >= .8 ? '#4ade80' : '#f59e0b' },
+                          { l: 'Mean n', v: mcResult.meanN.toFixed(2), c: 'var(--text)' },
+                          { l: 'Median n', v: String(mcResult.medianN), c: '#a5b4fc' },
+                          { l: 'P5–P95', v: `${mcResult.p5}–${mcResult.p95}`, c: '#fbbf24' },
+                        ].map(({ l, v, c }) => (
+                          <div key={l} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                            <div style={{ fontSize: 9, color: 'var(--text-faint)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>{l}</div>
+                            <div style={{ fontSize: 18, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace", color: c }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {/* Histogram */}
+                      {(() => {
+                        const keys = Object.keys(mcResult.histogram).map(Number).sort((a, b) => a - b);
+                        const maxH = Math.max(...keys.map(k => mcResult.histogram[k]));
+                        const baseN = result.status === 'solved' ? result.n! : 0;
+                        return (
+                          <div style={{ background: 'rgba(0,0,0,.15)', borderRadius: 8, padding: '10px 12px' }}>
+                            <div style={{ fontSize: 9, color: 'var(--text-faint)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 8 }}>
+                              Distribution of n across {mcResult.trials.toLocaleString()} trials
+                            </div>
+                            <div style={{ display: 'flex', gap: 3, alignItems: 'flex-end', height: 64 }}>
+                              {keys.map(k => {
+                                const cnt = mcResult.histogram[k];
+                                const bh = Math.max(4, Math.round((cnt / maxH) * 56));
+                                const isMedian = k === mcResult.medianN;
+                                return (
+                                  <div key={k} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 18 }}
+                                    title={`n=${k}: ${(cnt / mcResult.trials * 100).toFixed(1)}% (${cnt} trials)`}>
+                                    <div style={{ width: '100%', height: bh,
+                                      background: isMedian ? '#fbbf24' : k <= baseN ? 'rgba(99,102,241,.8)' : 'rgba(239,68,68,.6)',
+                                      borderRadius: '3px 3px 0 0', minHeight: 4 }} />
+                                    <div style={{ fontSize: 9, fontFamily: "'JetBrains Mono',monospace",
+                                      color: isMedian ? '#fbbf24' : k <= baseN ? '#a5b4fc' : '#f87171', fontWeight: isMedian ? 900 : 400 }}>
+                                      {k >= 9999 ? '∞' : k}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div style={{ display: 'flex', gap: 12, fontSize: 9, color: 'var(--text-faint)', marginTop: 6 }}>
+                              <span style={{ color: '#a5b4fc' }}>■ n ≤ deterministic</span>
+                              <span style={{ color: '#f87171' }}>■ n &gt; deterministic (harder roll)</span>
+                              <span style={{ color: '#fbbf24' }}>■ median</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Custom Pokémon Panel ─────────────────────────────────────────────────────
 interface CustomPokeEntry {
@@ -672,6 +1315,25 @@ function CounterRow({ slot, onChange, onRemove, rank }: {
           </div>
         ))}
         <span style={{fontSize:9,color:evTotal>510?'var(--danger)':'var(--text-faint)'}}>({evTotal}/510)</span>
+      </div>
+      {/* Simple mode: avg damage per fight + shadow */}
+      <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'6px 10px',
+        background:'rgba(251,191,36,.04)',borderRadius:7,border:'1px solid rgba(251,191,36,.1)'}}>
+        <span style={{fontSize:9,fontWeight:700,color:'#fbbf24',textTransform:'uppercase',letterSpacing:'.06em',whiteSpace:'nowrap'}}>⚡ Min-Raiders</span>
+        <div style={{display:'flex',alignItems:'center',gap:3}}>
+          <label style={{...LBL,marginBottom:0,fontSize:9}}>Avg Dmg/Fight</label>
+          <input type="number" min={0} style={{...NUM,width:90,fontSize:12}}
+            placeholder="0" value={slot.avgDamagePerFight || ''}
+            onChange={e=>upd({avgDamagePerFight:Math.max(0,Number(e.target.value))})}/>
+        </div>
+        <label style={{display:'flex',alignItems:'center',gap:3,fontSize:11,color:'#22d3ee',cursor:'pointer',whiteSpace:'nowrap'}}>
+          <input type="checkbox" checked={slot.isShadow||false} onChange={e=>upd({isShadow:e.target.checked})}/>
+          <span style={{fontWeight:slot.isShadow?700:400}}>Shadow ×mult</span>
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:3,fontSize:11,color:'var(--text-muted)',cursor:'pointer',whiteSpace:'nowrap'}}>
+          <input type="checkbox" checked={slot.activeInSimple!==false} onChange={e=>upd({activeInSimple:e.target.checked})}/>
+          Active
+        </label>
       </div>
       {/* Move info */}
       {slot.moveData && (
@@ -1431,7 +2093,7 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
         </div>
 
         {/* Raider scaling row */}
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:10,padding:'10px 12px',background:'rgba(255,255,255,.03)',borderRadius:8,border:'1px solid rgba(255,255,255,.07)'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:10,padding:'10px 12px',background:'rgba(255,255,255,.03)',borderRadius:8,border:'1px solid rgba(255,255,255,.07)'}}> 
           <div>
             <label style={LBL}>👥 # Raiders</label>
             <input style={INP} type="number" min={1} max={30} value={boss.numRaiders}
@@ -1452,9 +2114,22 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
             <label style={LBL}>Scaling Mode</label>
             <select style={SEL} value={boss.hpScalingMode}
               onChange={e=>setBoss({hpScalingMode:e.target.value as 'additive'|'multiplicative'})}>
-              <option value="additive">Additive</option>
+              <option value="additive">Linear (additive)</option>
               <option value="multiplicative">Multiplicative</option>
             </select>
+          </div>
+          <div>
+            <label style={LBL}>⚡ Shadow Mult (dual-type)</label>
+            <input style={INP} type="number" min={1} max={10} step={0.5} value={boss.shadowMultiplierOnDualType ?? 4}
+              title="Multiplier for shadow Pokémon moves vs dual-type bosses"
+              onChange={e=>setBoss({shadowMultiplierOnDualType:Math.max(1,Number(e.target.value))})}/>
+          </div>
+          <div>
+            <label style={LBL}>⚡ Simple Mode Base HP</label>
+            <input style={INP} type="number" min={0} value={boss.simpleBaseHp ?? 0}
+              placeholder="0 = auto"
+              title="Override base HP for simple-mode min-raiders calc. Leave 0 to use stat formula."
+              onChange={e=>setBoss({simpleBaseHp:Math.max(0,Number(e.target.value))})}/>
           </div>
         </div>
 
@@ -1545,6 +2220,18 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
         onLoadCounters={loadAutoFinderSlots}
         sdState={sdState}
       />}
+
+      {/* Min-Raiders panel */}
+      <MinRaidersPanel
+        boss={boss}
+        slots={counters}
+        baseHp={(() => {
+          const sb = boss.simpleBaseHp ?? 0;
+          if (sb > 0) return sb;
+          return bossBaseHP1R();
+        })()}
+        onBossChange={setBoss}
+      />
 
       {/* Counter list header */}
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>

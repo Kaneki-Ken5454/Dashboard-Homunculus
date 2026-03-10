@@ -40,6 +40,13 @@ export interface CounterSlot {
   raiderId: number;
   result: CalcResult | null;
   error: string;
+  // ── Simple mode (min-raiders calc) ─────────────────────────────────────────
+  /** Total damage this Pokémon deals over the full raid fight (simple mode). */
+  avgDamagePerFight: number;
+  /** If true, apply shadowMultiplierOnDualType when boss has two types. */
+  isShadow: boolean;
+  /** Whether this slot is active in the simple-mode calculation. */
+  activeInSimple: boolean;
 }
 
 /** Full boss configuration. */
@@ -63,6 +70,11 @@ export interface BossConfig {
   customMoves: MoveData[];
   // Slots per raider team (default 6)
   teamSize: number;
+  // Simple mode / min-raiders
+  /** Multiplier applied to shadow moves when boss has two types (default 4). */
+  shadowMultiplierOnDualType: number;
+  /** Base HP override for simple-mode min-raiders calc (bypasses stat formula). */
+  simpleBaseHp: number;
 }
 
 /** Per-slot stats from one Monte Carlo run. */
@@ -116,3 +128,48 @@ export interface RaiderTeam {
   label: string;
   slots: CounterSlot[];
 }
+
+/** One candidate entry from the Auto-Finder. */
+// (already defined above)
+
+// ── Min-Raiders Calculator types ──────────────────────────────────────────────
+
+export type MinRaidersStatus = "solved" | "impossible" | "needs_more_data";
+
+/** Per-slot damage breakdown for the min-raiders simple mode. */
+export interface SlotDamageBreakdown {
+  slotId: number;
+  name: string;
+  count: number;
+  baseDmg: number;       // avgDamagePerFight before shadow mult
+  effectiveDmg: number;  // after shadow multiplier
+  isShadow: boolean;
+  multiplierApplied: number;
+  subtotal: number;      // count × effectiveDmg
+}
+
+/** Full result returned by the min-raiders solver. */
+export interface MinRaidersResult {
+  status: MinRaidersStatus;
+  n: number | null;
+  bossHpAtN: number | null;
+  perRaiderDamage: number;
+  totalDamageAtN: number | null;
+  denominator?: number;    // d - b*p  (linear mode)
+  numerator?: number;      // b*(1-p)  (linear mode)
+  formula: string;
+  warning?: string;
+  breakdown: SlotDamageBreakdown[];
+}
+
+/** Monte Carlo result for simple-mode min-raiders. */
+export interface SimpleMonteCarloResult {
+  trials: number;
+  meanN: number;
+  medianN: number;
+  p5: number;
+  p95: number;
+  pSuccess: number;   // fraction where same n or fewer needed
+  histogram: Record<number, number>;
+}
+
