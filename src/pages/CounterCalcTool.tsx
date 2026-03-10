@@ -230,6 +230,10 @@ function estimateSurvivableBossMoves(slot: TeamSlot, boss: BossState): { surviva
 
   const bossFake = getBossBattleStats(boss);
   if (!bossFake) return null;
+  const bossFake: PokeData = {
+    ...boss.data,
+    stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * (RAID_TIERS[boss.raidTier] ?? 1)) },
+  };
 
   let worstHit = 0;
   for (const mv of bossMoves) {
@@ -1075,6 +1079,9 @@ function ResultsPanel({ slots, boss, totalHp }: { slots: TeamSlot[]; boss: BossS
             </span>
           </div>
         ))}
+        <Stat label="Team DMG / Pass" value={`${teamPctPerPass.toFixed(1)}%`} sub={`${Math.round(teamDmgPerPass).toLocaleString()} dmg`} />
+        <Stat label="All Raiders / Pass" value={`${allRaidersPctPerPass.toFixed(1)}%`} sub={`${boss.numRaiders} raiders x team`} />
+        <Stat label="Passes to KO" value={passesNeeded >= 999 ? 'inf' : String(passesNeeded)} color={passesNeeded <= 1 ? '#34d399' : passesNeeded <= 2 ? '#fbbf24' : '#f87171'} />
       </div>
 
       {/* Per-slot summary */}
