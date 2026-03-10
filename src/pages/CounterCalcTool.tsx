@@ -199,6 +199,52 @@ function getTotalHp(boss: BossState): number {
   return Math.round(base * (1 + inc * (n - 1)));
 }
 
+function estimateSurvivableBossMoves(slot: TeamSlot, boss: BossState): { survivableMoves: number; worstHit: number } | null {
+  if (!slot.data || !boss.data) return null;
+  const bossMoves = getLevelUpMoves(boss.name).filter(m => m.bp > 0);
+  if (!bossMoves.length) return null;
+
+  const bossFake: PokeData = {
+    ...boss.data,
+    stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * (RAID_TIERS[boss.raidTier] ?? 1)) },
+  };
+
+  let worstHit = 0;
+  for (const mv of bossMoves) {
+    const res = runCalc({
+      atkPoke: bossFake,
+      defPoke: slot.data,
+      bp: mv.bp,
+      cat: mv.cat,
+      mtyp: mv.type,
+      atkEvs: boss.evs,
+      defEvs: slot.evs,
+      atkIvs: boss.ivs,
+      defIvs: slot.ivs,
+      atkNat: boss.nature,
+      defNat: slot.nature,
+      atkTera: boss.teraType,
+      defTera: slot.teraType,
+      atkItem: '(none)',
+      atkStatus: 'Healthy',
+      weather: boss.weather,
+      doubles: boss.doubles,
+      atkScreen: boss.defScreen,
+      defScreen: false,
+      isCrit: false,
+      zmove: false,
+      atkLv: boss.level,
+      defLv: slot.level,
+    });
+    if (res && !res.immune) worstHit = Math.max(worstHit, res.maxD || 0);
+  }
+
+  if (worstHit <= 0) return { survivableMoves: 99, worstHit: 0 };
+  const hp = calcStat(slot.data.stats.hp, slot.evs.hp, slot.ivs.hp, true, 1, slot.level);
+  const survivableMoves = Math.max(0, Math.floor((hp - 1) / worstHit));
+  return { survivableMoves, worstHit };
+}
+
 function calcSlotResult(slot: TeamSlot, boss: BossState): SlotResult | null {
   if (!slot.data || !slot.moveData || !boss.data) return null;
   const bp = slot.zmove ? zPower(slot.moveData.bp) : slot.moveData.bp;
@@ -924,24 +970,24 @@ function BossPanel({ boss, onChange }: { boss: BossState; onChange: (p: Partial<
       {/* Boss EVs/IVs */}
       <div style={{ marginTop: 12 }}>
         <label style={LBL}>Boss EVs</label>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           {STAT_ORDER.map(([stat, lbl]) => (
-            <div key={stat} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-              <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 700, minWidth: 22, textAlign: 'right' }}>{lbl}</span>
-              <input style={{ ...NUM, width: 38 }} type="number" min={0} max={252} value={boss.evs[stat]}
+            <div key={stat} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, minWidth: 26, textAlign: 'right' }}>{lbl}</span>
+              <input style={{ ...NUM, width: 54, fontSize: 14, padding: '8px 6px' }} type="number" min={0} max={252} value={boss.evs[stat]}
                 onChange={e => setEv(stat, parseInt(e.target.value))} />
             </div>
           ))}
-          <span style={{ fontSize: 9, color: evTotal > 510 ? '#f87171' : 'var(--text-muted)' }}>({evTotal}/510)</span>
+          <span style={{ fontSize: 11, color: evTotal > 510 ? '#f87171' : 'var(--text-muted)', fontWeight: 700 }}>({evTotal}/510)</span>
         </div>
       </div>
       <div style={{ marginTop: 6 }}>
         <label style={LBL}>Boss IVs</label>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           {STAT_ORDER.map(([stat, lbl]) => (
-            <div key={stat} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-              <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 700, minWidth: 22, textAlign: 'right' }}>{lbl}</span>
-              <input style={{ ...NUM, width: 34 }} type="number" min={0} max={31} value={boss.ivs[stat]}
+            <div key={stat} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, minWidth: 26, textAlign: 'right' }}>{lbl}</span>
+              <input style={{ ...NUM, width: 50, fontSize: 14, padding: '8px 6px' }} type="number" min={0} max={31} value={boss.ivs[stat]}
                 onChange={e => setIv(stat, parseInt(e.target.value))} />
             </div>
           ))}
@@ -971,9 +1017,13 @@ function ResultsPanel({ slots, boss, totalHp }: { slots: TeamSlot[]; boss: BossS
   if (!valid.length) return null;
 
   const teamDmgPerPass = valid.reduce((acc, s) => acc + s.result!.avgD, 0);
+  const totalTeamDamage = Math.round(teamDmgPerPass);
+  const allRaidersDamagePerPass = Math.round(teamDmgPerPass * boss.numRaiders);
   const teamPctPerPass = totalHp > 0 ? (teamDmgPerPass / totalHp) * 100 : 0;
   const allRaidersPctPerPass = teamPctPerPass * boss.numRaiders;
   const passesNeeded = allRaidersPctPerPass > 0 ? Math.ceil(100 / allRaidersPctPerPass) : 999;
+
+  const survivalStats = valid.map(s => ({ slot: s, surv: estimateSurvivableBossMoves(s, boss) }));
 
   const winLikely = passesNeeded <= 1;
   const winPossible = passesNeeded <= 2;
