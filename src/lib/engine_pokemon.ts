@@ -371,7 +371,7 @@ export function runCalc(o: CalcOpts) {
   const bp = o.zmove ? _zPower(o.bp) : o.bp;
   if (!bp) return null;
   const eff = typeEff(o.mtyp, defTypes);
-  if (eff === 0) return { immune:true, mtyp:o.mtyp, cat:o.cat };
+  if (eff === 0) return { immune:true as const, mtyp:o.mtyp, cat:o.cat };
 
   const atkV = o.cat==='Physical'
     ? calcStat(as.atk,o.atkEvs.atk,o.atkIvs.atk,false,getNat(o.atkNat,'atk'),o.atkLv)
@@ -419,7 +419,7 @@ export function runCalc(o: CalcOpts) {
   const defSpe=calcStat(ds.spe,o.defEvs.spe,o.defIvs.spe,false,getNat(o.defNat,'spe'),o.defLv);
 
   return {
-    immune:false, rolls, minD, maxD, minP, maxP, defHp, eff, stab:stab>1,
+    immune:false as const, rolls, minD, maxD, minP, maxP, defHp, eff, stab:stab>1,
     mtyp:o.mtyp, cat:o.cat, atkSpe, defSpe,
     ohko:minP>=100, twoHko:minP>=50, possibleOhko:maxP>=100,
     hitsToKo:[maxD?Math.ceil(defHp/maxD):99, minD?Math.ceil(defHp/minD):99] as [number,number],

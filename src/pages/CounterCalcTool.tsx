@@ -55,7 +55,7 @@ import { TypeBadge, AutoInput } from '../lib/pokemon_components';
 import { runMCViaWorker } from '../lib/mc_engine';
 import { runAutoFinder, type SortMetric } from '../lib/auto_finder';
 import type {
-  CounterSlot, BossConfig, SimResult, CandidateMetrics, CalcResult,
+  CounterSlot, BossConfig, SimResult, CandidateMetrics, CalcResult, CalcResultDamage,
   MinRaidersResult, SlotDamageBreakdown, SimpleMonteCarloResult, MinRaidersStatus,
 } from '../lib/raid_types';
 
@@ -232,10 +232,22 @@ function runSimpleMC(
   return { trials, meanN, medianN, p5, p95, pSuccess, histogram };
 }
 
+// ── Shared colour helpers ─────────────────────────────────────────────────────
+
+/** Green→Yellow→Red by win-probability (0–1). */
+const winRateColor  = (p: number) => p >= .8 ? 'var(--success)' : p >= .5 ? 'var(--warning)' : 'var(--danger)';
+const winRateBg     = (p: number) => p >= .8 ? 'rgba(59,165,93,.12)' : p >= .5 ? 'rgba(250,168,26,.12)' : 'rgba(237,66,69,.12)';
+const winRateBorder = (p: number) => p >= .8 ? 'rgba(59,165,93,.4)'  : p >= .5 ? 'rgba(250,168,26,.4)'  : 'rgba(237,66,69,.4)';
+/** Red→Yellow→Green by damage-dealt percentage. */
+const damagePctColor = (p: number) => p >= 100 ? 'var(--danger)' : p >= 50 ? 'var(--warning)' : p >= 20 ? '#fbbf24' : 'var(--success)';
+/** OHKO-risk colour (0–1 probability). */
+const ohkoRiskColor  = (p: number) => p >= .5 ? 'var(--danger)' : p >= .2 ? 'var(--warning)' : 'var(--success)';
+
 // ── What-If Slider ────────────────────────────────────────────────────────────
 
 function WhatIfSlider({ boss, slots, baseHp }: { boss: BossConfig; slots: CounterSlot[]; baseHp: number }) {
   const [pct, setPct] = React.useState(boss.hpIncreasePerRaider ?? 0);
+  // Local mode lets the user explore a different scaling curve without changing boss config
   const [mode, setMode] = React.useState<'additive' | 'multiplicative'>(boss.hpScalingMode);
 
   const fakeBoss: BossConfig = { ...boss, hpIncreasePerRaider: pct, hpScalingMode: mode };
@@ -398,8 +410,10 @@ function MinRaidersPanel({ boss, slots, baseHp, onBossChange }: {
       {open && (
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-          {/* Simple Mode Config */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, padding: '10px 12px',
+          {/* Min-Raiders-specific overrides
+              Note: Scaling Mode lives in Boss Config (it also drives effectiveHp for the main calc).
+          */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8, padding: '10px 12px',
             background: 'rgba(251,191,36,.04)', borderRadius: 8, border: '1px solid rgba(251,191,36,.12)' }}>
             <div>
               <label style={LBL}>Shadow Multiplier (dual-type boss)</label>
@@ -407,29 +421,17 @@ function MinRaidersPanel({ boss, slots, baseHp, onBossChange }: {
                 value={boss.shadowMultiplierOnDualType ?? 4}
                 onChange={e => onBossChange({ shadowMultiplierOnDualType: Math.max(1, Number(e.target.value)) })} />
               <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 3 }}>
-                Applied to shadow slots when boss has 2 types {isDualType ? '✓ dual-type' : '(boss is single-type)'}
+                Applied to shadow slots when boss has ≥2 types — {isDualType ? '✓ active (dual-type)' : 'inactive (single-type)'}
               </div>
             </div>
             <div>
-              <label style={LBL}>Base HP (simple mode override)</label>
+              <label style={LBL}>Base HP override <span style={{ fontWeight: 400 }}>(0 = auto)</span></label>
               <input style={INP} type="number" min={0} value={boss.simpleBaseHp ?? 0}
                 placeholder={b > 0 ? `auto (${b.toLocaleString()})` : 'enter HP'}
                 onChange={e => onBossChange({ simpleBaseHp: Math.max(0, Number(e.target.value)) })} />
               <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 3 }}>
-                Leave 0 to use auto-computed boss HP
-              </div>
-            </div>
-            <div>
-              <label style={LBL}>Scaling Mode</label>
-              <select style={SEL} value={boss.hpScalingMode}
-                onChange={e => onBossChange({ hpScalingMode: e.target.value as 'additive' | 'multiplicative' })}>
-                <option value="additive">Linear (additive)</option>
-                <option value="multiplicative">Multiplicative</option>
-              </select>
-              <div style={{ fontSize: 9, color: 'var(--text-faint)', marginTop: 3 }}>
-                {boss.hpScalingMode === 'additive'
-                  ? `HP(n) = b × (1 + p×(n−1))`
-                  : `HP(n) = b × (1+p)^(n−1)`}
+                Scaling mode: <strong style={{ color: '#a5b4fc' }}>{boss.hpScalingMode === 'additive' ? 'Linear' : 'Multiplicative'}</strong>
+                {' — '}{boss.hpScalingMode === 'additive' ? 'HP(n) = b×(1+p×(n−1))' : 'HP(n) = b×(1+p)^(n−1)'}
               </div>
             </div>
           </div>
@@ -524,9 +526,9 @@ function MinRaidersPanel({ boss, slots, baseHp, onBossChange }: {
                       <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0,
                         width: `${result.totalDamageAtN && result.bossHpAtN ? Math.min(100, (result.bossHpAtN / result.totalDamageAtN) * 100) : 0}%`,
                         background: 'linear-gradient(90deg,#f87171,#fb923c)', borderRadius: 5 }} />
-                      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0,
-                        width: `${result.totalDamageAtN && result.bossHpAtN ? Math.min(100, ((result.totalDamageAtN - result.bossHpAtN) / result.totalDamageAtN) * 100) : 0}%`,
+                      <div style={{ position: 'absolute', top: 0, bottom: 0,
                         left: `${result.totalDamageAtN && result.bossHpAtN ? Math.min(100, (result.bossHpAtN / result.totalDamageAtN) * 100) : 0}%`,
+                        width: `${result.totalDamageAtN && result.bossHpAtN ? Math.min(100, ((result.totalDamageAtN - result.bossHpAtN) / result.totalDamageAtN) * 100) : 0}%`,
                         background: 'linear-gradient(90deg,#4ade80,#22c55e)', borderRadius: '0 5px 5px 0' }} />
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--text-faint)', marginTop: 2 }}>
@@ -726,18 +728,6 @@ interface CustomPokeEntry {
   moves: Array<{ name: string; type: string; cat: string; bp: number }>;
 }
 
-const CUSTOM_LS_KEY = 'pktool_custom_pokemon_v1';
-
-function loadCustomFromStorage(): CustomPokeEntry[] {
-  try {
-    const raw = localStorage.getItem(CUSTOM_LS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-function saveCustomToStorage(entries: CustomPokeEntry[]) {
-  try { localStorage.setItem(CUSTOM_LS_KEY, JSON.stringify(entries)); } catch {}
-}
-
 /** Register all custom entries with the engine so lookupPoke/search picks them up. */
 function syncCustomPokemon(entries: CustomPokeEntry[]) {
   // Clear previous custom entries
@@ -754,284 +744,6 @@ function syncCustomPokemon(entries: CustomPokeEntry[]) {
     const moves: MoveData[] = e.moves.map(m => ({ name:m.name, bp:m.bp, cat:m.cat, type:m.type }));
     injectCustomPokemon(data, moves);
   }
-}
-
-const BLANK_ENTRY = (): CustomPokeEntry => ({
-  name: '', types: ['Normal', undefined],
-  stats: { hp:80, atk:80, def:80, spa:80, spd:80, spe:80 },
-  moves: [{ name:'', type:'Normal', cat:'Physical', bp:80 }],
-});
-
-function CustomPokemonPanel({ isAdmin = false, apiUrl = '', guildId = 'global' }: { isAdmin?: boolean; apiUrl?: string; guildId?: string }) {
-  const [open, setOpen] = useState(false);
-  const [entries, setEntries] = useState<CustomPokeEntry[]>(() => {
-    // Prime from localStorage as instant-load fallback
-    const loaded = loadCustomFromStorage();
-    syncCustomPokemon(loaded);
-    return loaded;
-  });
-  const [editing, setEditing] = useState<CustomPokeEntry|null>(null);
-  const [editIdx, setEditIdx] = useState<number|null>(null);
-  const [saved, setSaved] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [serverErr, setServerErr] = useState('');
-
-  // Load custom pokemon from server on mount (all users read; admin may write)
-  useEffect(() => {
-    if (!apiUrl) return;
-    setLoading(true);
-    fetch(`${apiUrl}/api/custompokemon?guild_id=${encodeURIComponent(guildId)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.entries) {
-          const mapped: CustomPokeEntry[] = data.entries.map((e: any) => ({
-            name: e.name,
-            types: (e.types || ['Normal']) as [string, string?],
-            stats: e.stats || { hp:80, atk:80, def:80, spa:80, spd:80, spe:80 },
-            moves: e.moves || [],
-            _serverId: e.id,
-          }));
-          saveCustomToStorage(mapped);
-          syncCustomPokemon(mapped);
-          setEntries(mapped);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [apiUrl, guildId]);
-
-  const sessionToken = () => {
-    try { return localStorage.getItem('hom_session') || ''; } catch { return ''; }
-  };
-
-  const persistToServer = async (updated: CustomPokeEntry[]) => {
-    setServerErr('');
-    if (!apiUrl || !isAdmin) {
-      // Fallback: local only
-      saveCustomToStorage(updated);
-      syncCustomPokemon(updated);
-      setEntries(updated);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1500);
-      return;
-    }
-    // Save every entry to server (upsert by name)
-    try {
-      for (const e of updated) {
-        await fetch(`${apiUrl}/api/custompokemon`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-session-token': sessionToken() },
-          body: JSON.stringify({ guild_id: guildId, name: e.name, types: e.types.filter(Boolean), stats: e.stats, moves: e.moves }),
-        });
-      }
-      // Reload from server to get server IDs
-      const refreshed = await fetch(`${apiUrl}/api/custompokemon?guild_id=${encodeURIComponent(guildId)}`).then(r=>r.json());
-      if (refreshed?.entries) {
-        const mapped: CustomPokeEntry[] = refreshed.entries.map((e: any) => ({
-          name: e.name, types: e.types as [string,string?], stats: e.stats, moves: e.moves, _serverId: e.id,
-        }));
-        saveCustomToStorage(mapped);
-        syncCustomPokemon(mapped);
-        setEntries(mapped);
-      } else {
-        saveCustomToStorage(updated);
-        syncCustomPokemon(updated);
-        setEntries(updated);
-      }
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1500);
-    } catch (err) {
-      setServerErr('Failed to save to server — check your session.');
-    }
-  };
-
-  const deleteFromServer = async (idx: number) => {
-    const entry = entries[idx];
-    const copy = entries.filter((_,i)=>i!==idx);
-    if (apiUrl && isAdmin && (entry as any)._serverId) {
-      try {
-        await fetch(`${apiUrl}/api/custompokemon/${(entry as any)._serverId}?guild_id=${encodeURIComponent(guildId)}`, {
-          method: 'DELETE',
-          headers: { 'x-session-token': sessionToken() },
-        });
-      } catch {}
-    }
-    saveCustomToStorage(copy);
-    syncCustomPokemon(copy);
-    setEntries(copy);
-  };
-
-  const persist = (updated: CustomPokeEntry[]) => {
-    persistToServer(updated);
-  };
-
-  const startEdit = (idx: number | null) => {
-    setEditing(idx === null ? BLANK_ENTRY() : { ...entries[idx], types: [...entries[idx].types] as [string,string?], moves: entries[idx].moves.map(m=>({...m})) });
-    setEditIdx(idx);
-  };
-
-  const saveEdit = () => {
-    if (!editing || !editing.name.trim()) return;
-    const copy = [...entries];
-    if (editIdx === null) copy.push(editing);
-    else copy[editIdx] = editing;
-    persist(copy);
-    setEditing(null); setEditIdx(null);
-  };
-
-  const deleteEntry = (idx: number) => {
-    deleteFromServer(idx);
-  };
-
-  const upd = (p: Partial<CustomPokeEntry>) => setEditing(prev => prev ? {...prev,...p} : prev);
-  const updStat = (k: keyof PokeStat, v: number) => setEditing(prev => prev ? {...prev, stats:{...prev.stats,[k]:v}} : prev);
-  const updMove = (i: number, p: Partial<typeof editing.moves[0]>) =>
-    setEditing(prev => { if(!prev) return prev; const mv=[...prev.moves]; mv[i]={...mv[i],...p}; return {...prev,moves:mv}; });
-  const addMove = () => setEditing(prev => prev ? {...prev, moves:[...prev.moves,{name:'',type:'Normal',cat:'Physical',bp:80}]} : prev);
-  const delMove = (i: number) => setEditing(prev => { if(!prev)return prev; const mv=prev.moves.filter((_,j)=>j!==i); return {...prev,moves:mv}; });
-
-  return (
-    <div style={{border:'1px solid rgba(251,191,36,.25)',borderRadius:12,overflow:'hidden'}}>
-      <button onClick={()=>setOpen(o=>!o)}
-        style={{width:'100%',padding:'11px 16px',background:'rgba(251,191,36,.06)',border:'none',
-          cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'space-between',
-          fontFamily:"'Lexend',sans-serif"}}>
-        <span style={{fontSize:11,fontWeight:800,color:'#fbbf24',textTransform:'uppercase',letterSpacing:'.09em',display:'flex',alignItems:'center',gap:8}}>
-          ✨ Custom / Fan-made Pokémon
-          {entries.length>0&&<span style={{fontSize:10,color:'var(--text-muted)',fontWeight:600,textTransform:'none'}}>
-            {' · '}{entries.length} registered
-          </span>}
-          {saved&&<span style={{fontSize:10,color:'var(--success)',fontWeight:600,textTransform:'none'}}>· ✓ Saved</span>}
-        </span>
-        <span style={{color:'var(--text-faint)',fontSize:12}}>{open?'▲':'▼'}</span>
-      </button>
-
-      {open&&(
-        <div style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
-          <div style={{fontSize:11,color:'var(--text-muted)'}}>
-            {isAdmin ? 'Define custom or fan-made Pokémon (stored server-side). They become available to ALL raiders immediately.' : 'Custom Pokémon registered by admins are loaded here automatically.'}
-          </div>
-          {loading&&<div style={{fontSize:11,color:'var(--text-faint)',display:'flex',alignItems:'center',gap:6}}>⏳ Loading from server…</div>}
-          {serverErr&&<div style={{fontSize:11,color:'var(--danger)',padding:'5px 10px',background:'var(--danger-subtle)',borderRadius:6}}>{serverErr}</div>}
-
-          {/* Entry list */}
-          {entries.length>0&&(
-            <div style={{display:'flex',flexDirection:'column',gap:4}}>
-              {entries.map((e,i)=>(
-                <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',
-                  background:'rgba(255,255,255,.035)',borderRadius:8,border:'1px solid var(--border)'}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12,fontWeight:700,color:'var(--text)',display:'flex',alignItems:'center',gap:5}}>
-                      {e.name}
-                      {e.types.filter(Boolean).map(t=><TypeBadge key={t} t={t!}/>)}
-                    </div>
-                    <div style={{fontSize:10,color:'var(--text-faint)',marginTop:2}}>
-                      BST {Object.values(e.stats).reduce((a,b)=>a+b,0)} · {e.moves.length} move{e.moves.length!==1?'s':''}
-                    </div>
-                  </div>
-                  {isAdmin&&<button onClick={()=>startEdit(i)} style={{padding:'4px 10px',background:'rgba(251,191,36,.12)',border:'1px solid rgba(251,191,36,.3)',borderRadius:6,color:'#fbbf24',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>Edit</button>}
-                  {isAdmin&&<button onClick={()=>deleteEntry(i)} style={{padding:'4px 10px',background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.3)',borderRadius:6,color:'#ef4444',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif"}}>✕</button>}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {isAdmin&&(
-            <button onClick={()=>startEdit(null)}
-              style={{padding:'7px 16px',background:'rgba(251,191,36,.1)',border:'1px solid rgba(251,191,36,.3)',
-                borderRadius:8,color:'#fbbf24',cursor:'pointer',fontSize:12,fontWeight:700,
-                fontFamily:"'Lexend',sans-serif",width:'fit-content'}}>
-              + Add Custom Pokémon
-            </button>
-          )}
-          {!isAdmin&&<div style={{fontSize:11,color:'var(--text-faint)',fontStyle:'italic'}}>Ask a server admin to add custom Pokémon — they will appear in all searches once registered.</div>}
-
-          {/* Editor — admin only */}
-          {isAdmin&&editing&&(
-            <div style={{background:'var(--elevated)',border:'1px solid rgba(251,191,36,.2)',borderRadius:10,padding:14,display:'flex',flexDirection:'column',gap:12}}>
-              <div style={{fontSize:12,fontWeight:700,color:'#fbbf24',marginBottom:2}}>
-                {editIdx===null?'New Custom Pokémon':'Edit: '+entries[editIdx]?.name}
-              </div>
-
-              {/* Name + Types */}
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-                <div>
-                  <label style={LBL}>Name *</label>
-                  <input style={INP} placeholder="e.g. Shadow Mewtwo" value={editing.name} onChange={e=>upd({name:e.target.value})}/>
-                </div>
-                <div>
-                  <label style={LBL}>Type 1</label>
-                  <select style={INP} value={editing.types[0]} onChange={e=>upd({types:[e.target.value as string, editing.types[1]]})}>
-                    {ALL_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={LBL}>Type 2 (optional)</label>
-                  <select style={INP} value={editing.types[1]||''} onChange={e=>upd({types:[editing.types[0], e.target.value||undefined]})}>
-                    <option value="">— None —</option>
-                    {ALL_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              {/* Base Stats */}
-              <div>
-                <label style={LBL}>Base Stats</label>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:6}}>
-                  {(Object.keys(editing.stats) as (keyof PokeStat)[]).map(k=>(
-                    <div key={k} style={{textAlign:'center'}}>
-                      <div style={{fontSize:9,color:'var(--text-faint)',marginBottom:3,textTransform:'uppercase',fontWeight:700}}>{k}</div>
-                      <input type="number" style={{...INP,padding:'4px 2px',textAlign:'center'}} min={1} max={999}
-                        value={editing.stats[k]} onChange={e=>updStat(k,Math.max(1,Math.min(999,Number(e.target.value))))}/>
-                    </div>
-                  ))}
-                </div>
-                <div style={{fontSize:10,color:'var(--text-faint)',marginTop:4,textAlign:'right'}}>
-                  BST: <strong style={{color:'var(--text-muted)'}}>{Object.values(editing.stats).reduce((a,b)=>a+b,0)}</strong>
-                </div>
-              </div>
-
-              {/* Moves */}
-              <div>
-                <label style={LBL}>Damaging Moves</label>
-                <div style={{display:'flex',flexDirection:'column',gap:5}}>
-                  {editing.moves.map((mv,i)=>(
-                    <div key={i} style={{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr auto',gap:6,alignItems:'center'}}>
-                      <input style={INP} placeholder="Move name" value={mv.name} onChange={e=>updMove(i,{name:e.target.value})}/>
-                      <select style={INP} value={mv.type} onChange={e=>updMove(i,{type:e.target.value})}>
-                        {ALL_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
-                      </select>
-                      <select style={INP} value={mv.cat} onChange={e=>updMove(i,{cat:e.target.value})}>
-                        <option value="Physical">Physical</option>
-                        <option value="Special">Special</option>
-                      </select>
-                      <input type="number" style={{...INP,padding:'4px 6px'}} placeholder="BP" min={1} max={300}
-                        value={mv.bp} onChange={e=>updMove(i,{bp:Math.max(1,Number(e.target.value))})}/>
-                      <button onClick={()=>delMove(i)} style={{padding:'4px 8px',background:'rgba(239,68,68,.1)',border:'1px solid rgba(239,68,68,.25)',borderRadius:6,color:'#ef4444',cursor:'pointer',fontSize:12,fontFamily:"'Lexend',sans-serif"}}>✕</button>
-                    </div>
-                  ))}
-                  <button onClick={addMove} style={{padding:'5px 12px',background:'transparent',border:'1px dashed var(--border)',borderRadius:6,color:'var(--text-faint)',cursor:'pointer',fontSize:11,fontFamily:"'Lexend',sans-serif",width:'fit-content'}}>
-                    + Add Move
-                  </button>
-                </div>
-              </div>
-
-              <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-                <button onClick={()=>{setEditing(null);setEditIdx(null);}}
-                  style={{padding:'7px 16px',background:'transparent',border:'1px solid var(--border)',borderRadius:7,color:'var(--text-muted)',cursor:'pointer',fontSize:12,fontFamily:"'Lexend',sans-serif"}}>
-                  Cancel
-                </button>
-                <button onClick={saveEdit} disabled={!editing.name.trim()}
-                  style={{padding:'7px 18px',background:'rgba(251,191,36,.85)',border:'none',borderRadius:7,color:'#000',cursor:'pointer',fontSize:12,fontWeight:700,fontFamily:"'Lexend',sans-serif",opacity:!editing.name.trim()?.5:1}}>
-                  ✓ Save Pokémon
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // ── Auto-Finder Panel ─────────────────────────────────────────────────────────
@@ -1242,10 +954,9 @@ function AutoFinderPanel({ boss, bossBaseHP, onLoadCounters, sdState }: {
 
             {mcResult&&(
               <div style={{padding:'12px 16px',borderRadius:10,
-                background:mcResult.pWin>=.8?'rgba(59,165,93,.1)':mcResult.pWin>=.5?'rgba(250,168,26,.1)':'rgba(237,66,69,.1)',
-                border:'1px solid '+(mcResult.pWin>=.8?'rgba(59,165,93,.35)':mcResult.pWin>=.5?'rgba(250,168,26,.35)':'rgba(237,66,69,.35)')}}>
-                <div style={{fontSize:13,fontWeight:700,marginBottom:5,
-                  color:mcResult.pWin>=.8?'var(--success)':mcResult.pWin>=.5?'var(--warning)':'var(--danger)'}}>
+                background:winRateBg(mcResult.pWin),
+                border:`1px solid ${winRateBorder(mcResult.pWin)}`}}>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:5,color:winRateColor(mcResult.pWin)}}>
                   {mcResult.pWin>=.8?'✅ Strong team — recommended!'
                     :'⚠️ '+(mcResult.pWin>=.5?'Borderline — try more raiders or a different set'
                       :'High risk — increase raiders or pick stronger counters')}
@@ -1359,7 +1070,7 @@ function CounterRow({ slot, onChange, onRemove, rank }: {
           </div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:11,color:'var(--text-muted)'}}>
             <span><strong style={{color:'var(--text)'}}>{r.minD}–{r.maxD}</strong> / <strong style={{color:'var(--text)'}}>{r.defHp}</strong> HP</span>
-            {r.eff!==1&&<span style={{color:r.eff>1?'var(--warning)':'var(--success)',fontWeight:700}}>{r.eff}× type</span>}
+            {r.eff!=null&&r.eff!==1&&<span style={{color:r.eff>1?'var(--warning)':'var(--success)',fontWeight:700}}>{r.eff}× type</span>}
             {r.stab&&<span style={{color:'#818cf8',fontWeight:700}}>STAB</span>}
           </div>
         </div>
@@ -1510,11 +1221,11 @@ function MCPanel({ boss, counters, bossHP, sdState }: {
     return {r, slots, totalDmgPct, avgOhko, totalHits};
   }) : [];
 
-  const winColor = (p:number) => p>=.8?'var(--success)':p>=.5?'var(--warning)':'var(--danger)';
-  const winBg    = (p:number) => p>=.8?'rgba(59,165,93,.12)':p>=.5?'rgba(250,168,26,.12)':'rgba(237,66,69,.12)';
-  const winBdr   = (p:number) => p>=.8?'rgba(59,165,93,.4)':p>=.5?'rgba(250,168,26,.4)':'rgba(237,66,69,.4)';
+  const winColor = winRateColor;
+  const winBg    = winRateBg;
+  const winBdr   = winRateBorder;
   const dmgColor = (p:number) => p>=40?'var(--danger)':p>=15?'var(--warning)':'var(--success)';
-  const ohkoColor= (p:number) => p>=.5?'var(--danger)':p>=.2?'var(--warning)':'var(--success)';
+  const ohkoColor = ohkoRiskColor;
 
   return (
     <div style={{border:'1px solid rgba(99,102,241,.3)',borderRadius:12,overflow:'hidden'}}>
@@ -2009,7 +1720,7 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
       if (res&&!res.immune) {
         const minD=res.minD??0, maxD=res.maxD??0;
         const minP=bHP?Math.floor(minD/bHP*1000)/10:0, maxP=bHP?Math.floor(maxD/bHP*1000)/10:0;
-        return {...slot,error:'',result:{...res,minD,maxD,defHp:bHP,minP,maxP,ohko:minP>=100,possibleOhko:maxP>=100,twoHko:minP>=50,hitsToKo:[maxD?Math.ceil(bHP/maxD):99,minD?Math.ceil(bHP/minD):99] as [number,number]}};
+        return {...slot,error:'',result:{...res,immune:false as const,minD,maxD,defHp:bHP,minP,maxP,ohko:minP>=100,possibleOhko:maxP>=100,twoHko:minP>=50,hitsToKo:[maxD?Math.ceil(bHP/maxD):99,minD?Math.ceil(bHP/minD):99] as [number,number]}};
       }
       return {...slot,error:'',result:res};
     });
@@ -2092,7 +1803,7 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
           <div><label style={LBL}>HP Override</label><input style={INP} type="number" value={hpOverride} onChange={e=>{setHpOvr(e.target.value);setCalc(false);}} placeholder="auto"/></div>
         </div>
 
-        {/* Raider scaling row */}
+        {/* Raider scaling row — 4 columns, no duplicate min-raiders-specific overrides */}
         <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:10,padding:'10px 12px',background:'rgba(255,255,255,.03)',borderRadius:8,border:'1px solid rgba(255,255,255,.07)'}}> 
           <div>
             <label style={LBL}>👥 # Raiders</label>
@@ -2117,19 +1828,6 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
               <option value="additive">Linear (additive)</option>
               <option value="multiplicative">Multiplicative</option>
             </select>
-          </div>
-          <div>
-            <label style={LBL}>⚡ Shadow Mult (dual-type)</label>
-            <input style={INP} type="number" min={1} max={10} step={0.5} value={boss.shadowMultiplierOnDualType ?? 4}
-              title="Multiplier for shadow Pokémon moves vs dual-type bosses"
-              onChange={e=>setBoss({shadowMultiplierOnDualType:Math.max(1,Number(e.target.value))})}/>
-          </div>
-          <div>
-            <label style={LBL}>⚡ Simple Mode Base HP</label>
-            <input style={INP} type="number" min={0} value={boss.simpleBaseHp ?? 0}
-              placeholder="0 = auto"
-              title="Override base HP for simple-mode min-raiders calc. Leave 0 to use stat formula."
-              onChange={e=>setBoss({simpleBaseHp:Math.max(0,Number(e.target.value))})}/>
           </div>
         </div>
 
@@ -2344,7 +2042,7 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
             : counters.slice(r * teamSz, (r+1) * teamSz),
         }));
 
-        const dcColor = (p:number) => p >= 100 ? 'var(--danger)' : p >= 50 ? 'var(--warning)' : p >= 20 ? '#fbbf24' : 'var(--success)';
+        const dcColor = damagePctColor;
         const hkoColor = (r:any) => r.ohko||r.possibleOhko ? 'var(--danger)' : r.twoHko||r.maxP>=50 ? 'var(--warning)' : 'var(--success)';
 
         return (
@@ -2361,8 +2059,8 @@ export default function CounterCalc({ sdState, user, isAdmin = false, guildId: g
               <div style={{display:'flex',flexDirection:'column',gap:12,marginBottom:16}}>
                 {raiderTeams.map(({raiderIdx, slots})=>{
                   const validSlots = slots.filter(c=>c.result&&!c.result.immune&&c.name);
-                  const teamTotalMinPct = validSlots.reduce((s,c)=>(s + (c.result?.minP??0)), 0);
-                  const teamTotalMaxPct = validSlots.reduce((s,c)=>(s + (c.result?.maxP??0)), 0);
+                  const teamTotalMinPct = validSlots.reduce((s,c)=>s + (c.result as CalcResultDamage).minP, 0);
+                  const teamTotalMaxPct = validSlots.reduce((s,c)=>s + (c.result as CalcResultDamage).maxP, 0);
                   const teamAvgPct = (teamTotalMinPct + teamTotalMaxPct) / 2;
                   const canWin = teamTotalMinPct >= 100;
                   const likelyWin = teamTotalMaxPct >= 100;

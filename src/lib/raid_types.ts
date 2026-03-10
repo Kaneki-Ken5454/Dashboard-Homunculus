@@ -8,15 +8,41 @@ import type { MoveData, PokeData, PokeStat } from './engine_pokemon';
 
 // ── Core slot types ───────────────────────────────────────────────────────────
 
-/** Full move-damage result from runCalc, with added convenience fields. */
-export interface CalcResult {
-  minD: number; maxD: number;
+/**
+ * Discriminated union for runCalc results.
+ *
+ * Branch on .immune to get TypeScript narrowing:
+ *   if (result.immune) { /* only mtyp/cat available *\/ }
+ *   else               { /* all damage fields are required *\/ }
+ */
+export type CalcResult = CalcResultImmune | CalcResultDamage;
+
+/** Returned when the move has zero effectiveness against the defender. */
+export interface CalcResultImmune {
+  immune: true;
+  mtyp?: string;
+  cat?: string;
+}
+
+/** Returned for any move that actually deals damage. */
+export interface CalcResultDamage {
+  immune: false;
+  minD: number;
+  maxD: number;
   defHp: number;
-  minP: number; maxP: number;
-  ohko: boolean; possibleOhko: boolean; twoHko: boolean;
+  minP: number;
+  maxP: number;
+  ohko: boolean;
+  possibleOhko: boolean;
+  twoHko: boolean;
   hitsToKo: [number, number];
-  rolls: number[];
-  immune: boolean;
+  rolls?: number[];
+  eff?: number;
+  stab?: boolean;
+  mtyp?: string;
+  cat?: string;
+  atkSpe?: number;
+  defSpe?: number;
 }
 
 /** One attacker slot in the counter list. */
@@ -172,4 +198,3 @@ export interface SimpleMonteCarloResult {
   pSuccess: number;   // fraction where same n or fewer needed
   histogram: Record<number, number>;
 }
-
