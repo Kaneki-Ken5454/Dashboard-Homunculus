@@ -214,10 +214,9 @@ function calcSlotResult(slot: TeamSlot, boss: BossState): SlotResult | null {
     };
   }
 
-  const bossFake: PokeData = {
-    ...boss.data,
-    stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * (RAID_TIERS[boss.raidTier] ?? 1)) },
-  };
+  // Do NOT pre-scale the HP base stat — that causes calcStat inside runCalc to
+  // double-apply the raid multiplier, producing a wrong defHp.
+  const bossFake: PokeData = { ...boss.data };
 
   const res = runCalc({
     atkPoke: slot.data,
@@ -254,12 +253,12 @@ function calcSlotResult(slot: TeamSlot, boss: BossState): SlotResult | null {
   }
 
   const totalHp = getTotalHp(boss);
-  const defHp = res.defHp || 1;
-  const minP = (res.minD / totalHp) * 100;
-  const maxP = (res.maxD / totalHp) * 100;
+  // Use totalHp for all percentage and hit calculations; res.defHp is unscaled
+  const minP = totalHp > 0 ? (res.minD / totalHp) * 100 : 0;
+  const maxP = totalHp > 0 ? (res.maxD / totalHp) * 100 : 0;
   const avgP = (minP + maxP) / 2;
-  const hitsMin = Math.ceil(totalHp / res.maxD);
-  const hitsMax = Math.ceil(totalHp / res.minD);
+  const hitsMin = res.maxD > 0 ? Math.ceil(totalHp / res.maxD) : 999;
+  const hitsMax = res.minD > 0 ? Math.ceil(totalHp / res.minD) : 999;
   const stab = slot.data.types.includes(slot.moveData.type);
 
   return {
@@ -274,7 +273,7 @@ function calcSlotResult(slot: TeamSlot, boss: BossState): SlotResult | null {
     immune: false,
     cat: slot.moveData.cat,
     mtyp: slot.moveData.type,
-    defHp,
+    defHp: totalHp, // correct total boss HP, consistent with minP/maxP
     hitsToKo: [hitsMin, hitsMax],
     ohko: minP >= 100,
     possibleOhko: maxP >= 100,
@@ -437,8 +436,8 @@ function runMonteCarlo(boss: BossState, slots: TeamSlot[], bossHP: number, opts:
   for (let r = 0; r < numRaiders; r++) for (const s of slots) counters.push(s);
   const K = counters.length;
   const M = bossMoves.length;
-  const raidMult = RAID_TIERS[boss.raidTier] ?? 1;
-  const bossFake: PokeData = { ...boss.data, stats: { ...boss.data.stats, hp: Math.round(boss.data.stats.hp * raidMult) } };
+  // bossFake: pass base stats unchanged — raid HP is tracked separately via bossHP
+  const bossFake: PokeData = { ...boss.data };
 
   // Precompute roll tables
   const atkToB: (MCRollTable | null)[] = counters.map(slot => {
@@ -1231,6 +1230,8 @@ export default function CounterCalcTool({ isAdmin = false }: {
   const updateBoss = (p: Partial<BossState>) => {
     setBoss(b => ({ ...b, ...p }));
     setCalculated(false);
+    // Clear stale slot results so stale percentages are never shown against a changed boss HP
+    setSlots(ss => ss.map(s => ({ ...s, result: null })));
   };
 
   const updateSlot = (id: number, p: Partial<TeamSlot>) => {

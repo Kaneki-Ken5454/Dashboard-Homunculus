@@ -44,13 +44,13 @@ const TYPECHART: Record<string,Record<string,number>> = (() => {
     for (const dt of (nve[at]||[])) tc[dt][at] = 0.5;
     for (const dt of (imm[at]||[])) tc[dt][at] = 0;
   }
-  // Shadow: hits every defensive type for 4× (including itself)
-  // tc[defType][atkType] = multiplier — so for Shadow attacker we set tc[dt]['Shadow'] = 4 for every dt
+  // Shadow: always super-effective vs every type.
+  // Per-type multiplier = 2×, so single-type defender = 2×, dual-type defender = 2×2 = 4×.
   const allDef = [...ALL, 'Shadow'];
-  tc['Shadow'] = Object.fromEntries(allDef.map(d => [d, 4])); // when defending AS Shadow, everything hits for 4×
+  tc['Shadow'] = Object.fromEntries(allDef.map(d => [d, 2])); // defending AS Shadow: 2× per type
   for (const at of allDef) {
     if (!tc[at]) tc[at] = {};
-    tc[at]['Shadow'] = 4; // Shadow attacking ANY type deals 4× damage
+    tc[at]['Shadow'] = 2; // Shadow attacking: 2× per defending type (2× single-type, 4× dual-type)
   }
   return tc;
 })();
