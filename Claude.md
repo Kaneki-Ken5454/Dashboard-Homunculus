@@ -18,75 +18,6 @@ Core engine lives in **`src/lib/engine_pokemon.ts`** (damage formula, type chart
 
 ---
 
-## Folder Structure
-
-```
-.
-|-- api/
-|   \-- index.js
-|-- dist/                 (build output)
-|-- node_modules/         (deps)
-|-- server/
-|   |-- auth_discord.js
-|   |-- index.js
-|   \-- vc_query_cases.js
-|-- src/
-|   |-- components/
-|   |   |-- Badge.tsx
-|   |   |-- ErrorBoundary.tsx
-|   |   |-- Modal.tsx
-|   |   \-- Setup.tsx
-|   |-- lib/
-|   |   |-- auto_finder.ts
-|   |   |-- db.ts
-|   |   |-- engine_pokemon.ts
-|   |   |-- engine_pokemon.tsx
-|   |   |-- mc_engine.ts
-|   |   |-- pokemon_components.tsx
-|   |   \-- raid_types.ts
-|   |-- pages/
-|   |   |-- Activity.tsx
-|   |   |-- Announcements.tsx
-|   |   |-- Blacklist.tsx
-|   |   |-- BossInfo.tsx
-|   |   |-- ClientTools.tsx
-|   |   |-- CounterCalcTool.tsx
-|   |   |-- DamageCalcTool.tsx
-|   |   |-- Events.tsx
-|   |   |-- Help.tsx
-|   |   |-- InfoTopics.tsx
-|   |   |-- Members.tsx
-|   |   |-- Moderation.tsx
-|   |   |-- ModerationBlacklist.tsx
-|   |   |-- ModMail.tsx
-|   |   |-- Overview.tsx
-|   |   |-- Roles.tsx
-|   |   |-- RolesTicketsVotes.tsx
-|   |   |-- Settings.tsx
-|   |   |-- Tickets.tsx
-|   |   |-- Triggers.tsx
-|   |   |-- Votes.tsx
-|   |   \-- WeaknessLookupTool.tsx
-|   |-- App.tsx
-|   |-- esm-shims.d.ts
-|   |-- index.css
-|   |-- main.tsx
-|   \-- vite-env.d.ts
-|-- .env
-|-- .gitignore
-|-- Claude.md
-|-- index.html
-|-- package-lock.json
-|-- package.json
-|-- README.md
-|-- tsconfig.json
-|-- vercel.json
-\-- vite.config.ts
-```
-
----
-
-
 ## Pokémon Damage Formula (Gen 9 / Showdown standard)
 
 ```
@@ -242,3 +173,43 @@ Their move types can include `Shadow` — type effectiveness applies as document
 | 2025-03 | `CounterCalcTool.tsx` | Fixed bossFake HP double-scaling (removed pre-scale of base stat) |
 | 2025-03 | `CounterCalcTool.tsx` | Fixed stale results: `updateBoss` now clears slot results |
 | 2025-03 | `CounterCalcTool.tsx` | `defHp` in SlotResult now stores correct `totalHp` |
+
+---
+
+## Team Battle Simulation (`simulateTeamBattle`)
+
+Added to `CounterCalcTool.tsx`. Simulates a sequential battle where each counter fights the boss until it faints, then the next one takes over.
+
+**Algorithm:**
+1. For each slot (in order): compute its HP, avg damage per hit to boss, avg boss damage per hit back.
+2. Use speed to decide turn order (attacker moves first if `atkSpe >= bossSpe`).
+3. Loop turn-by-turn until counter faints (`hp <= 0`) or boss dies.
+4. Record `hitsDealt`, `dmgDealt`, `dmgTaken`, `fainted` per slot.
+5. Sum up total damage and check if boss was killed.
+
+**Displayed in ResultsPanel:**
+- Total % of boss HP dealt
+- Boss HP remaining
+- Estimated raiders needed
+- Per-slot: name, % damage dealt, hits landed, Fainted/Survived badge
+
+---
+
+## Raid Team Picking Tips
+
+Updated in the Team Builder tips card (`CounterCalcTool.tsx`):
+1. Check boss weaknesses (4× and 2× types first)
+2. Match move category to weaker defense (Def < SpD → Physical, SpD < Def → Special)
+3. Use the counter's strongest move for the super-effective type (STAB + SE = 3×)
+4. Review boss moveset — avoid counters with > 30% OHKO risk
+5. Dual-type bosses: find types weak to BOTH for 4× damage; Shadow = always 2× per type (4× on dual-type)
+
+Auto-Find panel now also shows Dual-type 4× reminder when boss has two types.
+
+| Date | File | Change |
+|------|------|--------|
+| 2025-03 | `CounterCalcTool.tsx` | Added `simulateTeamBattle` — sequential full-team fight simulation |
+| 2025-03 | `CounterCalcTool.tsx` | `ResultsPanel` now shows battle breakdown (hits, fainted, % dealt per slot) |
+| 2025-03 | `CounterCalcTool.tsx` | Updated raid tips to match server team-picking guide |
+| 2025-03 | `CounterCalcTool.tsx` | Auto-Find panel shows Dual-type 4× reminder |
+| 2025-03 | `auto_finder.ts` | Fixed bossFake HP pre-scaling (same double-scale bug) |
