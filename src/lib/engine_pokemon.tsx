@@ -282,7 +282,7 @@ export function runCalc(o: CalcOpts) {
 
   const spread = o.doubles ? 0.75 : 1;
   const crit = o.isCrit ? 1.5 : 1;
-  const screen = ((o.cat==='Physical'&&o.defScreen)||(o.cat==='Special'&&o.atkScreen)) ? 0.5 : 1;
+  const screen = ((o.cat==='Physical' && o.defScreen) || (o.cat==='Special' && o.defScreen)) ? 0.5 : 1;
 
   const apply = (d: number) => {
     d=Math.floor(d*spread); d=Math.floor(d*wxMod); d=Math.floor(d*crit);
