@@ -1197,28 +1197,29 @@ function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (s
   const [prefCat, setPrefCat] = useState<'auto' | 'Physical' | 'Special'>('auto');
   const cancelRef = useRef(false);
 
-  if (!boss.data) return (
-    <div style={{ ...CARD, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-      Configure a boss first to find counters.
-    </div>
-  );
-
+  // ── All hooks MUST come before any early return (Rules of Hooks) ──────────
   const bossTypes = React.useMemo(
-    () => boss.teraType ? [boss.teraType] : boss.data!.types,
+    () => boss.data ? (boss.teraType ? [boss.teraType] : boss.data.types) : [],
     [boss.teraType, boss.data]
   );
   const weaknesses = React.useMemo(() => weaknessChart(bossTypes), [bossTypes]);
   const superEffTypes = React.useMemo(() => [...weaknesses.quad, ...weaknesses.double], [weaknesses]);
 
-  // Determine preferred attack category from boss stats
-  const autoCat: 'Physical' | 'Special' = (() => {
+  const autoCat: 'Physical' | 'Special' = React.useMemo(() => {
     if (!boss.data) return 'Physical';
     const bDef = calcStat(boss.data.stats.def, boss.evs.def, boss.ivs.def, false, getNat(boss.nature, 'def'), boss.level);
     const bSpd = calcStat(boss.data.stats.spd, boss.evs.spd, boss.ivs.spd, false, getNat(boss.nature, 'spd'), boss.level);
     return bDef > bSpd ? 'Special' : 'Physical';
-  })();
+  }, [boss.data, boss.evs, boss.ivs, boss.nature, boss.level]);
 
   const effectiveCat = prefCat === 'auto' ? autoCat : prefCat;
+
+  // Early return is here (after all hooks) — safe
+  if (!boss.data) return (
+    <div style={{ ...CARD, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+      Configure a boss first to find counters.
+    </div>
+  );
 
   const run = useCallback(async () => {
     if (!boss.data) return;
@@ -1632,9 +1633,10 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
   const [exactMode, setExact] = React.useState(false);
   const [confK, setConfK] = React.useState<number | null>(null);
 
-  if (!boss.data || !slots.length) return null;
-  // Memoize boss moves so they don't recompute on every render
+  // Hook must come before early return (Rules of Hooks)
   const bossMoves = React.useMemo(() => getLevelUpMoves(boss.name), [boss.name]);
+
+  if (!boss.data || !slots.length) return null;
   const K = slots.length * Math.max(1, boss.numRaiders);
 
   const run = (overrideMax?: number) => {

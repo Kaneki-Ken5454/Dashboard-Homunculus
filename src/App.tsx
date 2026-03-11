@@ -405,9 +405,10 @@ function AdminDashboard({user,onLogout,appearance}:{user:DiscordUser;onLogout:()
           {page==='help'       &&<HelpPage     guildId={guildId}/>}
           {page==='bossinfo'   &&<BossInfoPage  guildId={guildId} apiUrl={((import.meta.env.VITE_API_URL as string|undefined)??'').replace(/\/$/,'')}/>}
           {page==='clienttools'&&<ClientToolsPage guildId={guildId}/>}
-          {page==='damage'  &&<DamageCalcTool sdState={sdState}/>}
-          {page==='weakness'&&<WeaknessLookupTool guildId={guildId}/>}
-          {page==='counter' &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}} isAdmin={true} guildId={guildId}/>}
+          {page==='damage'   &&<DamageCalcTool sdState={sdState}/>}
+          {page==='weakness' &&<WeaknessLookupTool guildId={guildId}/>}
+          {page==='counter'  &&<CounterCalcTool sdState={sdState} user={{username:user.username,discord_id:user.discord_id,avatar_url:user.avatar_url}} isAdmin={true} guildId={guildId}/>}
+          {page==='activity' &&<ActivityPage guildId={guildId}/>}
         </main>
       </div>
     </div>
