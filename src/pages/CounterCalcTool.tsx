@@ -751,10 +751,10 @@ function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
                 <div key={stat} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                   <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, minWidth: 26 }}>{label}</span>
                   <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>EV</span>
-                  <input style={{ ...NUM, width: 40 }} type="number" min={0} max={252} value={slot.evs[stat]}
+                  <input style={{ ...NUM, width: 56 }} type="number" min={0} max={252} value={slot.evs[stat]}
                     onChange={e => setEv(stat, parseInt(e.target.value))} />
                   <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>IV</span>
-                  <input style={{ ...NUM, width: 34 }} type="number" min={0} max={31} value={slot.ivs[stat]}
+                  <input style={{ ...NUM, width: 46 }} type="number" min={0} max={31} value={slot.ivs[stat]}
                     onChange={e => setIv(stat, parseInt(e.target.value))} />
                   {finalStat !== null && (
                     <span style={{ fontSize: 11, color: '#818cf8', fontWeight: 700, minWidth: 28, textAlign: 'right', fontFamily: "'JetBrains Mono',monospace" }}>={finalStat}</span>
@@ -812,13 +812,21 @@ function SlotRow({ slot, bossHp, rank, onChange, onRemove, onDuplicate }: {
 // ----------------------------------------------------------------------
 
 function BossPanel({ boss, onChange }: { boss: BossState; onChange: (p: Partial<BossState>) => void }) {
+  const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const handleNameChange = (name: string) => {
-    const data = lookupPokeWithCustom(name);
-    onChange({ name, data });
+    // Update name immediately for responsive typing, but debounce the expensive
+    // lookupPokeWithCustom call so it doesn't freeze on every keystroke
+    onChange({ name, data: null });
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const data = lookupPokeWithCustom(name);
+      onChange({ name, data });
+    }, 300);
   };
 
-  const baseHp = getBossHp(boss);
-  const totalHp = getTotalHp(boss);
+  const baseHp = React.useMemo(() => getBossHp(boss), [boss]);
+  const totalHp = React.useMemo(() => getTotalHp(boss), [boss]);
 
   const setEv = (stat: keyof PokeStat, val: number) =>
     onChange({ evs: { ...boss.evs, [stat]: Math.max(0, Math.min(252, val || 0)) } });
@@ -926,7 +934,7 @@ function BossPanel({ boss, onChange }: { boss: BossState; onChange: (p: Partial<
           {STAT_ORDER.map(([stat, lbl]) => (
             <div key={stat} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
               <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 700, minWidth: 22, textAlign: 'right' }}>{lbl}</span>
-              <input style={{ ...NUM, width: 38 }} type="number" min={0} max={252} value={boss.evs[stat]}
+              <input style={{ ...NUM, width: 56 }} type="number" min={0} max={252} value={boss.evs[stat]}
                 onChange={e => setEv(stat, parseInt(e.target.value))} />
             </div>
           ))}
@@ -939,7 +947,7 @@ function BossPanel({ boss, onChange }: { boss: BossState; onChange: (p: Partial<
           {STAT_ORDER.map(([stat, lbl]) => (
             <div key={stat} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
               <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 700, minWidth: 22, textAlign: 'right' }}>{lbl}</span>
-              <input style={{ ...NUM, width: 34 }} type="number" min={0} max={31} value={boss.ivs[stat]}
+              <input style={{ ...NUM, width: 46 }} type="number" min={0} max={31} value={boss.ivs[stat]}
                 onChange={e => setIv(stat, parseInt(e.target.value))} />
             </div>
           ))}
@@ -1092,7 +1100,12 @@ function ResultsPanel({ slots, boss, totalHp }: { slots: TeamSlot[]; boss: BossS
   const valid = slots.filter(s => s.result && !(s.result as any).immune);
   if (!valid.length) return null;
 
-  const battle  = simulateTeamBattle(valid, boss, totalHp);
+  // Memoize battle simulation so it doesn't recompute on every render
+  const battle = React.useMemo(
+    () => simulateTeamBattle(valid, boss, totalHp),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [slots, boss, totalHp]
+  );
   const winColor = battle.bossKilled ? '#34d399' : battle.totalDmgPct >= 75 ? '#fbbf24' : '#f87171';
   const winLabel = battle.bossKilled ? '✅ Boss Defeated!' : battle.totalDmgPct >= 75 ? '⚠️ Heavy damage — almost!' : '❌ Not enough damage';
 
@@ -1190,9 +1203,12 @@ function AutoFindPanel({ boss, onLoadSlots }: { boss: BossState; onLoadSlots: (s
     </div>
   );
 
-  const bossTypes = boss.teraType ? [boss.teraType] : boss.data.types;
-  const weaknesses = weaknessChart(bossTypes);
-  const superEffTypes = [...weaknesses.quad, ...weaknesses.double];
+  const bossTypes = React.useMemo(
+    () => boss.teraType ? [boss.teraType] : boss.data!.types,
+    [boss.teraType, boss.data]
+  );
+  const weaknesses = React.useMemo(() => weaknessChart(bossTypes), [bossTypes]);
+  const superEffTypes = React.useMemo(() => [...weaknesses.quad, ...weaknesses.double], [weaknesses]);
 
   // Determine preferred attack category from boss stats
   const autoCat: 'Physical' | 'Special' = (() => {
@@ -1389,12 +1405,14 @@ export default function CounterCalcTool({ isAdmin = false }: {
     syncCustom(loadCustomLS());
   }, []);
 
-  const updateBoss = (p: Partial<BossState>) => {
+  const updateBoss = React.useCallback((p: Partial<BossState>) => {
     setBoss(b => ({ ...b, ...p }));
     setCalculated(false);
-    // Clear stale slot results so stale percentages are never shown against a changed boss HP
-    setSlots(ss => ss.map(s => ({ ...s, result: null })));
-  };
+    // Defer slot clearing so it doesn't block the UI thread on boss change
+    React.startTransition(() => {
+      setSlots(ss => ss.map(s => ({ ...s, result: null })));
+    });
+  }, []);
 
   const updateSlot = (id: number, p: Partial<TeamSlot>) => {
     setSlots(ss => ss.map(s => s.id === id ? { ...s, ...p } : s));
@@ -1615,7 +1633,8 @@ function MonteCarloPanel({ boss, slots, totalHp }: { boss: BossState; slots: Tea
   const [confK, setConfK] = React.useState<number | null>(null);
 
   if (!boss.data || !slots.length) return null;
-  const bossMoves = getLevelUpMoves(boss.name);
+  // Memoize boss moves so they don't recompute on every render
+  const bossMoves = React.useMemo(() => getLevelUpMoves(boss.name), [boss.name]);
   const K = slots.length * Math.max(1, boss.numRaiders);
 
   const run = (overrideMax?: number) => {

@@ -213,3 +213,47 @@ Auto-Find panel now also shows Dual-type 4× reminder when boss has two types.
 | 2025-03 | `CounterCalcTool.tsx` | Updated raid tips to match server team-picking guide |
 | 2025-03 | `CounterCalcTool.tsx` | Auto-Find panel shows Dual-type 4× reminder |
 | 2025-03 | `auto_finder.ts` | Fixed bossFake HP pre-scaling (same double-scale bug) |
+
+---
+
+## Bug Fixes (batch 3)
+
+### EV/IV Input Box Size
+`CounterCalcTool.tsx` — increased input widths so 3-digit numbers (e.g. 252) fit clearly:
+- EV inputs: `40px` → `56px`
+- IV inputs: `34px` → `46px`
+
+### Site Freeze / Blank on Boss Selection
+
+Root causes and fixes:
+1. **`BossPanel.handleNameChange`** — called `lookupPokeWithCustom()` (expensive dex scan) on every keystroke. Fixed with a **300ms debounce**: name updates instantly, lookup fires only after typing stops.
+2. **`updateBoss`** — synchronously called `setSlots(map)` which triggered immediate re-renders of all 6 slots. Fixed with **`React.startTransition`** to defer the slot-clearing as a low-priority update.
+3. **`MonteCarloPanel`** — called `getLevelUpMoves(boss.name)` on every render. Fixed with **`React.useMemo`**.
+4. **`AutoFindPanel`** — computed `weaknessChart()` on every render. Fixed with **`React.useMemo`**.
+5. **`ResultsPanel`** — ran `simulateTeamBattle()` on every render. Fixed with **`React.useMemo`**.
+6. **`BossPanel`** — computed `getBossHp()`/`getTotalHp()` on every render. Fixed with **`React.useMemo`**.
+
+### Wrong Type Recommendations (e.g. Psychic counters for Dark boss)
+
+`auto_finder.ts` — Added a **defensive type-safety filter** in `computeCandidate`:
+
+```typescript
+// If any of the boss's types deals 2× or more to the counter → skip it
+for (const bossType of bossTypes) {
+  const incomingEff = typeEff(bossType, counterTypes);
+  if (incomingEff >= 2) return null;
+}
+```
+
+This prevents counters being recommended when they'd be OHKOd before dealing meaningful damage:
+- Psychic Pokémon vs Dark boss → filtered out (Dark is 2× vs Psychic)
+- Bug Pokémon vs Fire boss → filtered out
+- Ice Pokémon vs Fighting boss → filtered out
+
+| Date | File | Change |
+|------|------|--------|
+| 2025-03 | `CounterCalcTool.tsx` | EV/IV input widths increased (56px/46px) |
+| 2025-03 | `CounterCalcTool.tsx` | Boss input debounced 300ms to prevent freeze |
+| 2025-03 | `CounterCalcTool.tsx` | `updateBoss` uses `startTransition` for slot clearing |
+| 2025-03 | `CounterCalcTool.tsx` | `useMemo` on bossMoves, weaknesses, battle simulation, boss HP |
+| 2025-03 | `auto_finder.ts` | Added defensive type-safety filter — skip counters weak to boss type |

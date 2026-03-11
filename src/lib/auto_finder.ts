@@ -77,10 +77,20 @@ export function computeCandidate(
   const bst = data.stats.hp + data.stats.atk + data.stats.def + data.stats.spa + data.stats.spd + data.stats.spe;
   if (bst < 330) return null;
 
-  const raidMult = RAID_TIERS[boss.raidTier] ?? 1;
   const bossTypes = boss.teraType ? [boss.teraType] : boss.data.types;
   // Do NOT pre-scale HP stat — defence stats passed as-is, HP is tracked separately
   const bossFake = { ...boss.data };
+
+  // ── Defensive type-safety filter ────────────────────────────────────────────
+  // Check how badly each of the boss's types hits this counter.
+  // If ANY single boss type deals 2× or more to this counter's type(s),
+  // the counter is too fragile to be recommended — it would be OHKOd before
+  // contributing meaningful damage (e.g. Psychic counters vs Dark boss).
+  const counterTypes = data.types;
+  for (const bossType of bossTypes) {
+    const incomingEff = typeEff(bossType, counterTypes);
+    if (incomingEff >= 2) return null; // Boss hits this counter super-effectively → skip
+  }
 
   // Pick the best damaging move (highest eff × BP × STAB score)
   const moves: MoveData[] = getAllLearnableMoveNamesWithCustom(name);
