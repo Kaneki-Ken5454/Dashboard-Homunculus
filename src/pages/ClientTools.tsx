@@ -526,8 +526,11 @@ export default function ClientToolsPage({ guildId }: { guildId: string }) {
                 <div style={{fontSize:10,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'.07em',marginBottom:8}}>Top Users</div>
                 {cmdStats.topUsers.map(u=>(
                   <div key={u.user_id} style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
-                    <span style={{fontSize:12,color:'var(--text)',flex:1}}>{u.username}</span>
-                    <span style={{fontSize:11,color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace"}}>{u.uses}</span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:12,color:'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{u.username || 'Unknown'}</div>
+                      <div style={{fontSize:10,color:'var(--text-faint)',fontFamily:"'JetBrains Mono',monospace"}}>{u.user_id}</div>
+                    </div>
+                    <span style={{fontSize:11,color:'var(--text-muted)',fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{u.uses}</span>
                   </div>
                 ))}
               </div>

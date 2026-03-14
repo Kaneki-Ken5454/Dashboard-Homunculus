@@ -1709,11 +1709,12 @@ app.post('/api/query', async (req, res) => {
            GROUP BY command ORDER BY total_uses DESC`,
           [guildId]
         ).catch(() => []);
-        // Top users (by usage count)
+        // Top users (by usage count) — group by user_id only so the same
+        // Discord user isn't listed twice under different display names
         const topUsers = await sql(
-          `SELECT user_id, username, COUNT(*)::int AS uses
+          `SELECT user_id, MAX(username) AS username, COUNT(*)::int AS uses
            FROM command_usage_log WHERE guild_id=$1
-           GROUP BY user_id, username ORDER BY uses DESC LIMIT 10`,
+           GROUP BY user_id ORDER BY uses DESC LIMIT 10`,
           [guildId]
         ).catch(() => []);
         // Recent 7 days daily trend

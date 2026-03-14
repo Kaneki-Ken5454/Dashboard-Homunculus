@@ -463,7 +463,7 @@ export default function InfoTopicsPage({ guildId }: Props) {
       {/* Create / Edit topic */}
       {(modal === 'create' || modal === 'edit') && (
         <Modal title={modal === 'create' ? '➕ New Info Topic' : '✏️ Edit Topic'} onClose={() => setModal(null)} width={680}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
             <F label="Name *"><input className="inp" value={form.name || ''} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Display name" /></F>
             <F label="Topic ID *" hint="used in /info command"><input className="inp" value={form.topic_id || ''} onChange={e => setForm(p => ({ ...p, topic_id: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') }))} placeholder="e.g. how_to_join" style={{ fontFamily: 'var(--font-mono)' }} /></F>
             <F label="Section"><input className="inp" value={form.section || ''} onChange={e => setForm(p => ({ ...p, section: e.target.value }))} placeholder="e.g. general" /></F>
@@ -473,7 +473,7 @@ export default function InfoTopicsPage({ guildId }: Props) {
           </div>
           <F label="Embed Title"><input className="inp" value={form.embed_title || ''} onChange={e => setForm(p => ({ ...p, embed_title: e.target.value }))} placeholder="Title shown in Discord embed" /></F>
           <F label="Embed Description" hint={`${(form.embed_description?.length ?? 0)}/4000 chars · supports markdown`}>
-            <textarea className="inp" rows={6} value={form.embed_description || ''} onChange={e => setForm(p => ({ ...p, embed_description: e.target.value }))} placeholder="Main content of the embed. Supports **bold**, _italic_, [links](url)" style={{ resize: 'vertical', lineHeight: 1.5 }} />
+            <textarea className="inp" rows={6} value={form.embed_description || ''} onChange={e => setForm(p => ({ ...p, embed_description: e.target.value }))} placeholder="Main content of the embed. Supports **bold**, _italic_, [links](url)" style={{ resize: 'vertical', lineHeight: 1.5, maxHeight: 220 }} />
           </F>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <F label="Image URL" hint="big image at bottom"><input className="inp" value={form.image || ''} onChange={e => setForm(p => ({ ...p, image: e.target.value }))} placeholder="https://…" /></F>
@@ -481,12 +481,12 @@ export default function InfoTopicsPage({ guildId }: Props) {
           </div>
           <F label="Footer"><input className="inp" value={form.footer || ''} onChange={e => setForm(p => ({ ...p, footer: e.target.value }))} placeholder="Footer text" /></F>
 
-          <div style={{ background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, margin: '12px 0' }}>
+          <div style={{ background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, margin: '12px 0', maxHeight: 260, overflowY: 'auto' }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Preview</div>
             <EmbedPreview topic={form} />
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, flexWrap: 'wrap', gap: 8 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
               <input type="checkbox" className="toggle" checked={form.is_published ?? true} onChange={e => setForm(p => ({ ...p, is_published: e.target.checked }))} />
               Published (visible to users)
