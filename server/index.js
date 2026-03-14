@@ -750,24 +750,27 @@ app.post('/api/query', async (req, res) => {
 
       case 'getLeaderboard': {
         const limit = Math.min(params.limit ?? 10, 50);
+        if (!params.guildId) return ok(res, []);
         const rows = await sql(
-          `SELECT user_id, username, avatar_url, message_count, last_active
+          `SELECT user_id::text, username, avatar_url, message_count, last_active
            FROM guild_members
-           WHERE guild_id = $1 AND message_count > 0
+           WHERE guild_id::text = $1::text AND message_count > 0
            ORDER BY message_count DESC LIMIT $2`,
-          [params.guildId, limit]
-        ).catch(() => []);
+          [String(params.guildId), limit]
+        ).catch(e => { console.error('[getLeaderboard]', e.message); return []; });
         return ok(res, rows);
       }
 
 
       case 'getActivityStats': {
+        if (!params.guildId) return ok(res, { activeAll:0, active7d:0, active24h:0, totalMsgs:0, totalMembers:0 });
+        const gid = String(params.guildId);
         const [activeAll, active7d, active24h, totalMsgs, totalMembers] = await Promise.all([
-          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND message_count > 0`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
-          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND last_active >= NOW() - INTERVAL '7 days'`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
-          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1 AND last_active >= NOW() - INTERVAL '24 hours'`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
-          sql(`SELECT COALESCE(SUM(message_count),0)::int AS tot FROM guild_members WHERE guild_id=$1`, [params.guildId]).then(r => r[0]?.tot ?? 0),
-          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id=$1`, [params.guildId]).then(r => r[0]?.cnt ?? 0),
+          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id::text=$1::text AND message_count > 0`, [gid]).then(r => r[0]?.cnt ?? 0),
+          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id::text=$1::text AND last_active >= NOW() - INTERVAL '7 days'`, [gid]).then(r => r[0]?.cnt ?? 0),
+          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id::text=$1::text AND last_active >= NOW() - INTERVAL '24 hours'`, [gid]).then(r => r[0]?.cnt ?? 0),
+          sql(`SELECT COALESCE(SUM(message_count),0)::int AS tot FROM guild_members WHERE guild_id::text=$1::text`, [gid]).then(r => r[0]?.tot ?? 0),
+          sql(`SELECT COUNT(*)::int AS cnt FROM guild_members WHERE guild_id::text=$1::text`, [gid]).then(r => r[0]?.cnt ?? 0),
         ]);
         return ok(res, { activeAll, active7d, active24h, totalMsgs, totalMembers });
       }
@@ -1074,15 +1077,16 @@ app.post('/api/query', async (req, res) => {
 
       // ── VC Activity Leaderboard ──
       case 'getVCLeaderboard': {
+        if (!params.guildId) return ok(res, []);
         const limit = Math.min(parseInt(params.limit) || 25, 100);
         const rows = await sql(
-          `SELECT user_id, username, avatar_url, total_seconds, session_count,
+          `SELECT user_id::text, username, avatar_url, total_seconds, session_count,
                   last_active, last_left
            FROM vc_activity
-           WHERE guild_id = $1 AND total_seconds > 0
+           WHERE guild_id::text = $1::text AND total_seconds > 0
            ORDER BY total_seconds DESC LIMIT $2`,
-          [params.guildId, limit]
-        ).catch(() => []);
+          [String(params.guildId), limit]
+        ).catch(e => { console.error('[getVCLeaderboard]', e.message); return []; });
         // Convert BigInt to Number for JSON serialisation
         return ok(res, rows.map(r => ({
           ...r,
@@ -1098,9 +1102,9 @@ app.post('/api/query', async (req, res) => {
              COALESCE(SUM(total_seconds),0)::bigint               AS total_secs,
              COUNT(*) FILTER (WHERE last_active >= NOW() - INTERVAL '24 hours')::int AS active_24h,
              COUNT(*) FILTER (WHERE last_active >= NOW() - INTERVAL '7 days')::int  AS active_7d
-           FROM vc_activity WHERE guild_id = $1`,
-          [params.guildId]
-        ).catch(() => [{}]);
+           FROM vc_activity WHERE guild_id::text = $1::text`,
+          [String(params.guildId)]
+        ).catch(e => { console.error('[getVCStats]', e.message); return [{}]; });
         const r = rows[0] || {};
         return ok(res, {
           members:    Number(r.members    ?? 0),

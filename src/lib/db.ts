@@ -242,13 +242,22 @@ export async function getAllWarns(guildId: string): Promise<WarnEntry[]> {
 
 // ── Activity ───────────────────────────────────────────────────────────────────
 export interface ActivityStats { activeAll: number; active7d: number; active24h: number; totalMsgs: number; totalMembers: number; }
-export interface ActivityMember { user_id: string; username: string; message_count: number; last_active: string; }
+// avatar_url added — was missing from original interface, causing blank pfps
+export interface ActivityMember { user_id: string; username: string; avatar_url: string | null; message_count: number; last_active: string; }
+export interface VCMember { user_id: string; username: string; avatar_url: string | null; total_seconds: number; session_count: number; last_active: string | null; last_left: string | null; }
+export interface VCStats { members: number; totalSecs: number; active24h: number; active7d: number; }
 
 export async function getLeaderboard(guildId: string, limit = 25): Promise<ActivityMember[]> {
   return apiCall<ActivityMember[]>('getLeaderboard', { guildId, limit });
 }
 export async function getActivityStats(guildId: string): Promise<ActivityStats> {
   return apiCall<ActivityStats>('getActivityStats', { guildId });
+}
+export async function getVCLeaderboard(guildId: string, limit = 25): Promise<VCMember[]> {
+  return apiCall<VCMember[]>('getVCLeaderboard', { guildId, limit });
+}
+export async function getVCStats(guildId: string): Promise<VCStats> {
+  return apiCall<VCStats>('getVCStats', { guildId });
 }
 
 // ── Blacklist ──────────────────────────────────────────────────────────────────
