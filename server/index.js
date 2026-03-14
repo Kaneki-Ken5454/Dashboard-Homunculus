@@ -751,7 +751,7 @@ app.post('/api/query', async (req, res) => {
       case 'getLeaderboard': {
         const limit = Math.min(params.limit ?? 10, 50);
         const rows = await sql(
-          `SELECT user_id, username, message_count, last_active
+          `SELECT user_id, username, avatar_url, message_count, last_active
            FROM guild_members
            WHERE guild_id = $1 AND message_count > 0
            ORDER BY message_count DESC LIMIT $2`,
