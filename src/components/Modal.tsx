@@ -10,14 +10,29 @@ interface Props {
 
 export default function Modal({ title, onClose, children, width = '560px' }: Props) {
   const maxWidth = typeof width === 'number' ? `${width}px` : width;
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', handler);
+      document.body.style.overflow = prev;
+    };
   }, [onClose]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 200,
+        background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '16px',
+        overflowY: 'auto',
+      }}
+    >
       <div
         onClick={e => e.stopPropagation()}
         style={{
@@ -26,9 +41,10 @@ export default function Modal({ title, onClose, children, width = '560px' }: Pro
           background: 'var(--surface)',
           border: '1px solid var(--border)',
           borderRadius: 14,
-          maxHeight: '90vh',
-          overflowY: 'auto',
-          margin: '0 auto',
+          display: 'flex',
+          flexDirection: 'column',
+          maxHeight: 'calc(100dvh - 32px)',
+          margin: 'auto',
         }}
         className="animate-fade"
       >
@@ -38,17 +54,16 @@ export default function Modal({ title, onClose, children, width = '560px' }: Pro
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          position: 'sticky',
-          top: 0,
+          flexShrink: 0,
           background: 'var(--surface)',
-          zIndex: 1,
+          borderRadius: '14px 14px 0 0',
         }}>
           <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text)' }}>{title}</span>
           <button onClick={onClose} className="btn btn-ghost btn-sm" style={{ padding: '4px 6px' }}>
             <X size={15} />
           </button>
         </div>
-        <div style={{ padding: '20px' }}>
+        <div style={{ padding: '20px', overflowY: 'auto', flex: 1 }}>
           {children}
         </div>
       </div>

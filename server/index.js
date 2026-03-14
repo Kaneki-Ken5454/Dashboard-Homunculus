@@ -157,7 +157,12 @@ async function ensureTables() {
   const migrations = [
     `ALTER TABLE reaction_roles ADD COLUMN IF NOT EXISTS bot_synced BOOLEAN DEFAULT TRUE`,
     `ALTER TABLE button_roles   ADD COLUMN IF NOT EXISTS bot_synced BOOLEAN DEFAULT TRUE`,
-    `ALTER TABLE button_roles   ADD COLUMN IF NOT EXISTS custom_id  TEXT`,
+    `ALTER TABLE button_roles   ADD COLUMN IF NOT EXISTS custom_id        TEXT`,
+    `ALTER TABLE button_roles   ADD COLUMN IF NOT EXISTS group_id        TEXT`,
+    `ALTER TABLE button_roles   ADD COLUMN IF NOT EXISTS group_position   INTEGER DEFAULT 0`,
+    `ALTER TABLE button_roles   ADD COLUMN IF NOT EXISTS message_text     TEXT`,
+    `ALTER TABLE "TicketPanel"  ADD COLUMN IF NOT EXISTS "categoryChannelId" TEXT`,
+    `ALTER TABLE "TicketPanel"  ADD COLUMN IF NOT EXISTS "notificationRoles" JSONB DEFAULT '[]'::jsonb`,
     `ALTER TABLE custom_commands ADD COLUMN IF NOT EXISTS created_by TEXT DEFAULT 'dashboard'`,
     `ALTER TABLE votes          ADD COLUMN IF NOT EXISTS results_announced BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE votes          ADD COLUMN IF NOT EXISTS start_time TIMESTAMPTZ`,
@@ -1399,17 +1404,36 @@ app.post('/api/query', async (req, res) => {
 
       case 'getTicketPanelPingRoles': {
         const rows = await sql(
-          `SELECT id, "guildId" AS guild_id, name, "notificationRoles", "supportRoles" FROM "TicketPanel" WHERE "guildId"=$1`,
+          `SELECT id, "guildId" AS guild_id, name, "notificationRoles", "supportRoles", "categoryChannelId" FROM "TicketPanel" WHERE "guildId"=$1`,
           [params.guildId]
         ).catch(() => []);
         return ok(res, rows);
       }
 
       case 'updateTicketPanelPingRoles': {
-        // Update which roles get pinged when a ticket opens
+        // Update which roles get pinged when a ticket opens (admin roles only by default)
         await sql(
           `UPDATE "TicketPanel" SET "notificationRoles"=$1::jsonb, "updatedAt"=NOW() WHERE id=$2`,
           [JSON.stringify(params.notificationRoles ?? []), params.panelId]
+        );
+        return ok(res, { success: true });
+      }
+
+      case 'updateTicketPanelSupportRoles': {
+        // Roles that get read+write access to ticket channels for this panel
+        await sql(
+          `UPDATE "TicketPanel" SET "supportRoles"=$1::jsonb, "updatedAt"=NOW() WHERE id=$2`,
+          [JSON.stringify(params.supportRoles ?? []), params.panelId]
+        );
+        return ok(res, { success: true });
+      }
+
+      case 'updateTicketPanelCategory': {
+        // Set the Discord category ID where tickets for this panel are created
+        const catId = params.categoryChannelId ? String(params.categoryChannelId) : null;
+        await sql(
+          `UPDATE "TicketPanel" SET "categoryChannelId"=$1, "updatedAt"=NOW() WHERE id=$2`,
+          [catId, params.panelId]
         );
         return ok(res, { success: true });
       }
@@ -1478,14 +1502,20 @@ app.post('/api/query', async (req, res) => {
         }
         const brId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
         // bot_synced=FALSE means the bot will detect this and send the button message to channel_id
+        // group_id lets multiple buttons share a single Discord message (up to 5)
         await sql(
           `INSERT INTO button_roles (id, guild_id, message_id, channel_id, button_id, role_id,
-             button_style, button_label, button_emoji, custom_id, created_at, bot_synced)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),FALSE)`,
+             button_style, button_label, button_emoji, custom_id,
+             group_id, group_position, message_text,
+             created_at, bot_synced)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),FALSE)`,
           [brId, params.guildId, '', String(d.channel_id),
            brId, String(d.role_id), d.button_style ?? 'PRIMARY',
            d.button_label ?? 'Get Role', d.button_emoji ?? null,
-           `btnrole_${brId}`]
+           `btnrole_${brId}`,
+           d.group_id ?? null,
+           d.group_position ?? 0,
+           d.message_text ?? null]
         );
         return ok(res, { success: true });
       }
