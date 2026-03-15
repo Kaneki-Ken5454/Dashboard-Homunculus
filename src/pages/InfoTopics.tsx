@@ -153,7 +153,7 @@ function CardChrome({accent,accD,accB,children,height}:{
   const CL=17, CT=2;
   const stripeGrad = `linear-gradient(to right, ${_css(accent)}, ${_css(_GOLD)} 50%, ${_css(accD)})`;
   return (
-    <div style={{position:'relative', background:_css(_CARD), border:`1px solid ${_css(_mixT(accent,[50,50,64],0.5),0.22)}`, overflow:'hidden', fontSize:12}}>
+    <div style={{position:'relative', background:_css(_CARD), border:`1px solid ${_css(_mixT(accent,[50,50,64],0.5),0.22)}`, fontSize:12}}>
       {/* Top stripe accent→gold→acc_dark */}
       <div style={{height:4, background:stripeGrad, flexShrink:0}}/>
       {/* L-brackets */}
@@ -250,8 +250,13 @@ function _plain(s:string):string {
 
 function _isRaidGuide(desc:string):boolean {
   if (desc.includes('===LEFT===')) return false;
-  const hasMoves = /Top\s*\d*\s*Moves?\s*:?\s*$/im.test(desc) || /^\d+\.\s+\S/m.test(desc);
-  return hasMoves;
+  // Strip markdown formatting before testing
+  const stripped = desc.replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1').replace(/__([^_]+)__/g,'$1');
+  const hasMoves = /Top\s*\d*\s*Moves?\s*:?\s*$/im.test(stripped) || /^\d+\.\s+\S/m.test(stripped);
+  // Also detect bullet move lists following a "Top Moves" header
+  const hasTopMovesHeader = /Top\s*\d*\s*Moves?/im.test(stripped);
+  const hasBulletMoves = /^[-*•]\s+\S/m.test(desc);
+  return hasMoves || (hasTopMovesHeader && hasBulletMoves);
 }
 
 type RaidGuideResult = { meta:Record<string,string>; left:CBlock[]; right:CBlock[] } | null;

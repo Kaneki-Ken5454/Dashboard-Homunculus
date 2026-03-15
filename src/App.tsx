@@ -380,7 +380,7 @@ function AdminDashboard({user,onLogout,appearance}:{user:DiscordUser;onLogout:()
         <UserBadge user={user} onLogout={onLogout}/>
       </aside>
       {/* Main */}
-      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:appearance.wallpaper_url?'rgba(15,16,28,0.88)':'undefined'}}>
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',background:appearance.wallpaper_url?'rgba(15,16,28,0.88)':undefined}}>
         <header style={{height:52,flexShrink:0,borderBottom:'1px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 24px',background:'var(--bg)'}}>
           <div style={{display:'flex',alignItems:'center',gap:10}}>
             {isAdminPage?(()=>{const Icon=curAdminNav!.icon;return<Icon size={14} style={{color:'var(--text-muted)'}}/>;})():(()=>{const Icon=curToolNav?.icon||Layers;return<Icon size={14} style={{color:'var(--primary)'}}/>;})()}
