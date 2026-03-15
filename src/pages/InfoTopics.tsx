@@ -67,26 +67,276 @@ function EmojiPicker({ value, onChange }: { value: string; onChange: (v: string)
   );
 }
 
-// ── Discord embed preview ─────────────────────────────────────────────────────
+// ── Card preview — mirrors embed_renderer.py visual output ────────────────────
+
+const TYPE_COLORS: Record<string, string> = {
+  fire:'#c4321e', rock:'#6e5028', water:'#2d64b4', grass:'#328c32',
+  electric:'#b99b14', ice:'#46a0be', fighting:'#a0321e', poison:'#823290',
+  ground:'#a07832', flying:'#6470b4', psychic:'#b928640', bug:'#648c14',
+  ghost:'#503c8c', dragon:'#461eb4', dark:'#3c3232', steel:'#646e82',
+  fairy:'#c36e9b', normal:'#6e6e64',
+};
+const MOVE_COLORS = ['#c8412d','#3773c3','#6e6e37','#c3a51e','#c8551e'];
+
+function _hexToRgb(hex: string): [number,number,number] {
+  const h = hex.replace('#','');
+  return [parseInt(h.slice(0,2),16)||88, parseInt(h.slice(2,4),16)||101, parseInt(h.slice(4,6),16)||242];
+}
+function _mix(a:[number,number,number], b:[number,number,number], t:number): string {
+  return `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;
+}
+function _mixT(a:[number,number,number], b:[number,number,number], t:number): [number,number,number] {
+  return [Math.round(a[0]+(b[0]-a[0])*t), Math.round(a[1]+(b[1]-a[1])*t), Math.round(a[2]+(b[2]-a[2])*t)];
+}
+function _lighter(hex: string, n=40): string {
+  const [r,g,b]=_hexToRgb(hex); return `rgb(${Math.min(255,r+n)},${Math.min(255,g+n)},${Math.min(255,b+n)})`;
+}
+function _darker(hex: string, n=35): string {
+  const [r,g,b]=_hexToRgb(hex); return `rgb(${Math.max(0,r-n)},${Math.max(0,g-n)},${Math.max(0,b-n)})`;
+}
+
+function _isCardMode(desc: string) { return desc.includes('===LEFT===') && desc.includes('===RIGHT==='); }
+
+function _parseCardMeta(desc: string) {
+  const meta: Record<string,string> = {};
+  for (const ln of desc.split('\n')) {
+    const s = ln.trim();
+    for (const key of ['SUBTITLE','TYPES','Z-CRYSTAL','Z_CRYSTAL']) {
+      if (s.toUpperCase().startsWith(key+':')) { meta[key.replace('_','-')] = s.slice(key.length+1).trim(); break; }
+    }
+    if (s === '===LEFT===') break;
+  }
+  return meta;
+}
+
+function _parseColumns(desc: string): [string, string] {
+  const lines = desc.split('\n');
+  let left: string[] = [], right: string[] = [], target: string[]|null = null;
+  for (const ln of lines) {
+    if (ln.trim()==='===LEFT===')  { target=left; continue; }
+    if (ln.trim()==='===RIGHT===') { target=right; continue; }
+    if (target) target.push(ln);
+  }
+  return [left.join('\n'), right.join('\n')];
+}
+
+type ColBlock = { kind:'section'|'stat'|'move'|'note'|'blank'; text?:string; label?:string; value?:string; index?:number };
+
+function _parseCol(raw: string): ColBlock[] {
+  const blocks: ColBlock[] = [];
+  for (const ln of raw.split('\n')) {
+    const s = ln.trim();
+    if (!s) { blocks.push({kind:'blank'}); continue; }
+    const hm = s.match(/^#{1,6}\s+(.+)$/);
+    if (hm) { blocks.push({kind:'section', text:hm[1].toUpperCase()}); continue; }
+    const bm = s.match(/^[-*•]\s+(.+)/);
+    if (bm) {
+      const lm = bm[1].match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
+      if (lm) { blocks.push({kind:'stat', label: lm[1].endsWith(':') ? lm[1] : lm[1]+':', value: lm[2]}); continue; }
+      blocks.push({kind:'stat', text: bm[1].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); continue;
+    }
+    const nm = s.match(/^(\d+)\.\s+(.+)/);
+    if (nm) { blocks.push({kind:'move', index:+nm[1], text: nm[2].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); continue; }
+    if (s.startsWith('>')) { blocks.push({kind:'note', text: s.slice(1).trim().replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); continue; }
+    const lm2 = s.match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
+    if (lm2) { blocks.push({kind:'stat', label: lm2[1].endsWith(':') ? lm2[1] : lm2[1]+':', value: lm2[2]}); continue; }
+    blocks.push({kind:'stat', text: s.replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')});
+  }
+  return blocks;
+}
+
+function ColBlock({ b, accent, isRight }: { b: ColBlock; accent: string; isRight: boolean }) {
+  const acc = _hexToRgb(accent);
+  if (b.kind==='blank') return <div style={{height:8}}/>;
+  if (b.kind==='section') {
+    const barL = isRight ? _mix(acc,[180,220,50],0.5) : _mix(acc,[20,10,5],0.1);
+    const barR = isRight ? 'rgb(80,65,28)' : 'rgb(55,35,28)';
+    return (
+      <div style={{background:`linear-gradient(to right, ${barL}, ${barR})`, borderRadius:3, padding:'4px 10px', marginBottom:3}}>
+        <span style={{fontSize:10, fontWeight:700, color:'#fff', letterSpacing:'0.06em'}}>{b.text}</span>
+      </div>
+    );
+  }
+  if (b.kind==='move') {
+    const mc = MOVE_COLORS[((b.index||1)-1) % MOVE_COLORS.length];
+    return (
+      <div style={{display:'flex', alignItems:'center', gap:7, padding:'3px 4px', marginBottom:4, borderRadius:4, background:`${mc}18`}}>
+        <div style={{width:20, height:20, borderRadius:'50%', background:mc, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
+          <span style={{fontSize:10, fontWeight:700, color:'#fff'}}>{b.index}</span>
+        </div>
+        <span style={{fontSize:12, fontWeight:600, color:'#fff', flex:1}}>{b.text}</span>
+        <div style={{width:8,height:8,borderRadius:'50%',background:_lighter(mc,40),flexShrink:0}}/>
+      </div>
+    );
+  }
+  if (b.kind==='note') {
+    const noteColor = _mix(acc,[245,215,60],0.55);
+    return <div style={{fontSize:11, color:noteColor, padding:'3px 4px', marginBottom:2}}>+ {b.text}</div>;
+  }
+  // stat
+  const labelColor = _mix(acc,[245,215,60],0.6);
+  return (
+    <div style={{display:'flex', alignItems:'flex-start', gap:4, padding:'2px 4px', marginBottom:3, borderLeft:`2px solid ${accent}40`}}>
+      {b.label && <span style={{fontSize:11, fontWeight:700, color:labelColor, whiteSpace:'nowrap'}}>{b.label}</span>}
+      <span style={{fontSize:11, color:'#d2d4da'}}>{b.label ? b.value : b.text}</span>
+    </div>
+  );
+}
+
+type StdBlock = { kind:string; text?:string; runs?:{text:string;bold?:boolean;italic?:boolean;code?:boolean;link?:boolean}[] };
+
+function _parseStd(raw: string): StdBlock[] {
+  const blocks: StdBlock[] = [];
+  const lines = raw.split('\n');
+  let i=0;
+  while (i<lines.length) {
+    const ln = lines[i];
+    if (/^```/.test(ln.trim())) {
+      const code: string[] = []; i++;
+      while (i<lines.length && !lines[i].trim().startsWith('```')) { code.push(lines[i]); i++; }
+      blocks.push({kind:'code', text: code.join('\n')}); i++; continue;
+    }
+    if (!ln.trim()) { blocks.push({kind:'blank'}); i++; continue; }
+    if (/^(---|\*\*\*|___)/.test(ln.trim())) { blocks.push({kind:'rule'}); i++; continue; }
+    const hm = ln.match(/^(#{1,6})\s+(.+)/);
+    if (hm) { blocks.push({kind: hm[1].length<=2 ? 'h2':'h3', text:hm[2]}); i++; continue; }
+    if (ln.startsWith('>')) { blocks.push({kind:'quote', text:ln.slice(1).trim().replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); i++; continue; }
+    const bm = ln.match(/^[-*•]\s+(.+)/);
+    if (bm) { blocks.push({kind:'bullet', text:bm[1].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); i++; continue; }
+    const nm = ln.match(/^(\d+)\.\s+(.+)/);
+    if (nm) { blocks.push({kind:'num', text:`${nm[1]}. ${nm[2].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}`}); i++; continue; }
+    blocks.push({kind:'body', text: ln.replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1')}); i++;
+  }
+  return blocks;
+}
+
+function StdBlock({ b, accent }: { b: StdBlock; accent: string }) {
+  const acc = _hexToRgb(accent);
+  if (b.kind==='blank') return <div style={{height:6}}/>;
+  if (b.kind==='rule') return <hr style={{border:'none', borderTop:'1px solid #32343c', margin:'6px 0'}}/>;
+  if (b.kind==='h2') return (
+    <div style={{display:'flex', alignItems:'center', gap:8, margin:'8px 0 5px'}}>
+      <div style={{width:3, height:18, borderRadius:2, background:accent, flexShrink:0}}/>
+      <span style={{fontSize:12, fontWeight:700, color:_lighter(accent,55), letterSpacing:'0.04em'}}>{b.text?.toUpperCase()}</span>
+    </div>
+  );
+  if (b.kind==='h3') return <div style={{fontSize:12, fontWeight:600, color:_lighter(accent,40), margin:'5px 0 3px'}}>›› {b.text}</div>;
+  if (b.kind==='code') return (
+    <div style={{background:'#14161a', borderRadius:4, borderLeft:`3px solid ${accent}`, padding:'6px 10px', margin:'4px 0', fontFamily:'monospace', fontSize:11, color:'#d7aa46', whiteSpace:'pre-wrap'}}>{b.text}</div>
+  );
+  if (b.kind==='quote') return (
+    <div style={{background:'rgba(255,255,255,0.04)', borderLeft:`3px solid ${accent}`, padding:'4px 10px', margin:'3px 0', fontSize:11, color:'#8a8c94', borderRadius:'0 3px 3px 0'}}>{b.text}</div>
+  );
+  if (b.kind==='bullet') return (
+    <div style={{display:'flex', gap:8, margin:'2px 0', paddingLeft:4}}>
+      <span style={{color:accent, flexShrink:0, fontSize:11, marginTop:1}}>◆</span>
+      <span style={{fontSize:12, color:'#d2d4da'}}>{b.text}</span>
+    </div>
+  );
+  if (b.kind==='num') return <div style={{fontSize:12, color:'#d2d4da', margin:'2px 0 2px 4px'}}>{b.text}</div>;
+  return <div style={{fontSize:12, color:'#d2d4da', margin:'2px 0'}}>{b.text}</div>;
+}
+
 function EmbedPreview({ topic }: { topic: Partial<InfoTopic> }) {
-  const hex = topic.embed_color || '#5865F2';
-  const hasLinks = detectLinks(topic.embed_description || '');
+  const accent  = topic.embed_color || '#5865F2';
+  const desc    = topic.embed_description || '';
+  const title   = topic.embed_title || '';
+  const cardMode = _isCardMode(desc);
+  const hasLinks = detectLinks(desc);
+  const acc     = _hexToRgb(accent);
+  const HEADER  : [number,number,number] = [22,18,14];
+  const headerL = _mix(_mixT(acc,[160,60,10],0.5),HEADER,0.3);
+  const headerR = _mix(HEADER,[10,8,6],0.6);
+
+  if (cardMode) {
+    const meta           = _parseCardMeta(desc);
+    const [leftRaw, rightRaw] = _parseColumns(desc);
+    const leftBlocks     = _parseCol(leftRaw);
+    const rightBlocks    = _parseCol(rightRaw);
+    const types          = meta['TYPES'] ? meta['TYPES'].split(/\s*[|,/]\s*/) : [];
+    const zCrystal       = meta['Z-CRYSTAL'] || meta['Z_CRYSTAL'] || '';
+    const subtitle       = meta['SUBTITLE'] || '';
+
+    return (
+      <div>
+        <div style={{ background:'#1a1b1f', borderRadius:8, overflow:'hidden', fontSize:12 }}>
+          {/* Header */}
+          <div style={{ background:`linear-gradient(to right, ${headerL}, ${headerR})`, padding:'10px 14px 10px', position:'relative', minHeight:54, borderTop:`3px solid ${accent}` }}>
+            <div style={{ paddingRight:72 }}>
+              <div style={{ fontSize:15, fontWeight:700, color:'#fff', lineHeight:1.3 }}>{title || <span style={{color:'#555',fontStyle:'italic'}}>No title…</span>}</div>
+              {subtitle && <div style={{ fontSize:11, color:`${_mix(acc,[60,35,5],0.3)}`, marginTop:2 }}>{subtitle}</div>}
+            </div>
+            {/* Sprite circle */}
+            <div style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:52, height:52, borderRadius:'50%', border:`2px solid ${accent}`, background:_darker(accent,40), display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden' }}>
+              {topic.thumbnail
+                ? <img src={topic.thumbnail} alt="" style={{width:'100%',height:'100%',objectFit:'cover',borderRadius:'50%'}} onError={e=>(e.currentTarget.style.display='none')}/>
+                : <span style={{fontSize:9, color:'#8a8c94', textAlign:'center', lineHeight:1.3}}>Sprite{'\n'}Here</span>}
+            </div>
+          </div>
+          {/* Badge row */}
+          {(types.length > 0 || zCrystal) && (
+            <div style={{ background:'#12131a', padding:'6px 14px', display:'flex', flexWrap:'wrap', gap:6, alignItems:'center' }}>
+              {types.map(tp => (
+                <span key={tp} style={{ background: TYPE_COLORS[tp.trim().toLowerCase()] || accent, color:'#fff', fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:3 }}>{tp.trim().toUpperCase()}</span>
+              ))}
+              {zCrystal && (
+                <span style={{ background:_darker(accent,35), color:_lighter(accent,55), border:`1px solid ${accent}`, fontSize:10, fontWeight:600, padding:'2px 8px', borderRadius:3 }}>+ {zCrystal}</span>
+              )}
+            </div>
+          )}
+          {/* Two-column body */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, padding:'10px 14px 12px' }}>
+            <div>{leftBlocks.map((b,i) => <ColBlock key={i} b={b} accent={accent} isRight={false}/>)}</div>
+            <div>{rightBlocks.map((b,i) => <ColBlock key={i} b={b} accent={accent} isRight={true}/>)}</div>
+          </div>
+          {/* Footer */}
+          <div style={{ borderTop:'1px solid #32343c40', padding:'5px 14px', display:'flex', justifyContent:'space-between' }}>
+            <span style={{ fontSize:10, color:'#8a8c94' }}>{topic.footer || ''}</span>
+            <span style={{ fontSize:10, color:'#8a8c94' }}>{title}{types.length ? ` · ${meta['TYPES']}` : ''}</span>
+          </div>
+        </div>
+        {hasLinks && <div style={{marginTop:5,display:'flex',gap:5,alignItems:'center',fontSize:11,color:'#faa81a'}}><Link size={11}/> Raw URL — use <code style={{background:'rgba(255,255,255,0.1)',padding:'0 3px',borderRadius:3}}>[text](url)</code></div>}
+        {desc.length > 3500 && <div style={{marginTop:5,display:'flex',gap:5,alignItems:'center',fontSize:11,color:'#ed4245'}}><AlertCircle size={11}/> Too long ({desc.length}/4000)</div>}
+      </div>
+    );
+  }
+
+  // ── Standard mode ──────────────────────────────────────────────────────────
+  const blocks = _parseStd(desc);
   return (
     <div>
-      <div style={{ background: '#2b2d31', borderRadius: 8, padding: '12px 16px 16px', borderLeft: `4px solid ${hex}` }}>
-        {topic.thumbnail && <img src={topic.thumbnail} alt="" style={{ float: 'right', width: 72, height: 72, borderRadius: 4, objectFit: 'cover', marginLeft: 12 }} onError={e => (e.currentTarget.style.display='none')} />}
-        {topic.embed_title
-          ? <div style={{ fontSize: 15, fontWeight: 600, color: '#fff', marginBottom: 6 }}>{topic.embed_title}</div>
-          : <div style={{ fontSize: 13, color: '#6d6f78', fontStyle: 'italic', marginBottom: 6 }}>No title…</div>}
-        {topic.embed_description
-          ? <div style={{ fontSize: 13, color: '#dbdee1', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{topic.embed_description}</div>
-          : <div style={{ fontSize: 13, color: '#6d6f78', fontStyle: 'italic' }}>No description…</div>}
-        {topic.image && <img src={topic.image} alt="" style={{ width: '100%', borderRadius: 4, marginTop: 12 }} onError={e => (e.currentTarget.style.display='none')} />}
-        {topic.footer && <div style={{ fontSize: 11, color: '#a3a6aa', marginTop: 10, borderTop: '1px solid #3a3c43', paddingTop: 8 }}>{topic.footer}</div>}
-        <div style={{ clear: 'both' }} />
+      <div style={{ background:'#1a1b1f', borderRadius:8, overflow:'hidden', fontSize:12 }}>
+        {/* Header */}
+        <div style={{ background:`linear-gradient(to right, ${headerL}, ${headerR})`, padding:'10px 14px', position:'relative', minHeight:50, borderTop:`3px solid ${accent}`, display:'flex', alignItems:'center' }}>
+          <div style={{ flex:1, paddingRight: topic.thumbnail ? 64 : 0 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:'#fff' }}>{title || <span style={{color:'#555',fontStyle:'italic'}}>No title…</span>}</div>
+          </div>
+          {topic.thumbnail && (
+            <div style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:46, height:46, borderRadius:'50%', border:`2px solid ${accent}80`, overflow:'hidden' }}>
+              <img src={topic.thumbnail} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>(e.currentTarget.style.display='none')}/>
+            </div>
+          )}
+        </div>
+        {/* Body */}
+        <div style={{ padding:'10px 14px 12px' }}>
+          {desc
+            ? blocks.map((b,i) => <StdBlock key={i} b={b} accent={accent}/>)
+            : <span style={{fontSize:12,color:'#555',fontStyle:'italic'}}>No description…</span>}
+          {topic.image && (
+            <div style={{ marginTop:10, borderRadius:4, overflow:'hidden' }}>
+              <img src={topic.image} alt="" style={{width:'100%',display:'block'}} onError={e=>(e.currentTarget.style.display='none')}/>
+            </div>
+          )}
+        </div>
+        {/* Footer */}
+        {topic.footer && (
+          <div style={{ borderTop:'1px solid #32343c40', padding:'5px 14px' }}>
+            <span style={{ fontSize:10, color:'#8a8c94' }}>{topic.footer}</span>
+          </div>
+        )}
       </div>
-      {hasLinks && <div style={{ marginTop: 5, display: 'flex', gap: 5, alignItems: 'center', fontSize: 11, color: '#faa81a' }}><Link size={11} /> Raw URL detected — use <code style={{ background: 'rgba(255,255,255,0.1)', padding: '0 3px', borderRadius: 3 }}>[text](url)</code></div>}
-      {(topic.embed_description?.length ?? 0) > 3500 && <div style={{ marginTop: 5, display: 'flex', gap: 5, alignItems: 'center', fontSize: 11, color: '#ed4245' }}><AlertCircle size={11} /> Too long ({topic.embed_description?.length}/4000)</div>}
+      {hasLinks && <div style={{marginTop:5,display:'flex',gap:5,alignItems:'center',fontSize:11,color:'#faa81a'}}><Link size={11}/> Raw URL — use <code style={{background:'rgba(255,255,255,0.1)',padding:'0 3px',borderRadius:3}}>[text](url)</code></div>}
+      {desc.length > 3500 && <div style={{marginTop:5,display:'flex',gap:5,alignItems:'center',fontSize:11,color:'#ed4245'}}><AlertCircle size={11}/> Too long ({desc.length}/4000)</div>}
     </div>
   );
 }
@@ -139,7 +389,6 @@ function TopicCard({ topic, onEdit, onDelete, onTogglePublish, onHistory, isExpa
       {isExpanded && (
         <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border)' }}>
           <EmbedPreview topic={topic} />
-          {topic.footer && <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-faint)' }}>Footer: {topic.footer}</div>}
         </div>
       )}
     </div>
@@ -481,8 +730,8 @@ export default function InfoTopicsPage({ guildId }: Props) {
           </div>
           <F label="Footer"><input className="inp" value={form.footer || ''} onChange={e => setForm(p => ({ ...p, footer: e.target.value }))} placeholder="Footer text" /></F>
 
-          <div style={{ background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, margin: '12px 0', maxHeight: 260, overflowY: 'auto' }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Preview</div>
+          <div style={{ background: 'var(--elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, margin: '12px 0', maxHeight: 380, overflowY: 'auto' }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Preview — matches bot output</div>
             <EmbedPreview topic={form} />
           </div>
 
