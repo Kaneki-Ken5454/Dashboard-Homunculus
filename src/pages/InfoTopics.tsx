@@ -466,11 +466,21 @@ function CardModePreview({topic,desc,acc,accD,accB,overrideMeta,overrideLeft,ove
         <ThumbCircle url={topic.thumbnail} acc={acc} size={84}/>
       </div>
 
-      {/* Two-column body */}
+      {/* Two-column body (Moves Left, Stats Right) */}
       <div style={{display:'grid',gridTemplateColumns:'290fr 454fr',gap:'0 12px',padding:'10px 12px 12px'}}>
-        <div>{lBlocks.map((b,i)=><CardColBlock key={i} b={b} acc={acc} isRight={false}/>)}</div>
-        <div>{rBlocks.map((b,i)=><CardColBlock key={i} b={b} acc={acc} isRight={true}/>)}</div>
+        <div>{rBlocks.map((b,i)=><CardColBlock key={i} b={b} acc={acc} isRight={false}/>)}</div>
+        <div>{lBlocks.map((b,i)=><CardColBlock key={i} b={b} acc={acc} isRight={true}/>)}</div>
       </div>
+
+      {/* Large image (if present) */}
+      {topic.image && (
+        <div style={{padding:'0 12px 10px'}}>
+          <div style={{height:3,background:`linear-gradient(to right,${accentCss},${_css(_GOLD)} 67%,${accDCss})`,opacity:0.55,borderRadius:'3px 3px 0 0'}}/>
+          <div style={{borderRadius:'0 0 5px 5px',overflow:'hidden',border:`1px solid ${_css(acc,0.22)}`}}>
+            <img src={topic.image} alt="" crossOrigin="anonymous" style={{width:'100%',display:'block',maxHeight:300,objectFit:'contain',background:_css(_CARD)}} onError={e=>{(e.currentTarget as HTMLImageElement).style.display='none';}}/>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <div style={{borderTop:`1px solid ${_css(_SEP,0.28)}`,padding:'5px 12px',display:'flex',justifyContent:'space-between'}}>
