@@ -173,7 +173,7 @@ function CardChrome({accent,accD,accB,children,height}:{
 // ── Thumbnail circle (glow + double ring) ─────────────────────────────────────
 function ThumbCircle({url,acc,size=58}:{url?:string;acc:[number,number,number];size?:number}) {
   return (
-    <div style={{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',zIndex:1}}>
+    <div style={{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',zIndex:10}}>
       {/* Glow */}
       <div style={{position:'absolute',inset:-12,borderRadius:'50%',background:`radial-gradient(circle, ${_css(acc,0.28)} 0%, transparent 70%)`,filter:'blur(5px)',pointerEvents:'none'}}/>
       {/* Outer ring dim */}
@@ -253,10 +253,11 @@ function _isRaidGuide(desc:string):boolean {
   // Strip markdown formatting before testing
   const stripped = desc.replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1').replace(/__([^_]+)__/g,'$1');
   const hasMoves = /Top\s*\d*\s*Moves?\s*:?\s*$/im.test(stripped) || /^\d+\.\s+\S/m.test(stripped);
-  // Also detect bullet move lists following a "Top Moves" header
+  // Also detect > prefixed lines as moves
+  const hasBlockquoteMoves = /^>\s*\S/m.test(desc);
   const hasTopMovesHeader = /Top\s*\d*\s*Moves?/im.test(stripped);
   const hasBulletMoves = /^[-*•]\s+\S/m.test(desc);
-  return hasMoves || (hasTopMovesHeader && hasBulletMoves);
+  return hasMoves || hasBlockquoteMoves || (hasTopMovesHeader && hasBulletMoves);
 }
 
 type RaidGuideResult = { meta:Record<string,string>; left:CBlock[]; right:CBlock[] } | null;
@@ -286,9 +287,28 @@ function _parseRaidGuide(desc:string): RaidGuideResult {
     const hm = s.match(/^#{1,6}\s+(.*(?:Move|Moves).*)/i);
     if (hm) { movesStart=i; movesLabel=_plain(hm[1]).toUpperCase(); break; }
   }
+  // If no explicit moves header found, look for first > line as implicit moves start
+  if (movesStart < 0) {
+    for (let i=0; i<contentLines.length; i++) {
+      const s = contentLines[i].trim();
+      if (s.startsWith('>')) {
+        // Insert a virtual moves header just before the first > line
+        movesStart = i - 1;
+        if (movesStart < 0) movesStart = 0;
+        // Use the line before as a potential label or default
+        const prevLine = movesStart > 0 ? _plain(contentLines[movesStart].trim()) : '';
+        if (prevLine && !prevLine.includes(':') && prevLine.length < 40) {
+          movesLabel = prevLine.toUpperCase();
+        }
+        break;
+      }
+    }
+  }
   if (movesStart < 0) return null;
 
   // Find end of moves section
+  // Moves are > prefixed lines, numbered lines, bullet lines, or plain text
+  // Stop when we hit a bold-label stat or header that isn't a move
   let movesEnd = movesStart + 1;
   while (movesEnd < contentLines.length) {
     const s = contentLines[movesEnd].trim();
@@ -324,7 +344,7 @@ function _parseRaidGuide(desc:string): RaidGuideResult {
         }
         out.push({kind:'stat',text:_plain(bm[1]), isBullet: true}); continue;
       }
-      // Blockquote
+      // Blockquote (> lines) — treated as notes in stat columns
       if (s.startsWith('>')) { out.push({kind:'note',text:_plain(s.replace(/^>\s?/,''))}); continue; }
       // Bold-colon stat
       const lm2 = s.match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
@@ -351,11 +371,18 @@ function _parseRaidGuide(desc:string): RaidGuideResult {
   }
 
   // Right: moves section header + numbered moves
+  // Lines starting with > are always moves; also numbered, bulleted, and plain text lines
   const right:CBlock[] = [{kind:'section',text:movesLabel}];
   let moveIdx = 0;
   for (const ln of moveLines) {
     const s = ln.trim();
     if (!s) continue;
+    // > prefixed lines are moves
+    if (s.startsWith('>')) {
+      moveIdx++;
+      right.push({kind:'move',index:moveIdx,text:_plain(s.replace(/^>\s?/,''))});
+      continue;
+    }
     const nm = s.match(/^(\d+)\.\s+(.+)/);
     if (nm) { right.push({kind:'move',index:+nm[1],text:_plain(nm[2])}); continue; }
     const bm = s.match(/^[-*•]\s+(.+)/);
@@ -439,7 +466,7 @@ function CardModePreview({topic,desc,acc,accD,accB,overrideMeta,overrideLeft,ove
 
   return (
     <>
-      <div style={{position: 'relative'}}>
+      <div style={{position: 'relative', zIndex: 1}}>
         {/* Header */}
         <div style={{background:`linear-gradient(to right,${hdrL},${hdrR})`,padding:'12px 100px 10px 14px',position:'relative',minHeight:68}}>
           {/* Diagonal slash */}
@@ -467,7 +494,7 @@ function CardModePreview({topic,desc,acc,accD,accB,overrideMeta,overrideLeft,ove
         {/* Header bottom glow */}
         <div style={{height:4,background:`linear-gradient(to right,${accentCss},${_css(_GOLD)} 67%,${accDCss})`,opacity:0.9}}/>
 
-        {/* Sprite circle */}
+        {/* Sprite circle — always rendered */}
         <ThumbCircle url={topic.thumbnail} acc={acc} size={84}/>
       </div>
 
