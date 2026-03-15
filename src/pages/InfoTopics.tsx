@@ -271,6 +271,7 @@ function EmbedPreview({ topic }: { topic: Partial<InfoTopic> }) {
                 borderRadius: '50%',
                 background:   `radial-gradient(circle, ${_rgb(acc, 0.30)} 0%, transparent 70%)`,
                 filter:       'blur(6px)',
+                pointerEvents:'none',
               }} />
               {/* Outer ring */}
               <div style={{
@@ -286,18 +287,25 @@ function EmbedPreview({ topic }: { topic: Partial<InfoTopic> }) {
                 borderRadius: '50%',
                 border:       `2px solid ${_rgb(acc, 0.84)}`,
               }} />
-              {/* Image */}
+              {/* Circle container — always visible, shows image or fallback bg */}
               <div style={{
-                width: 58, height: 58, borderRadius: '50%', overflow: 'hidden',
-                background: _rgb(_dark(acc, 40)),
-                flexShrink: 0,
-                position:   'relative',
+                width:        58,
+                height:       58,
+                borderRadius: '50%',
+                overflow:     'hidden',
+                background:   _rgb(_dark(acc, 40)),
+                flexShrink:   0,
+                position:     'relative',
+                display:      'flex',
+                alignItems:   'center',
+                justifyContent: 'center',
               }}>
                 <img
                   src={topic.thumbnail}
-                  alt=""
-                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                  onError={e => { (e.currentTarget.parentElement!.style.background = _rgb(_dark(acc,40))); e.currentTarget.style.display='none'; }}
+                  alt="thumbnail"
+                  crossOrigin="anonymous"
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', position: 'absolute', inset: 0 }}
+                  onError={e => { e.currentTarget.style.display = 'none'; }}
                 />
               </div>
             </div>
@@ -402,6 +410,22 @@ function EmbedPreview({ topic }: { topic: Partial<InfoTopic> }) {
             );
           }) : <span style={{ fontSize: 12, color: '#555', fontStyle: 'italic' }}>No description…</span>}
         </div>
+
+        {/* ── Large body image (image_url) — matches renderer _fetch_large block ── */}
+        {topic.image && (
+          <div style={{ padding: '0 16px', marginBottom: 10 }}>
+            {/* Accent glow strip above image */}
+            <div style={{ height: 3, background: `linear-gradient(to right, ${accentCss}, ${_rgb(GOLD)} 67%, ${accDCss})`, opacity: 0.55, marginBottom: 4, borderRadius: '3px 3px 0 0' }} />
+            <div style={{ borderRadius: 6, overflow: 'hidden', border: `1px solid ${_rgb(acc, 0.24)}` }}>
+              <img
+                src={topic.image}
+                alt=""
+                style={{ width: '100%', display: 'block', maxHeight: 320, objectFit: 'contain', background: _C.card }}
+                onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* ── Footer separator + text ── */}
         {topic.footer && (
