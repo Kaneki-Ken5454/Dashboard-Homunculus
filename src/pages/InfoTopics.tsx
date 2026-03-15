@@ -80,6 +80,9 @@ function _mixT(a:[number,number,number], b:[number,number,number], t:number):[nu
 function _lightT(c:[number,number,number], n=40):[number,number,number] {
   return [Math.min(255,c[0]+n), Math.min(255,c[1]+n), Math.min(255,c[2]+n)];
 }
+function _brightT(c:[number,number,number], n=55):[number,number,number] {
+  return [Math.min(255,c[0]+n), Math.min(255,c[1]+n), Math.min(255,c[2]+n)];
+}
 function _darkT(c:[number,number,number], n=30):[number,number,number] {
   return [Math.max(0,c[0]-n), Math.max(0,c[1]-n), Math.max(0,c[2]-n)];
 }
@@ -177,13 +180,13 @@ function ThumbCircle({url,acc,size=58}:{url?:string;acc:[number,number,number];s
       {/* Glow */}
       <div style={{position:'absolute',inset:-12,borderRadius:'50%',background:`radial-gradient(circle, ${_css(acc,0.28)} 0%, transparent 70%)`,filter:'blur(5px)',pointerEvents:'none'}}/>
       {/* Outer ring dim */}
-      <div style={{position:'absolute',inset:-5,borderRadius:'50%',border:`3px solid ${_css(acc,0.14)}`}}/>
+      <div style={{position:'absolute',inset:-6,borderRadius:'50%',border:`3px solid ${_css(acc,0.14)}`}}/>
       {/* Inner ring bright */}
-      <div style={{position:'absolute',inset:-2,borderRadius:'50%',border:`2px solid ${_css(acc,0.85)}`}}/>
+      <div style={{position:'absolute',inset:-3,borderRadius:'50%',border:`1.5px solid ${_css(acc,0.85)}`}}/>
       {/* Circle */}
       <div style={{width:size,height:size,borderRadius:'50%',overflow:'hidden',background:_css(_darkT(acc,40)),flexShrink:0,position:'relative',display:'flex',alignItems:'center',justifyContent:'center'}}>
         {url
-          ? <img src={url} alt="sprite" crossOrigin="anonymous" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',display:'block'}} onError={e=>{e.currentTarget.style.display='none';}}/>
+          ? <img src={url} alt="sprite" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',display:'block'}} onError={e=>{e.currentTarget.style.display='none';}}/>
           : <span style={{fontSize:9,color:_css(_MUTED),textAlign:'center',lineHeight:1.4,zIndex:1}}>{'Sprite\nHere'}</span>
         }
       </div>
@@ -245,7 +248,17 @@ function _parseCardCol(raw:string):CBlock[] {
 // Mirrors Python _is_raid_guide / _parse_raid_guide exactly
 
 function _plain(s:string):string {
-  return s.replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1').replace(/`([^`]+)`/g,'$1').trim();
+  let r = s;
+  r = r.replace(/\*\*\*([^*]+)\*\*\*/g, '$1');
+  r = r.replace(/\*\*([^*]+)\*\*/g, '$1');
+  r = r.replace(/\*([^*]+)\*/g, '$1');
+  r = r.replace(/___([^_]+)___/g, '$1');
+  r = r.replace(/__([^_]+)__/g, '$1');
+  r = r.replace(/_([^_]+)_/g, '$1');
+  r = r.replace(/`([^`]+)`/g, '$1');
+  r = r.replace(/~~([^~]+)~~/g, '$1');
+  r = r.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  return r.trim();
 }
 
 function _isRaidGuide(desc:string):boolean {
@@ -371,7 +384,7 @@ function _parseRaidGuide(desc:string): RaidGuideResult {
   }
 
   // Right: moves section header + numbered moves
-  // Lines starting with > are always moves; also numbered, bulleted, and plain text lines
+  // Lines starting with > are always moves; other lines are parsed normally
   const right:CBlock[] = [{kind:'section',text:movesLabel}];
   let moveIdx = 0;
   for (const ln of moveLines) {
@@ -383,11 +396,8 @@ function _parseRaidGuide(desc:string): RaidGuideResult {
       right.push({kind:'move',index:moveIdx,text:_plain(s.replace(/^>\s?/,''))});
       continue;
     }
-    const nm = s.match(/^(\d+)\.\s+(.+)/);
-    if (nm) { right.push({kind:'move',index:+nm[1],text:_plain(nm[2])}); continue; }
-    const bm = s.match(/^[-*•]\s+(.+)/);
-    if (bm) { moveIdx++; right.push({kind:'move',index:moveIdx,text:_plain(bm[1])}); continue; }
-    if (s && !/^#{1,6}\s+/.test(s)) { moveIdx++; right.push({kind:'move',index:moveIdx,text:_plain(s)}); }
+    // Everything else under moves is parsed normally
+    right.push(...toBlocks([ln]));
   }
 
   return {meta, left, right};
@@ -399,25 +409,26 @@ function CardColBlock({b,acc,isRight}:{b:CBlock;acc:[number,number,number];isRig
 
   if (b.kind==='section') {
     const isNatureAndBuild = b.text === 'NATURE & BUILD' || b.text === 'NATURE AND BUILD';
-    const barL = isNatureAndBuild ? _css(_mixT(_GOLD_C,[200,165,25],0.8)) : isRight ? _css(_mixT(_GOLD_C,[200,165,25],0)) : _css(_mixT(acc,[20,10,5],0.12));
-    const barR = isNatureAndBuild ? 'rgb(90,75,30)' : isRight ? 'rgb(78,62,22)' : 'rgb(52,32,24)';
-    const textC = isNatureAndBuild ? _css(_mixT(_GOLD,[255,255,255],0.5)) : _css(_lightT(acc,50));
+    const barL = isNatureAndBuild ? _css(_mixT(_GOLD_C,[200,165,25],0.8)) : isRight ? _css(_mixT(_GOLD_C,[200,165,25],0)) : _css(_mixT(acc,[26,26,34],0.28));
+    const barR = isNatureAndBuild ? 'rgb(90,75,30)' : isRight ? 'rgb(78,62,22)' : 'rgb(32,32,42)';
+    const textC = isNatureAndBuild ? _css(_mixT(_GOLD,[255,255,255],0.5)) : '#fff';
     const leftBorderC = isNatureAndBuild ? _css(_GOLD_C) : accCss;
     
     return (
       <div style={{background:`linear-gradient(to right,${barL},${barR})`,borderRadius:3,padding:'4px 10px 4px 14px',marginBottom:5,position:'relative'}}>
         <div style={{position:'absolute',left:0,top:0,bottom:0,width:3,background:leftBorderC,borderRadius:'3px 0 0 3px'}}/>
-        <span style={{fontSize:10,fontWeight:700,color:textC,letterSpacing:'0.07em'}}>{b.text}</span>
+        <span style={{fontSize:10,fontWeight:700,color:textC,letterSpacing:'0.03em',fontFamily:'"DejaVu Sans", "Lexend", sans-serif'}}>{b.text}</span>
       </div>
     );
   }
   if (b.kind==='stat') {
-    const labelC = _css(_mixT(acc,_GOLD_C,0.55));
-    const leftBorderCss = b.isBullet ? `2px solid ${_css(acc,0.38)}` : '2px solid transparent';
+    const labelC = _css(_brightT(acc, 50));
+    const valueC = _css(_BODY, 0.95);
+    const leftBorderCss = b.isBullet ? `2px solid ${_css(acc,0.48)}` : '2px solid transparent';
     return (
-      <div style={{display:'flex',alignItems:'flex-start',gap:4,padding:'2px 2px 2px 6px',marginBottom:3,borderLeft:leftBorderCss}}>
-        {b.label && <span style={{fontSize:11,fontWeight:700,color:labelC,whiteSpace:'nowrap',flexShrink:0}}>{b.label}</span>}
-        <span style={{fontSize:11,color:_css(_BODY,0.88)}}>{b.label ? b.value : b.text}</span>
+      <div style={{display:'flex',alignItems:'flex-start',gap:6,padding:'2px 2px 2px 6px',marginBottom:4,borderLeft:leftBorderCss}}>
+        {b.label && <span style={{fontSize:11,fontWeight:700,color:labelC,whiteSpace:'nowrap',flexShrink:0,fontFamily:'"DejaVu Sans", "Lexend", sans-serif'}}>{b.label}</span>}
+        <span style={{fontSize:11,color:valueC,lineHeight:1.4,fontWeight:b.label?400:600}}>{b.label ? b.value : b.text}</span>
       </div>
     );
   }
@@ -425,12 +436,12 @@ function CardColBlock({b,acc,isRight}:{b:CBlock;acc:[number,number,number];isRig
     const mc  = CM_MOVE_COLS[((b.index||1)-1) % CM_MOVE_COLS.length];
     const mcL = _lightT(mc,45);
     return (
-      <div style={{display:'flex',alignItems:'center',gap:6,background:_grad(_mixT(mc,_CARD,0.88),_mixT(mc,_PAN2,0.80)),borderRadius:20,padding:'4px 8px 4px 5px',marginBottom:5}}>
-        <div style={{width:20,height:20,borderRadius:'50%',background:_css(mc),display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:'1px solid rgba(255,255,255,0.18)'}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,background:`linear-gradient(to right, ${_css(_mixT(mc,_CARD,0.42))}, ${_css(_mixT(mc,_PAN2,0.75))})`,borderRadius:20,padding:'4px 10px 4px 5px',marginBottom:5}}>
+        <div style={{width:20,height:20,borderRadius:'50%',background:`linear-gradient(135deg, ${_css(_brightT(mc,30))}, ${_css(mc)})`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:'1px solid rgba(255,255,255,0.25)'}}>
           <span style={{fontSize:10,fontWeight:700,color:'#fff'}}>{b.index}</span>
         </div>
-        <span style={{fontSize:12,fontWeight:600,color:'#fff',flex:1}}>{b.text}</span>
-        <div style={{width:10,height:10,borderRadius:'50%',background:_css(mcL),flexShrink:0}}/>
+        <span style={{fontSize:12,fontWeight:600,color:'rgba(255,255,255,0.95)',flex:1,fontFamily:'"DejaVu Sans", "Lexend", sans-serif'}}>{b.text}</span>
+        <div style={{width:8,height:8,borderRadius:'50%',background:_css(mcL),flexShrink:0}}/>
       </div>
     );
   }
@@ -467,12 +478,15 @@ function CardModePreview({topic,desc,acc,accD,accB,overrideMeta,overrideLeft,ove
   return (
     <>
       <div style={{position: 'relative', zIndex: 1}}>
+        {/* Header Strip - 5px top gradient */}
+        <div style={{height:4,background:`linear-gradient(to right,${accentCss},${_css(_GOLD)} 50%,${accDCss} 100%)`}}/>
+
         {/* Header */}
-        <div style={{background:`linear-gradient(to right,${hdrL},${hdrR})`,padding:'12px 100px 10px 14px',position:'relative',minHeight:68}}>
+        <div style={{background:`linear-gradient(to right,${hdrL},${hdrR})`,padding:'15px 100px 10px 14px',position:'relative',minHeight:64}}>
           {/* Diagonal slash */}
           <div style={{position:'absolute',inset:0,background:'linear-gradient(105deg,transparent 40%,rgba(255,255,255,0.04) 50%,transparent 60%)',pointerEvents:'none'}}/>
           {/* Title */}
-          <div style={{fontSize:18,fontWeight:700,color:'#fff',textShadow:'1px 2px 3px rgba(0,0,0,0.8)',lineHeight:1.3,position:'relative'}}>
+          <div style={{fontSize:18,fontWeight:700,color:'#fff',textShadow:'1.5px 1.5px 0 rgba(0,0,0,0.85)',lineHeight:1.1,position:'relative'}}>
             {title||<span style={{color:'#555',fontStyle:'italic'}}>No title…</span>}
           </div>
           {subtitle && <div style={{fontSize:11,color:_css(_mixT(acc,[200,130,40],0.28),0.86),marginTop:3,position:'relative'}}>{subtitle}</div>}
@@ -480,22 +494,21 @@ function CardModePreview({topic,desc,acc,accD,accB,overrideMeta,overrideLeft,ove
 
         {/* Badge row */}
         {(types.length>0||zCryst) && (
-          <div style={{background:_css(_mixT(_CARD,[10,8,6],0.35)),padding:'7px 14px',display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}}>
+          <div style={{background:_css(_mixT(_CARD,[10,8,6],0.35)),padding:'7px 14px',display:'flex',flexWrap:'wrap',gap:6,alignItems:'center',borderBottom:`1px solid ${_css(_mixT(acc,[200,165,25],0.5),0.6)}`}}>
             {types.map(tp=>{
               const tc=CM_TYPE_COLS[tp.trim().toLowerCase()]||acc;
-              return <span key={tp} style={{background:_css(tc),color:'#fff',fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:5, letterSpacing: '0.05em'}}>{tp.trim().toUpperCase()}</span>;
+              return <span key={tp} style={{background:_css(tc),color:'#fff',fontSize:10,fontWeight:700,padding:'2.5px 8px',borderRadius:4, letterSpacing: '0.02em'}}>{tp.trim().toUpperCase()}</span>;
             })}
             {zCryst && (
-              <span style={{background:_css(_darkT(acc,40)),color:_css(_GOLD),border:`1px solid ${_css(_darkT(acc, 20))}`,fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:5, letterSpacing: '0.05em'}}>+ {zCryst}</span>
+              <span style={{background:_css(_darkT(acc,40)),color:_css(_mixT(acc,_GOLD_C,0.6)),border:`1px solid ${_css(_darkT(acc, 20))}`,fontSize:10,fontWeight:700,padding:'2.5px 8px',borderRadius:4, letterSpacing: '0.02em'}}>+ {zCryst}</span>
             )}
           </div>
         )}
 
-        {/* Header bottom glow */}
-        <div style={{height:4,background:`linear-gradient(to right,${accentCss},${_css(_GOLD)} 67%,${accDCss})`,opacity:0.9}}/>
-
-        {/* Sprite circle — always rendered */}
-        <ThumbCircle url={topic.thumbnail} acc={acc} size={84}/>
+        {/* Sprite circle — positioned to overlap right edge appropriately */}
+        <div style={{position:'absolute',right:-20,top:2}}>
+          <ThumbCircle url={topic.thumbnail} acc={acc} size={88}/>
+        </div>
       </div>
 
       {/* Two-column body (Moves Left, Stats Right) */}
@@ -509,7 +522,7 @@ function CardModePreview({topic,desc,acc,accD,accB,overrideMeta,overrideLeft,ove
         <div style={{padding:'0 12px 10px'}}>
           <div style={{height:3,background:`linear-gradient(to right,${accentCss},${_css(_GOLD)} 67%,${accDCss})`,opacity:0.55,borderRadius:'3px 3px 0 0'}}/>
           <div style={{borderRadius:'0 0 5px 5px',overflow:'hidden',border:`1px solid ${_css(acc,0.22)}`}}>
-            <img src={topic.image} alt="" crossOrigin="anonymous" style={{width:'100%',display:'block',maxHeight:300,objectFit:'contain',background:_css(_CARD)}} onError={e=>{(e.currentTarget as HTMLImageElement).style.display='none';}}/>
+            <img src={topic.image} alt="" style={{width:'100%',display:'block',maxHeight:300,objectFit:'contain',background:_css(_CARD)}} onError={e=>{(e.currentTarget as HTMLImageElement).style.display='none';}}/>
           </div>
         </div>
       )}
