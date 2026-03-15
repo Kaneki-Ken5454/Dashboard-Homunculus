@@ -241,6 +241,126 @@ function _parseCardCol(raw:string):CBlock[] {
   return out;
 }
 
+// ── Auto raid-guide detection & conversion ────────────────────────────────────
+// Mirrors Python _is_raid_guide / _parse_raid_guide exactly
+
+function _plain(s:string):string {
+  return s.replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1').replace(/`([^`]+)`/g,'$1').trim();
+}
+
+function _isRaidGuide(desc:string):boolean {
+  if (desc.includes('===LEFT===')) return false;
+  const hasMoves = /Top\s*\d*\s*Moves?\s*:?\s*$/im.test(desc) || /^\d+\.\s+\S/m.test(desc);
+  return hasMoves;
+}
+
+type RaidGuideResult = { meta:Record<string,string>; left:CBlock[]; right:CBlock[] } | null;
+
+function _parseRaidGuide(desc:string): RaidGuideResult {
+  const lines = desc.replace(/\r\n/g,'\n').split('\n');
+  const meta:Record<string,string> = {};
+  const contentLines:string[] = [];
+
+  // Extract Type / Z-Crystal meta lines
+  for (const ln of lines) {
+    const s = ln.trim();
+    const tm = s.match(/^\*?\*?Type\*?\*?\s*:\s*(.+)/i);
+    if (tm) { meta['TYPES'] = _plain(tm[1]); continue; }
+    const zm = s.match(/^\*?\*?Z[-_\s]?Crystal\*?\*?\s*:\s*(.+)/i);
+    if (zm) { meta['Z-CRYSTAL'] = _plain(zm[1]); continue; }
+    contentLines.push(ln);
+  }
+
+  // Find moves section
+  let movesStart = -1;
+  let movesLabel = 'TOP MOVES';
+  for (let i=0; i<contentLines.length; i++) {
+    const s = contentLines[i].trim();
+    const mm = _plain(s).match(/^(Top\s*\d*\s*Moves?(?:\s+\([^)]*\))?)\s*:?\s*$/i);
+    if (mm) { movesStart=i; movesLabel=mm[1].toUpperCase(); break; }
+    const hm = s.match(/^#{1,6}\s+(.*(?:Move|Moves).*)/i);
+    if (hm) { movesStart=i; movesLabel=_plain(hm[1]).toUpperCase(); break; }
+  }
+  if (movesStart < 0) return null;
+
+  // Find end of moves section
+  let movesEnd = movesStart + 1;
+  while (movesEnd < contentLines.length) {
+    const s = contentLines[movesEnd].trim();
+    if (!s) { movesEnd++; continue; }
+    const isBoldLabel = /^\*\*[^*]+\*\*\s*:/.test(s) && !s.startsWith('-');
+    const isHeader    = /^#{1,6}\s+/.test(s);
+    if (isBoldLabel || isHeader) break;
+    movesEnd++;
+  }
+
+  const beforeLines = contentLines.slice(0, movesStart);
+  const moveLines   = contentLines.slice(movesStart+1, movesEnd);
+  const afterLines  = contentLines.slice(movesEnd);
+
+  // Parse lines into CBlock[]
+  function toBlocks(rawLines:string[]): CBlock[] {
+    const out:CBlock[] = [];
+    for (const ln of rawLines) {
+      const s = ln.trim();
+      if (!s) { out.push({kind:'blank'}); continue; }
+      const hm2 = s.match(/^#{1,6}\s+(.+)$/);
+      if (hm2) { out.push({kind:'section',text:_plain(hm2[1]).toUpperCase()}); continue; }
+      // Bold-only header line **Section:**
+      const bh = s.match(/^\*\*([^*]+)\*\*\s*:?\s*$/);
+      if (bh) { out.push({kind:'section',text:bh[1].toUpperCase()}); continue; }
+      // Bullet
+      const bm = s.match(/^[-*•]\s+(.+)/);
+      if (bm) {
+        const lm = bm[1].match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
+        if (lm) {
+          const lbl = lm[1].endsWith(':') ? lm[1] : lm[1]+':';
+          out.push({kind:'stat',label:lbl,value:_plain(lm[2])}); continue;
+        }
+        out.push({kind:'stat',text:_plain(bm[1])}); continue;
+      }
+      // Blockquote
+      if (s.startsWith('>')) { out.push({kind:'note',text:_plain(s.replace(/^>\s?/,''))}); continue; }
+      // Bold-colon stat
+      const lm2 = s.match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
+      if (lm2) {
+        const lbl = lm2[1].endsWith(':') ? lm2[1] : lm2[1]+':';
+        out.push({kind:'stat',label:lbl,value:_plain(lm2[2])}); continue;
+      }
+      out.push({kind:'stat',text:_plain(s)});
+    }
+    return out;
+  }
+
+  const left = toBlocks(beforeLines);
+
+  // After-moves → NATURE & BUILD section appended to left
+  if (afterLines.length > 0) {
+    const firstNonBlank = afterLines.find(l=>l.trim())?.trim()||'';
+    const alreadyHeaded = /^#{1,6}\s+/.test(firstNonBlank) || /^\*\*[^*]+\*\*\s*:?\s*$/.test(firstNonBlank);
+    if (!alreadyHeaded && firstNonBlank) {
+      left.push({kind:'blank'});
+      left.push({kind:'section',text:'NATURE & BUILD'});
+    }
+    left.push(...toBlocks(afterLines));
+  }
+
+  // Right: moves section header + numbered moves
+  const right:CBlock[] = [{kind:'section',text:movesLabel}];
+  let moveIdx = 0;
+  for (const ln of moveLines) {
+    const s = ln.trim();
+    if (!s) continue;
+    const nm = s.match(/^(\d+)\.\s+(.+)/);
+    if (nm) { right.push({kind:'move',index:+nm[1],text:_plain(nm[2])}); continue; }
+    const bm = s.match(/^[-*•]\s+(.+)/);
+    if (bm) { moveIdx++; right.push({kind:'move',index:moveIdx,text:_plain(bm[1])}); continue; }
+    if (s && !/^#{1,6}\s+/.test(s)) { moveIdx++; right.push({kind:'move',index:moveIdx,text:_plain(s)}); }
+  }
+
+  return {meta, left, right};
+}
+
 function CardColBlock({b,acc,isRight}:{b:CBlock;acc:[number,number,number];isRight:boolean}) {
   const accCss = _css(acc);
   if (b.kind==='blank') return <div style={{height:7}}/>;
@@ -284,11 +404,10 @@ function CardColBlock({b,acc,isRight}:{b:CBlock;acc:[number,number,number];isRig
   return null;
 }
 
-function CardModePreview({topic,desc,acc,accD,accB}:{topic:Partial<InfoTopic>;desc:string;acc:[number,number,number];accD:[number,number,number];accB:[number,number,number]}) {
-  const meta  = _parseCardMeta(desc);
-  const [lRaw,rRaw] = _parseCardCols(desc);
-  const lBlocks = _parseCardCol(lRaw);
-  const rBlocks = _parseCardCol(rRaw);
+function CardModePreview({topic,desc,acc,accD,accB,overrideMeta,overrideLeft,overrideRight}:{topic:Partial<InfoTopic>;desc:string;acc:[number,number,number];accD:[number,number,number];accB:[number,number,number];overrideMeta?:Record<string,string>;overrideLeft?:CBlock[];overrideRight?:CBlock[]}) {
+  const meta    = overrideMeta  ?? _parseCardMeta(desc);
+  const lBlocks = overrideLeft  ?? (() => { const [l]=_parseCardCols(desc); return _parseCardCol(l); })();
+  const rBlocks = overrideRight ?? (() => { const [,r]=_parseCardCols(desc); return _parseCardCol(r); })();
   const types   = meta['TYPES'] ? meta['TYPES'].split(/\s*[|,/]\s*/) : [];
   const zCryst  = meta['Z-CRYSTAL']||meta['Z_CRYSTAL']||'';
   const subtitle= meta['SUBTITLE']||'';
@@ -433,22 +552,45 @@ function EmbedPreview({ topic }: { topic: Partial<InfoTopic> }) {
   const desc      = topic.embed_description || '';
   const title     = topic.embed_title || '';
   const hasLinks  = detectLinks(desc);
-  const isCard    = desc.includes('===LEFT===') && desc.includes('===RIGHT===');
   const acc       = _hexToRgb(topic.embed_color || '#5865F2');
   const accD      = _darkT(acc, 30);
   const accB      = _lightT(acc, 55);
   const accentCss = _css(acc);
   const accDCss   = _css(accD);
 
-  // Shared header gradient for standard mode (v4 hdr_l / hdr_r)
+  // Determine layout mode (mirrors Python render_info_embed priority)
+  const isExplicitCard = desc.includes('===LEFT===') && desc.includes('===RIGHT===');
+  const raidGuide      = (!isExplicitCard && _isRaidGuide(desc)) ? _parseRaidGuide(desc) : null;
+  const isCard         = isExplicitCard || raidGuide !== null;
+
+  // Standard-mode header gradient
   const hdrL = _css(_mixT(accD,[14,12,18],0.40));
   const hdrR = _css(_mixT(_darkT(acc,50),[14,12,18],0.58));
+
+  // Resolve card data (explicit OR auto-converted)
+  let cardMeta:   Record<string,string> = {};
+  let cardLeft:   CBlock[] = [];
+  let cardRight:  CBlock[] = [];
+  if (isExplicitCard) {
+    cardMeta  = _parseCardMeta(desc);
+    const [lRaw,rRaw] = _parseCardCols(desc);
+    cardLeft  = _parseCardCol(lRaw);
+    cardRight = _parseCardCol(rRaw);
+  } else if (raidGuide) {
+    cardMeta  = raidGuide.meta;
+    cardLeft  = raidGuide.left;
+    cardRight = raidGuide.right;
+  }
 
   return (
     <div>
       <CardChrome accent={acc} accD={accD} accB={accB}>
         {isCard
-          ? <CardModePreview topic={topic} desc={desc} acc={acc} accD={accD} accB={accB}/>
+          ? <CardModePreview
+              topic={topic} desc={desc}
+              acc={acc} accD={accD} accB={accB}
+              overrideMeta={cardMeta} overrideLeft={cardLeft} overrideRight={cardRight}
+            />
           : <>
               {/* Standard header */}
               <div style={{background:`linear-gradient(to right,${hdrL},${hdrR})`,padding:'12px 90px 10px 14px',position:'relative',minHeight:52,display:'flex',alignItems:'center'}}>
