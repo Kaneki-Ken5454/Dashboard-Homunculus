@@ -195,7 +195,7 @@ function ThumbCircle({url,acc,size=58}:{url?:string;acc:[number,number,number];s
 // CARD MODE
 // ══════════════════════════════════════════════════════════════════════════════
 
-type CBlock = {kind:'section'|'stat'|'move'|'note'|'blank'; text?:string; label?:string; value?:string; index?:number};
+type CBlock = {kind:'section'|'stat'|'move'|'note'|'blank'; text?:string; label?:string; value?:string; index?:number; isBullet?:boolean};
 
 function _parseCardMeta(desc:string):Record<string,string> {
   const meta:Record<string,string>={};
@@ -228,8 +228,8 @@ function _parseCardCol(raw:string):CBlock[] {
     const bm=s.match(/^[-*•]\s+(.+)/);
     if (bm){
       const lm=bm[1].match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
-      if (lm){out.push({kind:'stat',label:lm[1].endsWith(':')?lm[1]:lm[1]+':',value:lm[2].trim()});continue;}
-      out.push({kind:'stat',text:bm[1].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')});continue;
+      if (lm){out.push({kind:'stat',label:lm[1].endsWith(':')?lm[1]:lm[1]+':',value:lm[2].trim(), isBullet: true});continue;}
+      out.push({kind:'stat',text:bm[1].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1'), isBullet: true});continue;
     }
     const nm=s.match(/^(\d+)\.\s+(.+)/);
     if (nm){out.push({kind:'move',index:+nm[1],text:nm[2].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')});continue;}
@@ -315,9 +315,9 @@ function _parseRaidGuide(desc:string): RaidGuideResult {
         const lm = bm[1].match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
         if (lm) {
           const lbl = lm[1].endsWith(':') ? lm[1] : lm[1]+':';
-          out.push({kind:'stat',label:lbl,value:_plain(lm[2])}); continue;
+          out.push({kind:'stat',label:lbl,value:_plain(lm[2]), isBullet: true}); continue;
         }
-        out.push({kind:'stat',text:_plain(bm[1])}); continue;
+        out.push({kind:'stat',text:_plain(bm[1]), isBullet: true}); continue;
       }
       // Blockquote
       if (s.startsWith('>')) { out.push({kind:'note',text:_plain(s.replace(/^>\s?/,''))}); continue; }
@@ -366,19 +366,24 @@ function CardColBlock({b,acc,isRight}:{b:CBlock;acc:[number,number,number];isRig
   if (b.kind==='blank') return <div style={{height:7}}/>;
 
   if (b.kind==='section') {
-    const barL = isRight ? _css(_mixT(_GOLD_C,[200,165,25],0)) : _css(_mixT(acc,[20,10,5],0.12));
-    const barR = isRight ? 'rgb(78,62,22)' : 'rgb(52,32,24)';
+    const isNatureAndBuild = b.text === 'NATURE & BUILD' || b.text === 'NATURE AND BUILD';
+    const barL = isNatureAndBuild ? _css(_mixT(_GOLD_C,[200,165,25],0.8)) : isRight ? _css(_mixT(_GOLD_C,[200,165,25],0)) : _css(_mixT(acc,[20,10,5],0.12));
+    const barR = isNatureAndBuild ? 'rgb(90,75,30)' : isRight ? 'rgb(78,62,22)' : 'rgb(52,32,24)';
+    const textC = isNatureAndBuild ? _css(_mixT(_GOLD,[255,255,255],0.5)) : _css(_lightT(acc,50));
+    const leftBorderC = isNatureAndBuild ? _css(_GOLD_C) : accCss;
+    
     return (
       <div style={{background:`linear-gradient(to right,${barL},${barR})`,borderRadius:3,padding:'4px 10px 4px 14px',marginBottom:5,position:'relative'}}>
-        <div style={{position:'absolute',left:0,top:0,bottom:0,width:3,background:accCss,borderRadius:'3px 0 0 3px'}}/>
-        <span style={{fontSize:10,fontWeight:700,color:_css(_lightT(acc,50)),letterSpacing:'0.07em'}}>{b.text}</span>
+        <div style={{position:'absolute',left:0,top:0,bottom:0,width:3,background:leftBorderC,borderRadius:'3px 0 0 3px'}}/>
+        <span style={{fontSize:10,fontWeight:700,color:textC,letterSpacing:'0.07em'}}>{b.text}</span>
       </div>
     );
   }
   if (b.kind==='stat') {
     const labelC = _css(_mixT(acc,_GOLD_C,0.55));
+    const leftBorderCss = b.isBullet ? `2px solid ${_css(acc,0.38)}` : '2px solid transparent';
     return (
-      <div style={{display:'flex',alignItems:'flex-start',gap:4,padding:'2px 2px 2px 6px',marginBottom:3,borderLeft:`2px solid ${_css(acc,0.38)}`}}>
+      <div style={{display:'flex',alignItems:'flex-start',gap:4,padding:'2px 2px 2px 6px',marginBottom:3,borderLeft:leftBorderCss}}>
         {b.label && <span style={{fontSize:11,fontWeight:700,color:labelC,whiteSpace:'nowrap',flexShrink:0}}>{b.label}</span>}
         <span style={{fontSize:11,color:_css(_BODY,0.88)}}>{b.label ? b.value : b.text}</span>
       </div>
@@ -399,7 +404,15 @@ function CardColBlock({b,acc,isRight}:{b:CBlock;acc:[number,number,number];isRig
   }
   if (b.kind==='note') {
     const noteC = _css(_mixT(acc,_GOLD_C,0.52));
-    return <div style={{fontSize:11,color:noteC,padding:'2px 4px',marginBottom:3}}>+ {b.text}</div>;
+    return (
+      <div style={{
+        fontSize:11,color:noteC,padding:'4px 8px 4px 10px',marginBottom:5,marginTop:5,
+        background:`linear-gradient(to right, ${_css(_mixT(acc,[20,10,5],0.12))}, rgb(32,22,14))`,
+        borderLeft:`3px solid ${_css(_GOLD)}`, borderRadius: '0 3px 3px 0'
+      }}>
+        + {b.text}
+      </div>
+    );
   }
   return null;
 }
@@ -421,34 +434,37 @@ function CardModePreview({topic,desc,acc,accD,accB,overrideMeta,overrideLeft,ove
 
   return (
     <>
-      {/* Header */}
-      <div style={{background:`linear-gradient(to right,${hdrL},${hdrR})`,padding:'12px 90px 10px 14px',position:'relative',minHeight:68}}>
-        {/* Diagonal slash */}
-        <div style={{position:'absolute',inset:0,background:'linear-gradient(105deg,transparent 40%,rgba(255,255,255,0.04) 50%,transparent 60%)',pointerEvents:'none'}}/>
-        {/* Title */}
-        <div style={{fontSize:15,fontWeight:700,color:'#fff',textShadow:'1px 2px 3px rgba(0,0,0,0.8)',lineHeight:1.3,position:'relative'}}>
-          {title||<span style={{color:'#555',fontStyle:'italic'}}>No title…</span>}
+      <div style={{position: 'relative'}}>
+        {/* Header */}
+        <div style={{background:`linear-gradient(to right,${hdrL},${hdrR})`,padding:'12px 100px 10px 14px',position:'relative',minHeight:68}}>
+          {/* Diagonal slash */}
+          <div style={{position:'absolute',inset:0,background:'linear-gradient(105deg,transparent 40%,rgba(255,255,255,0.04) 50%,transparent 60%)',pointerEvents:'none'}}/>
+          {/* Title */}
+          <div style={{fontSize:18,fontWeight:700,color:'#fff',textShadow:'1px 2px 3px rgba(0,0,0,0.8)',lineHeight:1.3,position:'relative'}}>
+            {title||<span style={{color:'#555',fontStyle:'italic'}}>No title…</span>}
+          </div>
+          {subtitle && <div style={{fontSize:11,color:_css(_mixT(acc,[200,130,40],0.28),0.86),marginTop:3,position:'relative'}}>{subtitle}</div>}
         </div>
-        {subtitle && <div style={{fontSize:11,color:_css(_mixT(acc,[200,130,40],0.28),0.86),marginTop:3,position:'relative'}}>{subtitle}</div>}
+
+        {/* Badge row */}
+        {(types.length>0||zCryst) && (
+          <div style={{background:_css(_mixT(_CARD,[10,8,6],0.35)),padding:'7px 14px',display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}}>
+            {types.map(tp=>{
+              const tc=CM_TYPE_COLS[tp.trim().toLowerCase()]||acc;
+              return <span key={tp} style={{background:_css(tc),color:'#fff',fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:5, letterSpacing: '0.05em'}}>{tp.trim().toUpperCase()}</span>;
+            })}
+            {zCryst && (
+              <span style={{background:_css(_darkT(acc,40)),color:_css(_GOLD),border:`1px solid ${_css(_darkT(acc, 20))}`,fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:5, letterSpacing: '0.05em'}}>+ {zCryst}</span>
+            )}
+          </div>
+        )}
+
+        {/* Header bottom glow */}
+        <div style={{height:4,background:`linear-gradient(to right,${accentCss},${_css(_GOLD)} 67%,${accDCss})`,opacity:0.9}}/>
+
         {/* Sprite circle */}
-        <ThumbCircle url={topic.thumbnail} acc={acc} size={58}/>
+        <ThumbCircle url={topic.thumbnail} acc={acc} size={84}/>
       </div>
-
-      {/* Header bottom glow */}
-      <div style={{height:4,background:`linear-gradient(to right,${accentCss},${_css(_GOLD)} 67%,${accDCss})`,opacity:0.9}}/>
-
-      {/* Badge row */}
-      {(types.length>0||zCryst) && (
-        <div style={{background:_css(_mixT(_CARD,[10,8,6],0.35)),padding:'7px 12px',display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}}>
-          {types.map(tp=>{
-            const tc=CM_TYPE_COLS[tp.trim().toLowerCase()]||acc;
-            return <span key={tp} style={{background:_css(tc),color:'#fff',fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:3}}>{tp.trim().toUpperCase()}</span>;
-          })}
-          {zCryst && (
-            <span style={{background:_css(_darkT(acc,40)),color:_css(_lightT(acc,55)),border:`1px solid ${_css(acc,0.75)}`,fontSize:10,fontWeight:600,padding:'2px 8px',borderRadius:3}}>+ {zCryst}</span>
-          )}
-        </div>
-      )}
 
       {/* Two-column body */}
       <div style={{display:'grid',gridTemplateColumns:'290fr 454fr',gap:'0 12px',padding:'10px 12px 12px'}}>
