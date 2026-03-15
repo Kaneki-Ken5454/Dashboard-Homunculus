@@ -67,276 +67,364 @@ function EmojiPicker({ value, onChange }: { value: string; onChange: (v: string)
   );
 }
 
-// ── Card preview — mirrors embed_renderer.py visual output ────────────────────
-
-const TYPE_COLORS: Record<string, string> = {
-  fire:'#c4321e', rock:'#6e5028', water:'#2d64b4', grass:'#328c32',
-  electric:'#b99b14', ice:'#46a0be', fighting:'#a0321e', poison:'#823290',
-  ground:'#a07832', flying:'#6470b4', psychic:'#b928640', bug:'#648c14',
-  ghost:'#503c8c', dragon:'#461eb4', dark:'#3c3232', steel:'#646e82',
-  fairy:'#c36e9b', normal:'#6e6e64',
+// ── Card preview — mirrors embed_renderer.py v4 exactly ───────────────────────
+// Colour constants matching Python _CARD/_PANEL/_PAN2 etc.
+const _C = {
+  card:  '#121218',
+  panel: '#1a1a22',
+  pan2:  '#20202a',
+  sep:   '#323240',
+  cbg:   '#14141c',
+  cfg:   '#dcb250',
+  body:  '#d4d2e0',
+  muted: '#807e94',
+  gold:  '#fcb616',
 };
-const MOVE_COLORS = ['#c8412d','#3773c3','#6e6e37','#c3a51e','#c8551e'];
 
 function _hexToRgb(hex: string): [number,number,number] {
-  const h = hex.replace('#','');
+  const h = (hex || '#5865f2').replace('#','');
   return [parseInt(h.slice(0,2),16)||88, parseInt(h.slice(2,4),16)||101, parseInt(h.slice(4,6),16)||242];
-}
-function _mix(a:[number,number,number], b:[number,number,number], t:number): string {
-  return `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;
 }
 function _mixT(a:[number,number,number], b:[number,number,number], t:number): [number,number,number] {
   return [Math.round(a[0]+(b[0]-a[0])*t), Math.round(a[1]+(b[1]-a[1])*t), Math.round(a[2]+(b[2]-a[2])*t)];
 }
-function _lighter(hex: string, n=40): string {
-  const [r,g,b]=_hexToRgb(hex); return `rgb(${Math.min(255,r+n)},${Math.min(255,g+n)},${Math.min(255,b+n)})`;
+function _rgb(c:[number,number,number], a=1): string {
+  return a < 1 ? `rgba(${c[0]},${c[1]},${c[2]},${a})` : `rgb(${c[0]},${c[1]},${c[2]})`;
 }
-function _darker(hex: string, n=35): string {
-  const [r,g,b]=_hexToRgb(hex); return `rgb(${Math.max(0,r-n)},${Math.max(0,g-n)},${Math.max(0,b-n)})`;
+function _light(c:[number,number,number], n=40): [number,number,number] {
+  return [Math.min(255,c[0]+n), Math.min(255,c[1]+n), Math.min(255,c[2]+n)];
 }
+function _dark(c:[number,number,number], n=30): [number,number,number] {
+  return [Math.max(0,c[0]-n), Math.max(0,c[1]-n), Math.max(0,c[2]-n)];
+}
+function _bright(c:[number,number,number], n=55): [number,number,number] { return _light(c, n); }
 
-function _isCardMode(desc: string) { return desc.includes('===LEFT===') && desc.includes('===RIGHT==='); }
-
-function _parseCardMeta(desc: string) {
-  const meta: Record<string,string> = {};
-  for (const ln of desc.split('\n')) {
-    const s = ln.trim();
-    for (const key of ['SUBTITLE','TYPES','Z-CRYSTAL','Z_CRYSTAL']) {
-      if (s.toUpperCase().startsWith(key+':')) { meta[key.replace('_','-')] = s.slice(key.length+1).trim(); break; }
-    }
-    if (s === '===LEFT===') break;
+// Parse inline markdown into runs: {text, bold, color}
+type InlineRun = { text: string; bold?: boolean; italic?: boolean; code?: boolean; accent?: boolean };
+function _parseInline(text: string): InlineRun[] {
+  const runs: InlineRun[] = [];
+  // Simple inline parser matching the Python _INLINE regex behaviour
+  const re = /\*\*\*([^*]+?)\*\*\*|\*\*([^*]+?)\*\*|__([^_]+?)__|`([^`]+?)`|\[([^\]]+?)\]\([^)]+?\)|\*([^*]+?)\*|_([^_]+?)_/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) runs.push({ text: text.slice(last, m.index) });
+    if      (m[1]) runs.push({ text: m[1], bold: true, italic: true });
+    else if (m[2]) runs.push({ text: m[2], bold: true, accent: true });   // **bold** → accent colour
+    else if (m[3]) runs.push({ text: m[3], bold: true, accent: true });   // __bold__
+    else if (m[4]) runs.push({ text: m[4], code: true });
+    else if (m[5]) runs.push({ text: m[5], accent: true });               // [link text]
+    else if (m[6]) runs.push({ text: m[6], italic: true });
+    else if (m[7]) runs.push({ text: m[7], italic: true });
+    last = m.index + m[0].length;
   }
-  return meta;
-}
-
-function _parseColumns(desc: string): [string, string] {
-  const lines = desc.split('\n');
-  let left: string[] = [], right: string[] = [], target: string[]|null = null;
-  for (const ln of lines) {
-    if (ln.trim()==='===LEFT===')  { target=left; continue; }
-    if (ln.trim()==='===RIGHT===') { target=right; continue; }
-    if (target) target.push(ln);
-  }
-  return [left.join('\n'), right.join('\n')];
-}
-
-type ColBlock = { kind:'section'|'stat'|'move'|'note'|'blank'; text?:string; label?:string; value?:string; index?:number };
-
-function _parseCol(raw: string): ColBlock[] {
-  const blocks: ColBlock[] = [];
-  for (const ln of raw.split('\n')) {
-    const s = ln.trim();
-    if (!s) { blocks.push({kind:'blank'}); continue; }
-    const hm = s.match(/^#{1,6}\s+(.+)$/);
-    if (hm) { blocks.push({kind:'section', text:hm[1].toUpperCase()}); continue; }
-    const bm = s.match(/^[-*•]\s+(.+)/);
-    if (bm) {
-      const lm = bm[1].match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
-      if (lm) { blocks.push({kind:'stat', label: lm[1].endsWith(':') ? lm[1] : lm[1]+':', value: lm[2]}); continue; }
-      blocks.push({kind:'stat', text: bm[1].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); continue;
-    }
-    const nm = s.match(/^(\d+)\.\s+(.+)/);
-    if (nm) { blocks.push({kind:'move', index:+nm[1], text: nm[2].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); continue; }
-    if (s.startsWith('>')) { blocks.push({kind:'note', text: s.slice(1).trim().replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); continue; }
-    const lm2 = s.match(/\*\*(.+?)\*\*\s*:?\s*(.*)/);
-    if (lm2) { blocks.push({kind:'stat', label: lm2[1].endsWith(':') ? lm2[1] : lm2[1]+':', value: lm2[2]}); continue; }
-    blocks.push({kind:'stat', text: s.replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')});
-  }
-  return blocks;
+  if (last < text.length) runs.push({ text: text.slice(last) });
+  return runs.length ? runs : [{ text }];
 }
 
-function ColBlock({ b, accent, isRight }: { b: ColBlock; accent: string; isRight: boolean }) {
-  const acc = _hexToRgb(accent);
-  if (b.kind==='blank') return <div style={{height:8}}/>;
-  if (b.kind==='section') {
-    const barL = isRight ? _mix(acc,[180,220,50],0.5) : _mix(acc,[20,10,5],0.1);
-    const barR = isRight ? 'rgb(80,65,28)' : 'rgb(55,35,28)';
-    return (
-      <div style={{background:`linear-gradient(to right, ${barL}, ${barR})`, borderRadius:3, padding:'4px 10px', marginBottom:3}}>
-        <span style={{fontSize:10, fontWeight:700, color:'#fff', letterSpacing:'0.06em'}}>{b.text}</span>
-      </div>
-    );
-  }
-  if (b.kind==='move') {
-    const mc = MOVE_COLORS[((b.index||1)-1) % MOVE_COLORS.length];
-    return (
-      <div style={{display:'flex', alignItems:'center', gap:7, padding:'3px 4px', marginBottom:4, borderRadius:4, background:`${mc}18`}}>
-        <div style={{width:20, height:20, borderRadius:'50%', background:mc, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0}}>
-          <span style={{fontSize:10, fontWeight:700, color:'#fff'}}>{b.index}</span>
-        </div>
-        <span style={{fontSize:12, fontWeight:600, color:'#fff', flex:1}}>{b.text}</span>
-        <div style={{width:8,height:8,borderRadius:'50%',background:_lighter(mc,40),flexShrink:0}}/>
-      </div>
-    );
-  }
-  if (b.kind==='note') {
-    const noteColor = _mix(acc,[245,215,60],0.55);
-    return <div style={{fontSize:11, color:noteColor, padding:'3px 4px', marginBottom:2}}>+ {b.text}</div>;
-  }
-  // stat
-  const labelColor = _mix(acc,[245,215,60],0.6);
+function InlineText({ text, accentColor }: { text: string; accentColor: string }) {
+  const runs = _parseInline(text);
   return (
-    <div style={{display:'flex', alignItems:'flex-start', gap:4, padding:'2px 4px', marginBottom:3, borderLeft:`2px solid ${accent}40`}}>
-      {b.label && <span style={{fontSize:11, fontWeight:700, color:labelColor, whiteSpace:'nowrap'}}>{b.label}</span>}
-      <span style={{fontSize:11, color:'#d2d4da'}}>{b.label ? b.value : b.text}</span>
-    </div>
+    <>
+      {runs.map((r, i) => {
+        if (r.code) return <code key={i} style={{ background: _C.cbg, color: _C.cfg, padding: '1px 4px', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.9em' }}>{r.text}</code>;
+        const color = r.accent ? accentColor : r.bold ? '#fff' : _C.body;
+        return <span key={i} style={{ fontWeight: r.bold ? 700 : undefined, fontStyle: r.italic ? 'italic' : undefined, color }}>{r.text}</span>;
+      })}
+    </>
   );
 }
 
-type StdBlock = { kind:string; text?:string; runs?:{text:string;bold?:boolean;italic?:boolean;code?:boolean;link?:boolean}[] };
+type V4Block = { kind: string; text: string; numLabel?: string };
 
-function _parseStd(raw: string): StdBlock[] {
-  const blocks: StdBlock[] = [];
-  const lines = raw.split('\n');
-  let i=0;
-  while (i<lines.length) {
+function _parseBlocks(raw: string): V4Block[] {
+  const out: V4Block[] = [];
+  const lines = raw.replace(/\r\n/g, '\n').split('\n');
+  let i = 0;
+  while (i < lines.length) {
     const ln = lines[i];
     if (/^```/.test(ln.trim())) {
       const code: string[] = []; i++;
-      while (i<lines.length && !lines[i].trim().startsWith('```')) { code.push(lines[i]); i++; }
-      blocks.push({kind:'code', text: code.join('\n')}); i++; continue;
+      while (i < lines.length && !lines[i].trim().startsWith('```')) { code.push(lines[i]); i++; }
+      out.push({ kind: 'code', text: code.join('\n') }); i++; continue;
     }
-    if (!ln.trim()) { blocks.push({kind:'blank'}); i++; continue; }
-    if (/^(---|\*\*\*|___)/.test(ln.trim())) { blocks.push({kind:'rule'}); i++; continue; }
-    const hm = ln.match(/^(#{1,6})\s+(.+)/);
-    if (hm) { blocks.push({kind: hm[1].length<=2 ? 'h2':'h3', text:hm[2]}); i++; continue; }
-    if (ln.startsWith('>')) { blocks.push({kind:'quote', text:ln.slice(1).trim().replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); i++; continue; }
+    if (/^(\-{3,}|\*{3,}|_{3,})\s*$/.test(ln.trim())) { out.push({ kind: 'rule', text: '' }); i++; continue; }
+    if (!ln.trim()) { out.push({ kind: 'blank', text: '' }); i++; continue; }
+    const hm = ln.match(/^(#{1,6})\s+(.+)$/);
+    if (hm) { out.push({ kind: hm[1].length <= 2 ? 'h2' : 'h3', text: hm[2] }); i++; continue; }
+    if (ln.startsWith('> ') || ln.startsWith('>')) {
+      out.push({ kind: 'quote', text: ln.replace(/^>\s?/, '') }); i++; continue;
+    }
     const bm = ln.match(/^[-*•]\s+(.+)/);
-    if (bm) { blocks.push({kind:'bullet', text:bm[1].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}); i++; continue; }
+    if (bm) { out.push({ kind: 'bullet', text: bm[1] }); i++; continue; }
     const nm = ln.match(/^(\d+)\.\s+(.+)/);
-    if (nm) { blocks.push({kind:'num', text:`${nm[1]}. ${nm[2].replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1')}`}); i++; continue; }
-    blocks.push({kind:'body', text: ln.replace(/\*{1,3}([^*]+)\*{1,3}/g,'$1').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1')}); i++;
+    if (nm) { out.push({ kind: 'num', text: nm[2], numLabel: nm[1] }); i++; continue; }
+    out.push({ kind: 'body', text: ln }); i++;
   }
-  return blocks;
-}
-
-function StdBlock({ b, accent }: { b: StdBlock; accent: string }) {
-  const acc = _hexToRgb(accent);
-  if (b.kind==='blank') return <div style={{height:6}}/>;
-  if (b.kind==='rule') return <hr style={{border:'none', borderTop:'1px solid #32343c', margin:'6px 0'}}/>;
-  if (b.kind==='h2') return (
-    <div style={{display:'flex', alignItems:'center', gap:8, margin:'8px 0 5px'}}>
-      <div style={{width:3, height:18, borderRadius:2, background:accent, flexShrink:0}}/>
-      <span style={{fontSize:12, fontWeight:700, color:_lighter(accent,55), letterSpacing:'0.04em'}}>{b.text?.toUpperCase()}</span>
-    </div>
-  );
-  if (b.kind==='h3') return <div style={{fontSize:12, fontWeight:600, color:_lighter(accent,40), margin:'5px 0 3px'}}>›› {b.text}</div>;
-  if (b.kind==='code') return (
-    <div style={{background:'#14161a', borderRadius:4, borderLeft:`3px solid ${accent}`, padding:'6px 10px', margin:'4px 0', fontFamily:'monospace', fontSize:11, color:'#d7aa46', whiteSpace:'pre-wrap'}}>{b.text}</div>
-  );
-  if (b.kind==='quote') return (
-    <div style={{background:'rgba(255,255,255,0.04)', borderLeft:`3px solid ${accent}`, padding:'4px 10px', margin:'3px 0', fontSize:11, color:'#8a8c94', borderRadius:'0 3px 3px 0'}}>{b.text}</div>
-  );
-  if (b.kind==='bullet') return (
-    <div style={{display:'flex', gap:8, margin:'2px 0', paddingLeft:4}}>
-      <span style={{color:accent, flexShrink:0, fontSize:11, marginTop:1}}>◆</span>
-      <span style={{fontSize:12, color:'#d2d4da'}}>{b.text}</span>
-    </div>
-  );
-  if (b.kind==='num') return <div style={{fontSize:12, color:'#d2d4da', margin:'2px 0 2px 4px'}}>{b.text}</div>;
-  return <div style={{fontSize:12, color:'#d2d4da', margin:'2px 0'}}>{b.text}</div>;
+  return out;
 }
 
 function EmbedPreview({ topic }: { topic: Partial<InfoTopic> }) {
-  const accent  = topic.embed_color || '#5865F2';
-  const desc    = topic.embed_description || '';
-  const title   = topic.embed_title || '';
-  const cardMode = _isCardMode(desc);
-  const hasLinks = detectLinks(desc);
-  const acc     = _hexToRgb(accent);
-  const HEADER  : [number,number,number] = [22,18,14];
-  const headerL = _mix(_mixT(acc,[160,60,10],0.5),HEADER,0.3);
-  const headerR = _mix(HEADER,[10,8,6],0.6);
+  const accentHex = topic.embed_color || '#5865F2';
+  const desc      = topic.embed_description || '';
+  const title     = topic.embed_title || '';
+  const hasLinks  = detectLinks(desc);
+  const acc       = _hexToRgb(accentHex);
+  const accD      = _dark(acc, 30);
+  const accB      = _bright(acc, 55);
+  const PANEL     : [number,number,number] = [26, 26, 34];
+  const PAN2      : [number,number,number] = [32, 32, 42];
+  const CARD      : [number,number,number] = [18, 18, 24];
+  const DARK14    : [number,number,number] = [14, 12, 18];
+  const GOLD      : [number,number,number] = [252, 182, 22];
 
-  if (cardMode) {
-    const meta           = _parseCardMeta(desc);
-    const [leftRaw, rightRaw] = _parseColumns(desc);
-    const leftBlocks     = _parseCol(leftRaw);
-    const rightBlocks    = _parseCol(rightRaw);
-    const types          = meta['TYPES'] ? meta['TYPES'].split(/\s*[|,/]\s*/) : [];
-    const zCrystal       = meta['Z-CRYSTAL'] || meta['Z_CRYSTAL'] || '';
-    const subtitle       = meta['SUBTITLE'] || '';
+  // Header gradient (matches hdr_l / hdr_r in Python)
+  const hdrL = _rgb(_mixT(_mixT(acc, DARK14, 0), accD, 1), 1);  // acc_d blended toward (14,12,18)
+  const hdrLc = _rgb(_mixT(accD, DARK14, 0.40));
+  const hdrRc = _rgb(_mixT(_dark(acc, 50), DARK14, 0.58));
 
-    return (
-      <div>
-        <div style={{ background:'#1a1b1f', borderRadius:8, overflow:'hidden', fontSize:12 }}>
-          {/* Header */}
-          <div style={{ background:`linear-gradient(to right, ${headerL}, ${headerR})`, padding:'10px 14px 10px', position:'relative', minHeight:54, borderTop:`3px solid ${accent}` }}>
-            <div style={{ paddingRight:72 }}>
-              <div style={{ fontSize:15, fontWeight:700, color:'#fff', lineHeight:1.3 }}>{title || <span style={{color:'#555',fontStyle:'italic'}}>No title…</span>}</div>
-              {subtitle && <div style={{ fontSize:11, color:`${_mix(acc,[60,35,5],0.3)}`, marginTop:2 }}>{subtitle}</div>}
-            </div>
-            {/* Sprite circle */}
-            <div style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:52, height:52, borderRadius:'50%', border:`2px solid ${accent}`, background:_darker(accent,40), display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden' }}>
-              {topic.thumbnail
-                ? <img src={topic.thumbnail} alt="" style={{width:'100%',height:'100%',objectFit:'cover',borderRadius:'50%'}} onError={e=>(e.currentTarget.style.display='none')}/>
-                : <span style={{fontSize:9, color:'#8a8c94', textAlign:'center', lineHeight:1.3}}>Sprite{'\n'}Here</span>}
-            </div>
-          </div>
-          {/* Badge row */}
-          {(types.length > 0 || zCrystal) && (
-            <div style={{ background:'#12131a', padding:'6px 14px', display:'flex', flexWrap:'wrap', gap:6, alignItems:'center' }}>
-              {types.map(tp => (
-                <span key={tp} style={{ background: TYPE_COLORS[tp.trim().toLowerCase()] || accent, color:'#fff', fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:3 }}>{tp.trim().toUpperCase()}</span>
-              ))}
-              {zCrystal && (
-                <span style={{ background:_darker(accent,35), color:_lighter(accent,55), border:`1px solid ${accent}`, fontSize:10, fontWeight:600, padding:'2px 8px', borderRadius:3 }}>+ {zCrystal}</span>
-              )}
-            </div>
-          )}
-          {/* Two-column body */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, padding:'10px 14px 12px' }}>
-            <div>{leftBlocks.map((b,i) => <ColBlock key={i} b={b} accent={accent} isRight={false}/>)}</div>
-            <div>{rightBlocks.map((b,i) => <ColBlock key={i} b={b} accent={accent} isRight={true}/>)}</div>
-          </div>
-          {/* Footer */}
-          <div style={{ borderTop:'1px solid #32343c40', padding:'5px 14px', display:'flex', justifyContent:'space-between' }}>
-            <span style={{ fontSize:10, color:'#8a8c94' }}>{topic.footer || ''}</span>
-            <span style={{ fontSize:10, color:'#8a8c94' }}>{title}{types.length ? ` · ${meta['TYPES']}` : ''}</span>
-          </div>
-        </div>
-        {hasLinks && <div style={{marginTop:5,display:'flex',gap:5,alignItems:'center',fontSize:11,color:'#faa81a'}}><Link size={11}/> Raw URL — use <code style={{background:'rgba(255,255,255,0.1)',padding:'0 3px',borderRadius:3}}>[text](url)</code></div>}
-        {desc.length > 3500 && <div style={{marginTop:5,display:'flex',gap:5,alignItems:'center',fontSize:11,color:'#ed4245'}}><AlertCircle size={11}/> Too long ({desc.length}/4000)</div>}
-      </div>
-    );
-  }
+  // Top stripe: accent → gold → acc_dark (3-stop gradient)
+  const stripeGrad = `linear-gradient(to right, ${_rgb(acc)}, ${_rgb(GOLD)} 50%, ${_rgb(accD)})`;
 
-  // ── Standard mode ──────────────────────────────────────────────────────────
-  const blocks = _parseStd(desc);
+  // Section header pill colours
+  const sectL = _rgb(_mixT(acc, PANEL, 0.28));
+  const sectR = _rgb(_mixT(acc, PAN2,  0.72));
+
+  // Bullet/num pill colours
+  const pillL = _rgb(_mixT(acc, CARD,  0.42));
+  const pillR = _rgb(_mixT(acc, PAN2,  0.75));
+  const pillCircle = _rgb(_bright(acc, 30));
+
+  // Accent as CSS string
+  const accentCss = _rgb(acc);
+  const accDCss   = _rgb(accD);
+  const accBCss   = _rgb(accB);
+
+  // Corner bracket arm / thickness (CL=28, CT=3, scaled to ~60% for dashboard)
+  const CL = 17, CT = 2;
+
+  const blocks = _parseBlocks(desc);
+  let bulletCount = 0;
+
   return (
     <div>
-      <div style={{ background:'#1a1b1f', borderRadius:8, overflow:'hidden', fontSize:12 }}>
-        {/* Header */}
-        <div style={{ background:`linear-gradient(to right, ${headerL}, ${headerR})`, padding:'10px 14px', position:'relative', minHeight:50, borderTop:`3px solid ${accent}`, display:'flex', alignItems:'center' }}>
-          <div style={{ flex:1, paddingRight: topic.thumbnail ? 64 : 0 }}>
-            <div style={{ fontSize:14, fontWeight:700, color:'#fff' }}>{title || <span style={{color:'#555',fontStyle:'italic'}}>No title…</span>}</div>
+      {/* ── Outer card — sharp rectangle ── */}
+      <div style={{
+        position:   'relative',
+        background: _C.card,
+        border:     `1px solid ${_rgb(_mixT(acc, [50,50,64], 0.5), 0.22)}`,
+        fontFamily: 'system-ui, sans-serif',
+        overflow:   'hidden',
+        fontSize:   12,
+      }}>
+
+        {/* Top stripe accent → gold → acc-dark */}
+        <div style={{ height: 4, background: stripeGrad, flexShrink: 0 }} />
+
+        {/* Corner L-brackets */}
+        {/* Top-left */}
+        <div style={{ position:'absolute', top:0, left:0, width:CL, height:CT, background:accentCss, zIndex:2 }} />
+        <div style={{ position:'absolute', top:0, left:0, width:CT, height:CL, background:accentCss, zIndex:2 }} />
+        {/* Top-right */}
+        <div style={{ position:'absolute', top:0, right:0, width:CL, height:CT, background:accentCss, opacity:0.78, zIndex:2 }} />
+        <div style={{ position:'absolute', top:0, right:0, width:CT, height:CL, background:accentCss, opacity:0.78, zIndex:2 }} />
+        {/* Bottom-left */}
+        <div style={{ position:'absolute', bottom:0, left:0, width:CL, height:CT, background:accDCss, opacity:0.70, zIndex:2 }} />
+        <div style={{ position:'absolute', bottom:0, left:0, width:CT, height:CL, background:accDCss, opacity:0.70, zIndex:2 }} />
+        {/* Bottom-right */}
+        <div style={{ position:'absolute', bottom:0, right:0, width:CL, height:CT, background:accDCss, opacity:0.63, zIndex:2 }} />
+        <div style={{ position:'absolute', bottom:0, right:0, width:CT, height:CL, background:accDCss, opacity:0.63, zIndex:2 }} />
+
+        {/* ── Header ── */}
+        <div style={{
+          background: `linear-gradient(to right, ${hdrLc}, ${hdrRc})`,
+          padding:    '13px 16px 10px',
+          position:   'relative',
+          minHeight:  topic.thumbnail ? 74 : 52,
+          display:    'flex',
+          alignItems: 'center',
+        }}>
+          {/* Diagonal slash overlay */}
+          <div style={{
+            position:   'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden',
+            background: 'linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.04) 50%, transparent 60%)',
+          }} />
+
+          {/* Title with drop-shadow */}
+          <div style={{ flex: 1, paddingRight: topic.thumbnail ? 80 : 0, zIndex: 1 }}>
+            <div style={{
+              fontSize:   15, fontWeight: 700, color: '#fff',
+              textShadow: '1px 2px 3px rgba(0,0,0,0.82)',
+              lineHeight: 1.3,
+            }}>
+              {title || <span style={{ color:'#555', fontStyle:'italic' }}>No title…</span>}
+            </div>
           </div>
+
+          {/* Thumbnail — circular with double ring + glow */}
           {topic.thumbnail && (
-            <div style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:46, height:46, borderRadius:'50%', border:`2px solid ${accent}80`, overflow:'hidden' }}>
-              <img src={topic.thumbnail} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>(e.currentTarget.style.display='none')}/>
+            <div style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', zIndex: 1 }}>
+              {/* Radial glow */}
+              <div style={{
+                position:     'absolute',
+                inset:        -14,
+                borderRadius: '50%',
+                background:   `radial-gradient(circle, ${_rgb(acc, 0.30)} 0%, transparent 70%)`,
+                filter:       'blur(6px)',
+              }} />
+              {/* Outer ring */}
+              <div style={{
+                position:     'absolute',
+                inset:        -6,
+                borderRadius: '50%',
+                border:       `3px solid ${_rgb(acc, 0.14)}`,
+              }} />
+              {/* Inner ring */}
+              <div style={{
+                position:     'absolute',
+                inset:        -3,
+                borderRadius: '50%',
+                border:       `2px solid ${_rgb(acc, 0.84)}`,
+              }} />
+              {/* Image */}
+              <div style={{
+                width: 58, height: 58, borderRadius: '50%', overflow: 'hidden',
+                background: _rgb(_dark(acc, 40)),
+                flexShrink: 0,
+                position:   'relative',
+              }}>
+                <img
+                  src={topic.thumbnail}
+                  alt=""
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                  onError={e => { (e.currentTarget.parentElement!.style.background = _rgb(_dark(acc,40))); e.currentTarget.style.display='none'; }}
+                />
+              </div>
             </div>
           )}
         </div>
-        {/* Body */}
-        <div style={{ padding:'10px 14px 12px' }}>
-          {desc
-            ? blocks.map((b,i) => <StdBlock key={i} b={b} accent={accent}/>)
-            : <span style={{fontSize:12,color:'#555',fontStyle:'italic'}}>No description…</span>}
-          {topic.image && (
-            <div style={{ marginTop:10, borderRadius:4, overflow:'hidden' }}>
-              <img src={topic.image} alt="" style={{width:'100%',display:'block'}} onError={e=>(e.currentTarget.style.display='none')}/>
-            </div>
-          )}
+
+        {/* Header bottom glow line (accent → gold → acc-dark) */}
+        <div style={{ height: 4, background: `linear-gradient(to right, ${accentCss}, ${_rgb(GOLD)} 67%, ${accDCss})`, opacity: 0.9 }} />
+
+        {/* ── Body ── */}
+        <div style={{ padding: '10px 16px 14px' }}>
+          {desc ? blocks.map((b, i) => {
+            if (b.kind === 'blank') return <div key={i} style={{ height: 7 }} />;
+            if (b.kind === 'rule')  return (
+              <div key={i} style={{ height: 16, display: 'flex', alignItems: 'center' }}>
+                <div style={{ flex: 1, height: 1, background: `linear-gradient(to right, transparent, ${_C.sep}, transparent)` }} />
+              </div>
+            );
+            if (b.kind === 'h2') return (
+              <div key={i} style={{
+                display:      'flex', alignItems: 'center',
+                background:   `linear-gradient(to right, ${sectL}, ${sectR})`,
+                borderRadius: 5,
+                margin:       '8px 0 5px',
+                padding:      '5px 10px',
+                overflow:     'hidden',
+                position:     'relative',
+              }}>
+                {/* Left pip */}
+                <div style={{ position:'absolute', left:0, top:0, bottom:0, width:4, background:accentCss }} />
+                <span style={{ fontSize: 10, fontWeight: 700, color: accBCss, letterSpacing: '0.07em', paddingLeft: 6 }}>
+                  {b.text.toUpperCase()}
+                </span>
+              </div>
+            );
+            if (b.kind === 'h3') return (
+              <div key={i} style={{ margin: '5px 0 3px' }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: accBCss }}>{b.text}</span>
+                <div style={{ width: 50, height: 1, background: _rgb(acc, 0.35), marginTop: 2 }} />
+              </div>
+            );
+            if (b.kind === 'code') return (
+              <div key={i} style={{
+                background:  _C.cbg, borderRadius: 4,
+                border:      `1px solid ${_C.sep}`,
+                borderLeft:  `4px solid ${accentCss}`,
+                padding:     '6px 10px', margin: '5px 0',
+                fontFamily:  'monospace', fontSize: 11,
+                color:       _C.cfg, whiteSpace: 'pre-wrap',
+              }}>{b.text}</div>
+            );
+            if (b.kind === 'quote') return (
+              <div key={i} style={{
+                background:   `linear-gradient(to right, ${_rgb(_mixT(acc, PANEL, 0.72))}, ${_rgb(PAN2)})`,
+                borderRadius: 4,
+                borderLeft:   `4px solid ${accentCss}`,
+                padding:      '5px 10px', margin: '4px 0',
+                fontSize:     11, color: _C.muted,
+              }}>
+                <InlineText text={b.text} accentColor={accentCss} />
+              </div>
+            );
+            if (b.kind === 'bullet' || b.kind === 'num') {
+              if (b.kind === 'bullet') bulletCount++;
+              const idx = b.kind === 'bullet' ? bulletCount : parseInt(b.numLabel || '1');
+              return (
+                <div key={i} style={{
+                  display:      'flex', alignItems: 'center', gap: 8,
+                  background:   `linear-gradient(to right, ${pillL}, ${pillR})`,
+                  borderRadius: 20, padding: '5px 10px 5px 7px',
+                  margin:       '5px 0',
+                }}>
+                  {/* Numbered circle */}
+                  <div style={{
+                    width: 20, height: 20, borderRadius: '50%',
+                    background: pillCircle,
+                    border:     '1px solid rgba(255,255,255,0.20)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0,
+                  }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#fff' }}>{idx}</span>
+                  </div>
+                  {/* Text */}
+                  <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', flex: 1 }}>
+                    <InlineText text={b.text} accentColor={accentCss} />
+                  </span>
+                  {/* Right dot */}
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: pillCircle, flexShrink: 0 }} />
+                </div>
+              );
+            }
+            // body — left pip on bold-starting lines
+            const boldStart = b.text.startsWith('**');
+            const cleaned   = b.text.replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+            return (
+              <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, margin: '2px 0', paddingLeft: 2 }}>
+                {boldStart && <div style={{ width: 3, height: 14, borderRadius: 1, background: _rgb(acc, 0.51), flexShrink: 0, marginTop: 2 }} />}
+                <span style={{ fontSize: 12, color: _C.body, paddingLeft: boldStart ? 0 : 5 }}>
+                  <InlineText text={cleaned} accentColor={accentCss} />
+                </span>
+              </div>
+            );
+          }) : <span style={{ fontSize: 12, color: '#555', fontStyle: 'italic' }}>No description…</span>}
         </div>
-        {/* Footer */}
+
+        {/* ── Footer separator + text ── */}
         {topic.footer && (
-          <div style={{ borderTop:'1px solid #32343c40', padding:'5px 14px' }}>
-            <span style={{ fontSize:10, color:'#8a8c94' }}>{topic.footer}</span>
-          </div>
+          <>
+            <div style={{ height: 1, background: `linear-gradient(to right, transparent, ${_C.sep}, transparent)`, margin: '0 16px' }} />
+            <div style={{ padding: '5px 16px 10px' }}>
+              <span style={{ fontSize: 10, color: _C.muted }}>{topic.footer}</span>
+            </div>
+          </>
         )}
       </div>
-      {hasLinks && <div style={{marginTop:5,display:'flex',gap:5,alignItems:'center',fontSize:11,color:'#faa81a'}}><Link size={11}/> Raw URL — use <code style={{background:'rgba(255,255,255,0.1)',padding:'0 3px',borderRadius:3}}>[text](url)</code></div>}
-      {desc.length > 3500 && <div style={{marginTop:5,display:'flex',gap:5,alignItems:'center',fontSize:11,color:'#ed4245'}}><AlertCircle size={11}/> Too long ({desc.length}/4000)</div>}
+
+      {/* Warnings */}
+      {hasLinks && (
+        <div style={{ marginTop: 5, display: 'flex', gap: 5, alignItems: 'center', fontSize: 11, color: '#faa81a' }}>
+          <Link size={11} /> Raw URL — use <code style={{ background: 'rgba(255,255,255,0.1)', padding: '0 3px', borderRadius: 3 }}>[text](url)</code>
+        </div>
+      )}
+      {desc.length > 3500 && (
+        <div style={{ marginTop: 5, display: 'flex', gap: 5, alignItems: 'center', fontSize: 11, color: '#ed4245' }}>
+          <AlertCircle size={11} /> Too long ({desc.length}/4000)
+        </div>
+      )}
     </div>
   );
 }
